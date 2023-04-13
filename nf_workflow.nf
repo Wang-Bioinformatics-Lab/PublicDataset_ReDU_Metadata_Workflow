@@ -14,10 +14,15 @@ process processData {
     file input 
 
     output:
-    file 'output.tsv'
+    file 'outputs.tsv.*'
+    file 'file_paths.tsv'
+    file 'passed_file_names.tsv'
+    file 'check.tsv'
 
     """
-    python $TOOL_FOLDER/script.py $input output.tsv
+    python $TOOL_FOLDER/gnps_downloader.py $input     
+    python $TOOL_FOLDER/gnps_validator.py $input passed_file_names.tsv
+    python $TOOL_FOLDER/gnps_name_matcher.py $input check.tsv
     """
 }
 
