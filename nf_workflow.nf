@@ -1,8 +1,6 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
-params.input = "README.md"
-
 TOOL_FOLDER = "$baseDir/bin"
 
 process processData {
@@ -11,7 +9,7 @@ process processData {
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
-    file input 
+    val x
 
     output:
     file 'outputs.tsv.*'
@@ -20,13 +18,12 @@ process processData {
     file 'check.tsv'
 
     """
-    python $TOOL_FOLDER/gnps_downloader.py $input     
-    python $TOOL_FOLDER/gnps_validator.py $input passed_file_names.tsv
-    python $TOOL_FOLDER/gnps_name_matcher.py $input check.tsv
+    python $TOOL_FOLDER/gnps_downloader.py
+    python $TOOL_FOLDER/gnps_validator.py passed_file_names.tsv
+    python $TOOL_FOLDER/gnps_name_matcher.py check.tsv
     """
 }
 
 workflow {
-    data = Channel.fromPath(params.input)
-    processData(data)
+    processData(1)
 }
