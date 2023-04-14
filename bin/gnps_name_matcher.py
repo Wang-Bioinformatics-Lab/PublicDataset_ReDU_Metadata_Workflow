@@ -13,12 +13,13 @@ def main():
     args = parser.parse_args()
      
     ccms_peak_link_start = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&dataset__exact="
-    ccms_peak_link_end = "&_size=max"    
+    ccms_peak_link_end = "&_size=max"
+
+    ccms_filenames = collections.defaultdict(set)
     
     print("echo CCMS Read Done!")
 
-    ccms_filenames = collections.defaultdict(set)
-    # print(current_dir)
+    
     
     # Read the TSV file and specify the delimiter as a tab
     df = pd.read_csv(args.passed_file_names, delimiter='\t', header=None, names=['Name'])
