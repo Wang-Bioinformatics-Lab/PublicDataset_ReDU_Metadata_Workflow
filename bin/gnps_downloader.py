@@ -7,19 +7,23 @@ import io
 import sys
 import collections
 import argparse
-from pandas.errors import EmptyDataError
 
 
 def main():
+    # Args parse
+    parser = argparse.ArgumentParser(description='Download GNPS files')
+    parser.add_argument('output_metadata_folder')
+    args = parser.parse_args()
+
     # Print message to indicate importing is done
-    os.system("echo Importing Done!")
+    print("echo Importing Done!")
 
     # Set the URL for GNPS metadata CSV file and read it using pandas
     gnps_metadata_link = "https://gnps-datasetcache.ucsd.edu/database/filename.csv?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=max"
     gnps_df = pd.read_csv(gnps_metadata_link)
 
     # Print message to indicate that the CSV file has been read
-    os.system("echo GNPS CSV Read Done!")
+    print("echo GNPS CSV Read Done!")
 
     # Convert the create time column to a datetime format
     gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'])
@@ -43,7 +47,7 @@ def main():
 
     # Set the download link for GNPS files
     download_link = "https://massive.ucsd.edu/ProteoSAFe/DownloadResultFile?forceDownload=true&file=f."
-    os.system("echo We are downloading now ...")
+    print("echo We are downloading now ...")
 
     # Create a defaultdict to store file paths
     file_paths = collections.defaultdict(list)
@@ -52,19 +56,20 @@ def main():
     for index, link in enumerate(gnps_list):
         download_url = download_link + link
         r = requests.get(download_url)
-        file_name = str(index) + "_gnps_metadata.tsv"
+        file_name = os.path.join(args.output_metadata_folder, str(index) + "_gnps_metadata.tsv")
         file_paths["sys_name"].append(file_name)
         file_paths["svr_name"].append(link)
         with open(file_name,'wb') as f:
             f.write(r.content) #Downloading
 
     # Print message to indicate that downloading has been completed successfully
-    os.system("echo Download has been completed successfully!")
+    print("echo Download has been completed successfully!")
 
     # Print message to indicate that a TSV file for file paths is being created
-    os.system("echo Creating tsv for file paths ...")
+    print("echo Creating tsv for file paths ...")
 
     # Write file paths to a TSV file
+    # TODO: Use pandas to write the TSV file    
     with open("file_paths.tsv", "w") as f:
         f.write("LocalName\tServerName\n")
         for i in range(len(file_paths["sys_name"])):
@@ -74,9 +79,10 @@ def main():
         f.close()
     
     # Print message to indicate that the TSV file for file paths has been created
-    os.system("echo Tsv file created for path names!!")
+    print("echo Tsv file created for path names!!")
+    
     # Print message to indicate that the execution of the code is complete
-    os.system("echo EXECUTION COMPLETE ! HAVE A GOOD DAY ")
+    print("echo EXECUTION COMPLETE ! HAVE A GOOD DAY ")
 
 if __name__ == "__main__":
   main()

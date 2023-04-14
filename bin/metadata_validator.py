@@ -1,71 +1,12 @@
 #!/usr/bin/python
 
-
-import sys
 import os
 import argparse
 import csv
-import json
 import pandas as pd
 from vladiate import Vlad
 from vladiate.validators import UniqueValidator, SetValidator, Ignore, IntValidator, RangeValidator, NotEmptyValidator
 from vladiate.inputs import LocalFile
-
-import ftputil
-import ming_proteosafe_library
-import ming_fileio_library
-
-def get_dataset_files(dataset_accession, collection_name, massive_host=None):
-    try:
-        list_names = massive_host.listdir("/")
-        print("LISTING ROOT", len(list_names))
-    except:
-        print("MassIVE connection broken, reconnecting")
-        massive_host = ftputil.FTPHost("massive.ucsd.edu", "anonymous", "")
-
-    dataset_files = ming_proteosafe_library.get_all_files_in_dataset_folder_ftp(dataset_accession, collection_name, massive_host=massive_host)
-
-    return dataset_files
-
-def perform_validation_against_massive(filename, massive_host=None):
-    metadata = pd.read_csv(filename, sep="\t")
-
-    print(metadata.keys())
-
-    if len(set(list(metadata["MassiveID"]))) > 1:
-        print("Too many accessions")
-        return False, "Too many accessions", 0
-
-    accession = metadata["MassiveID"][0]
-    print(accession)
-    dataset_files = get_dataset_files(accession, "ccms_peak", massive_host=massive_host)
-
-    all_resolved_filenames = []
-    for query_filename in metadata["filename"]:
-        dataset_filename = resolve_metadata_filename_to_all_files(query_filename, dataset_files)
-        print(query_filename, dataset_filename)
-
-        if dataset_filename == None:
-            continue
-
-        all_resolved_filenames.append(dataset_filename)
-
-    return True, "Success", len(all_resolved_filenames)
-
-def resolve_metadata_filename_to_all_files(filename, dataset_files):
-    stripped_extension = ming_fileio_library.get_filename_without_extension(filename) + "."
-
-    print(stripped_extension)
-
-    acceptable_filenames = ["f." + dataset_filename for dataset_filename in dataset_files if stripped_extension in dataset_filename]
-
-    print("ACCEPTED", acceptable_filenames)
-
-    # NOTE: We are revising to not allow ambiguity anymore
-    if len(acceptable_filenames) == 1:
-        return acceptable_filenames[0]
-    return None
-
 
 def rewrite_metadata(metadata_filename):
     """
