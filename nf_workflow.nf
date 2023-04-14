@@ -74,7 +74,8 @@ process mwbRun {
 
     """
     python $TOOL_FOLDER/MWB_to_REDU.py \
-    --study_id ALL
+    --study_id ALL \
+    --path_to_csvs $TOOL_FOLDER/translation_sheets
     """
 }
 
