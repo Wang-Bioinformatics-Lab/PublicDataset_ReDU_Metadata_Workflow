@@ -43,8 +43,6 @@ process validateMetadata {
 process matchName {
     publishDir "./nf_output", mode: 'copy'
 
-    cache false
-
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
@@ -52,7 +50,7 @@ process matchName {
     file 'metadata_folder' 
 
     output:
-    file 'check.tsv'
+    file 'gnps_metadata_all.tsv'
 
     """
     python $TOOL_FOLDER/gnps_name_matcher.py \
@@ -61,8 +59,31 @@ process matchName {
     """
 }
 
+process mwbRun {
+    publishDir "./nf_output", mode: 'copy'
+
+    cache false
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    val x
+
+    output:
+    file 'mwb_metadata_all.tsv'
+
+    """
+    python $TOOL_FOLDER/MWB_to_REDU.py \
+    --study_id ALL
+    """
+}
+
+
+
 workflow {
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
     (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch)
     matchName(passed_paths_ch, metadata_ch)
+
+    mwbRun(1)
 }

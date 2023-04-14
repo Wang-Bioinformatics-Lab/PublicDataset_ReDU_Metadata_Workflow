@@ -8,3 +8,4 @@ dependencies:
     - xmltodict
     - requests
     - vladiate
+    - bs4
