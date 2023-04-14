@@ -12,11 +12,8 @@ process downloadMetadata {
     val x
 
     output:
-    //file 'outputs.tsv.*'
     file 'file_paths.tsv'
     file 'metadata_folder'
-    //file 'passed_file_names.tsv'
-    //file 'check.tsv'
 
     """
     mkdir metadata_folder
@@ -27,19 +24,14 @@ process downloadMetadata {
 process validateMetadata {
     publishDir "./nf_output", mode: 'copy'
 
-    cache false
-
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
     file 'file_paths.tsv'
     file 'metadata_folder' 
 
-    //output:
-    //file 'outputs.tsv.*'
-    
-    //file 'passed_file_names.tsv'
-    //file 'check.tsv'
+    output:
+    file 'passed_file_names.tsv'
 
     """
     python $TOOL_FOLDER/gnps_validator.py \
@@ -48,13 +40,29 @@ process validateMetadata {
     """
 }
 
+process matchName {
+    publishDir "./nf_output", mode: 'copy'
 
+    cache false
 
+    conda "$TOOL_FOLDER/conda_env.yml"
 
-//python $TOOL_FOLDER/gnps_validator.py passed_file_names.tsv
-//python $TOOL_FOLDER/gnps_name_matcher.py check.tsv
+    input:
+    file 'passed_file_names.tsv'
+    file 'metadata_folder' 
+
+    output:
+    file 'check.tsv'
+
+    """
+    python $TOOL_FOLDER/gnps_name_matcher.py \
+    passed_file_names.tsv \
+    metadata_folder
+    """
+}
 
 workflow {
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
-    validateMetadata(file_paths_ch, metadata_ch)
+    (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch)
+    matchName(passed_paths_ch, metadata_ch)
 }
