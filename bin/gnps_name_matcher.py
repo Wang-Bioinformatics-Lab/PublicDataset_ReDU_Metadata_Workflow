@@ -4,6 +4,43 @@ import argparse
 import collections
 from subprocess import PIPE, run
 
+ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
+
+def _match_filenames(dataset_metadata_df):
+    try:            
+        # Get the value of the first row of the 'column_name' column
+        dataset = dataset_metadata_df['MassiveID'].iloc[0]
+
+        ccms_df = pd.read_csv("{}&dataset__exact={}".format(ccms_peak_link, dataset))
+
+        ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
+    except TypeError:
+        print("Error")
+        return None
+
+    
+    metadata_row_list = dataset_metadata_df.to_dict('records')
+
+    for metadata_row in metadata_row_list:
+        filename = os.path.basename(metadata_row["filename"])
+        filename2 = filename[:-3] + "ML"
+
+        found_file_paths = []
+
+        # Searching the query_path column
+        found_file_paths = ccms_df[ccms_df["query_path"] == filename]["filepath"].tolist()
+        found_file_paths += ccms_df[ccms_df["query_path"] == filename2]["filepath"].tolist()
+
+        if len(found_file_paths) == 1:
+            # We've found a match
+            print("Found match", found_file_paths[0])
+            metadata_row["filename"] = "f." + found_file_paths[0]
+        else:
+            # Didn't find or is ambiguous
+            continue
+
+    return pd.DataFrame(metadata_row_list)
+
 def main():
     # parsing args
     parser = argparse.ArgumentParser(description='GNPS Name Matcher')
@@ -12,14 +49,7 @@ def main():
 
     args = parser.parse_args()
      
-    ccms_peak_link_start = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&dataset__exact="
-    ccms_peak_link_end = "&_size=max"
-
     ccms_filenames = collections.defaultdict(set)
-    
-    print("echo CCMS Read Done!")
-
-    
     
     # Read the TSV file and specify the delimiter as a tab
     df = pd.read_csv(args.passed_file_names, delimiter='\t', header=None, names=['Name'])
@@ -27,55 +57,26 @@ def main():
     passed_file_names = df['Name'].tolist()
 
     print("echo Iterating though rows now")
-    merged_rows = {}
-    # unique = 0
-    # dupli = 0
+    
+    all_metadata_list = []
 
-    visit = set()
     for file in passed_file_names:
         # print("Length of visit is ",len(visit))
         print("Working on ", file)
         # print("echo Working on")
         # csv_path = os.path.join(current_dir, './data.csv' file)
-        df = pd.read_csv( file , delimiter='\t')
-        try:            
-            # Get the value of the first row of the 'column_name' column
-            dataset = df['MassiveID'].iloc[0]
+        dataset_metadata_df = pd.read_csv( file , delimiter='\t')
 
-            ccms_df = pd.read_csv(ccms_peak_link_start + dataset + ccms_peak_link_end)
-        except TypeError:
-            print(f"Skipping file {file} due to a TypeError.")
-            continue
-
-        for index, row in ccms_df.iterrows():
-                # dataset = row["dataset"]
-                filepath = row["filepath"]
-                ccms_filenames[dataset].add(filepath)
-        
-        for index, row in df.iterrows():
-            filename = row["filename"]
-            filename2 = row["filename"][:-3] + "ML"
-            for key in ccms_filenames[dataset]:
-                if key.endswith(filename) or key.endswith(filename2):
-                    if key in visit:
-                        #  dupli += 1
-                        merged_rows[key] = []
-                    else:
-                        #  unique += 1
-                        visit.add(key)
-                        new_row = [key] + list(row)
-                        merged_rows[key] = list(new_row)
-        print("Worked on ", file)
-
-    print("echo Merged Rows list complete")
-    non_empty_values = [v for v in merged_rows.values() if v]
-    print("Length of Entries in Final file -> ",len(non_empty_values))
+        # Matching the metadata
+        enriched_metadata_df = _match_filenames(dataset_metadata_df)
+        if enriched_metadata_df is not None:
+            all_metadata_list.append(enriched_metadata_df)
 
     # Create a DataFrame from the list with headers
-    fnt = pd.DataFrame(non_empty_values)
+    merged_metadata_df = pd.concat(all_metadata_list)
 
     # Save the DataFrame to a TSV file without column names
-    fnt.to_csv('check.tsv', sep='\t', index=False)
+    merged_metadata_df.to_csv('gnps_metadata_all.tsv', sep='\t', index=False)
 
 
 
