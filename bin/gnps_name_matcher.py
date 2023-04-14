@@ -71,7 +71,6 @@ def main():
     print("Length of Entries in Final file -> ",len(non_empty_values))
 
     # Create a DataFrame from the list with headers
-    # fnt = pd.DataFrame(non_empty_values, columns=headers)
     fnt = pd.DataFrame(non_empty_values)
 
     # Save the DataFrame to a TSV file without column names
