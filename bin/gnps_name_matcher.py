@@ -5,11 +5,12 @@ import collections
 from subprocess import PIPE, run
 
 ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
-
+gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
+gnps_column_object = pd.Index(gnps_column_names)
 def _match_filenames(dataset_metadata_df):
     try:            
         # Get the value of the first row of the 'column_name' column
-        dataset = dataset_metadata_df['MassiveID'].iloc[0]
+        dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
 
         ccms_df = pd.read_csv("{}&dataset__exact={}".format(ccms_peak_link, dataset))
 
@@ -66,6 +67,15 @@ def main():
         # print("echo Working on")
         # csv_path = os.path.join(current_dir, './data.csv' file)
         dataset_metadata_df = pd.read_csv( file , delimiter='\t')
+        #Renaming the coloumn, Matching common columns and rearranging them in same order to final file
+        dataset_metadata_df = dataset_metadata_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'})
+        common_cols = list(set(gnps_column_object).intersection(set(dataset_metadata_df.columns)))
+        dataset_metadata_df = dataset_metadata_df.loc[:, common_cols]
+        try:
+            dataset_metadata_df = dataset_metadata_df[gnps_column_object]
+        except KeyError:
+            print(f"Skipping file {file} due to a TypeError.")
+            continue
 
         # Matching the metadata
         enriched_metadata_df = _match_filenames(dataset_metadata_df)
@@ -73,10 +83,13 @@ def main():
             all_metadata_list.append(enriched_metadata_df)
 
     # Create a DataFrame from the list with headers
-    merged_metadata_df = pd.concat(all_metadata_list)
+    merged_metadata_df = pd.DataFrame(all_metadata_list,columns=gnps_column_object)
+    # merged_metadata_df = pd.concat(all_metadata_list)
 
     # Save the DataFrame to a TSV file without column names
-    merged_metadata_df.to_csv('gnps_metadata_all.tsv', sep='\t', index=False)
+    
+    # merged_metadata_df.to_csv('gnps_metadata_all.tsv', sep='\t', index=False)
+    merged_metadata_df.to_csv('gnps_metadata_all.tsv', sep='\t', index=False, mode='a', header=True)
 
 
 
