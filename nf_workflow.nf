@@ -45,6 +45,8 @@ process matchName {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
+    cache false
+
     input:
     file 'passed_file_names.tsv'
     file 'metadata_folder' 
@@ -62,8 +64,6 @@ process matchName {
 process mwbRun {
     publishDir "./nf_output", mode: 'copy'
 
-    cache false
-
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
@@ -79,12 +79,50 @@ process mwbRun {
     """
 }
 
+process mwbFiles {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    val x
+
+    output:
+    file 'REDU_from_MWB_all.tsv'
+
+    """
+    python $TOOL_FOLDER/MWB_to_fileDF.py \
+    --study_id ALL
+    """
+}
+
+// process formatmwb {
+//     publishDir "./nf_output", mode: 'copy'
+
+//     conda "$TOOL_FOLDER/conda_env.yml"
+
+//     input:
+//     file mwb_metadata
+//     file mwb_files
+
+//     output:
+//     file 'mwb_redu.tsv'
+
+//     """
+//     python $TOOL_FOLDER/MWB_merge.py \
+//     --study_id ALL \
+//     --output_path mwb_files_all.tsv
+//     """
+// }
+
 
 
 workflow {
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
     (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch)
     matchName(passed_paths_ch, metadata_ch)
+    
 
-    mwbRun(1)
+    mwb_metadata_ch = mwbRun(1)
+    mwb_files_ch = mwbFiles(1)
 }
