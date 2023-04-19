@@ -45,8 +45,6 @@ process matchName {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
-    cache false
-
     input:
     file 'passed_file_names.tsv'
     file 'metadata_folder' 
@@ -117,15 +115,36 @@ process formatmwb {
     """
 }
 
+process mergeAllMetadata {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    file gnps_metadata
+    file mwb_redu
+
+    output:
+    file 'merged_metadata.tsv'
+
+    """
+    python $TOOL_FOLDER/merge_metadata.py \
+    $gnps_metadata \
+    $mwb_redu \
+    merged_metadata.tsv
+    """
+}
 
 
 workflow {
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
     (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch)
-    matchName(passed_paths_ch, metadata_ch)
+    gnps_metadata_ch = matchName(passed_paths_ch, metadata_ch)
     
     mwb_metadata_ch = mwbRun(1)
     mwb_files_ch = mwbFiles(1)
 
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
+
+    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch)
 }

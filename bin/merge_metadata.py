@@ -1,0 +1,24 @@
+import pandas as pd
+import argparse
+
+def main():
+    # parsing arguments
+    parser = argparse.ArgumentParser(description='Merge GNPS and ReDU metadata')
+    parser.add_argument('gnps_metadata')
+    parser.add_argument('redu_metadata')
+    parser.add_argument('output_metadata')
+    args = parser.parse_args()
+
+    # read GNPS metadata
+    gnps_df = pd.read_csv(args.gnps_metadata, sep='\t')
+    # read ReDU metadata
+    redu_df = pd.read_csv(args.redu_metadata, sep='\t')
+
+    # merge GNPS and ReDU metadata
+    merged_df = pd.concat([gnps_df, redu_df], ignore_index=True)
+
+    # write merged metadata to file
+    merged_df.to_csv(args.output_metadata, sep='\t', index=False)
+
+if __name__ == '__main__':
+    main()
