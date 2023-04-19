@@ -70,7 +70,7 @@ process mwbRun {
     val x
 
     output:
-    file 'mwb_metadata_all.tsv'
+    file 'REDU_from_MWB_all.tsv'
 
     """
     python $TOOL_FOLDER/MWB_to_REDU.py \
@@ -88,32 +88,34 @@ process mwbFiles {
     val x
 
     output:
-    file 'REDU_from_MWB_all.tsv'
+    file 'mwb_files_all.tsv'
 
     """
     python $TOOL_FOLDER/MWB_to_fileDF.py \
-    --study_id ALL
+    --study_id ALL \
+    --output_path mwb_files_all.tsv
     """
 }
 
-// process formatmwb {
-//     publishDir "./nf_output", mode: 'copy'
+process formatmwb {
+    publishDir "./nf_output", mode: 'copy'
 
-//     conda "$TOOL_FOLDER/conda_env.yml"
+    conda "$TOOL_FOLDER/conda_env.yml"
 
-//     input:
-//     file mwb_metadata
-//     file mwb_files
+    input:
+    file mwb_metadata
+    file mwb_files
 
-//     output:
-//     file 'mwb_redu.tsv'
+    output:
+    file 'mwb_redu.tsv'
 
-//     """
-//     python $TOOL_FOLDER/MWB_merge.py \
-//     --study_id ALL \
-//     --output_path mwb_files_all.tsv
-//     """
-// }
+    """
+    python $TOOL_FOLDER/MWB_merge.py \
+    $mwb_metadata \
+    $mwb_files \
+    mwb_redu.tsv
+    """
+}
 
 
 
@@ -122,7 +124,8 @@ workflow {
     (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch)
     matchName(passed_paths_ch, metadata_ch)
     
-
     mwb_metadata_ch = mwbRun(1)
     mwb_files_ch = mwbFiles(1)
+
+    mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 }
