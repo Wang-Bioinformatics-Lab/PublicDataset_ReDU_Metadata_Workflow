@@ -20,7 +20,13 @@ def main():
 
     # Set the URL for GNPS metadata CSV file and read it using pandas
     gnps_metadata_link = "https://gnps-datasetcache.ucsd.edu/database/filename.csv?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=max"
-    gnps_df = pd.read_csv(gnps_metadata_link)
+    gnps_metadata_response = requests.get(gnps_metadata_link)
+
+    # Save response as a temp file
+    with open("temp.csv", "wb") as f:
+        f.write(gnps_metadata_response.content)
+
+    gnps_df = pd.read_csv("temp.csv")
 
     # Print message to indicate that the CSV file has been read
     print("echo GNPS CSV Read Done!")
@@ -55,7 +61,7 @@ def main():
     # Download files from the links in the gnps_list and store them locally
     for index, link in enumerate(gnps_list):
         download_url = download_link + link
-        r = requests.get(download_url)
+        r = requests.get(download_url, verify=False)
         file_name = os.path.join(args.output_metadata_folder, str(index) + "_gnps_metadata.tsv")
         file_paths["sys_name"].append(file_name)
         file_paths["svr_name"].append(link)

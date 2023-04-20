@@ -2,6 +2,8 @@ import os
 import pandas as pd
 import argparse
 import collections
+import requests
+from io import StringIO
 from subprocess import PIPE, run
 
 ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
@@ -12,7 +14,9 @@ def _match_filenames(dataset_metadata_df):
         # Get the value of the first row of the 'column_name' column
         dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
 
-        ccms_df = pd.read_csv("{}&dataset__exact={}".format(ccms_peak_link, dataset))
+        dataset_files_response = requests.get("{}&dataset__exact={}".format(ccms_peak_link, dataset))
+        csvStringIO = StringIO(dataset_files_response.text)
+        ccms_df = pd.read_csv(csvStringIO)
 
         ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
     except TypeError:
