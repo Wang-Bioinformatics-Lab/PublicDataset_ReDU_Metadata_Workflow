@@ -17,6 +17,9 @@ def main():
     # merge GNPS and ReDU metadata
     merged_df = pd.concat([gnps_df, redu_df], ignore_index=True)
 
+    # include only columns from gnps
+    merged_df = merged_df[gnps_df.columns]
+
     # write merged metadata to file
     merged_df.to_csv(args.output_metadata, sep='\t', index=False)
 

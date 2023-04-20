@@ -40,7 +40,7 @@ process validateMetadata {
     """
 }
 
-process matchName {
+process gnpsmatchName {
     publishDir "./nf_output", mode: 'copy'
 
     conda "$TOOL_FOLDER/conda_env.yml"
@@ -120,6 +120,8 @@ process mergeAllMetadata {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
+    cache false
+
     input:
     file gnps_metadata
     file mwb_redu
@@ -139,11 +141,10 @@ process mergeAllMetadata {
 workflow {
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
     (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch)
-    gnps_metadata_ch = matchName(passed_paths_ch, metadata_ch)
+    gnps_metadata_ch = gnpsmatchName(passed_paths_ch, metadata_ch)
     
     mwb_metadata_ch = mwbRun(1)
     mwb_files_ch = mwbFiles(1)
-
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch)
