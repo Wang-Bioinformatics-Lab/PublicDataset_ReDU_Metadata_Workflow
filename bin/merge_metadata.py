@@ -11,8 +11,11 @@ def main():
 
     # read GNPS metadata
     gnps_df = pd.read_csv(args.gnps_metadata, sep='\t')
+    gnps_df["DataSource"] = "GNPS"
+
     # read ReDU metadata
     redu_df = pd.read_csv(args.redu_metadata, sep='\t')
+    redu_df["DataSource"] = "Workbench"
 
     # merge GNPS and ReDU metadata
     merged_df = pd.concat([gnps_df, redu_df], ignore_index=True)
