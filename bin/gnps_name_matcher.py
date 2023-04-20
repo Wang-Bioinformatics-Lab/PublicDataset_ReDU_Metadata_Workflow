@@ -21,6 +21,7 @@ def _match_filenames(dataset_metadata_df):
 
     
     metadata_row_list = dataset_metadata_df.to_dict('records')
+    output_row_list = []
 
     for metadata_row in metadata_row_list:
         filename = os.path.basename(metadata_row["filename"])
@@ -36,11 +37,13 @@ def _match_filenames(dataset_metadata_df):
             # We've found a match
             print("Found match", found_file_paths[0])
             metadata_row["filename"] = "f." + found_file_paths[0]
+
+            output_row_list.append(metadata_row)
         else:
             # Didn't find or is ambiguous
             continue
 
-    return pd.DataFrame(metadata_row_list)
+    return pd.DataFrame(output_row_list)
 
 def main():
     # parsing args

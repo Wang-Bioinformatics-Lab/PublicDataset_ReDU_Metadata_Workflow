@@ -45,6 +45,8 @@ process gnpsmatchName {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
+    cache false
+
     input:
     file 'passed_file_names.tsv'
     file 'metadata_folder' 
