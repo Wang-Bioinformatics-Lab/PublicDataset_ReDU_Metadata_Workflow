@@ -1,0 +1,140 @@
+ML,tissueVSbiofluid
+milk,biofluid
+sweat,biofluid
+nasal mucosa,biofluid
+umbilical cord blood,biofluid
+serum,biofluid
+venous blood,biofluid
+blood plasma,biofluid
+rumen fluid,biofluid
+plasma,biofluid
+cerebrospinal fluid,biofluid
+uterine fluid,biofluid
+gingiva,biofluid
+saliva,biofluid
+amniotic fluid,biofluid
+breast milk,biofluid
+blood serum,biofluid
+umbilical blood,biofluid
+seminal plasma,biofluid
+perilymph,biofluid
+bronchoalveolar lavage fluid,biofluid
+bronchial mucosa,biofluid
+cecal content,biofluid
+fetal serum,biofluid
+sputum,biofluid
+synaptic cleft,biofluid
+hemolymph,biofluid
+feces,biofluid
+cecal content;ileal content,biofluid
+sebum,biofluid
+urine,biofluid
+cervical mucus,biofluid
+supragingival dental plaque,biofluid
+whole blood,biofluid
+jejunal content,biofluid
+spermatozoon,biofluid
+milk (fermented),biofluid
+follicular fluid,biofluid
+ruminal fluid,biofluid
+egg yolk,biofluid
+bloodstream form,biofluid
+nasal cavity,biofluid
+blood,biofluid
+skeletal muscle tissue,tissue
+retention index,tissue
+renal tubule epithelium,tissue
+lung,tissue
+virion,tissue
+brain tumor stem cell,tissue
+quadriceps,tissue
+prothorax plus head,tissue
+cortical bone;bone trabeculae,tissue
+hippocampus,tissue
+kidney,tissue
+embryo,tissue
+abdomen,tissue
+liver;bto:heart;bto:kidney,tissue
+head,tissue
+organoid,tissue
+placenta,tissue
+breast,tissue
+head kidney,tissue
+renal tubule,tissue
+heart,tissue
+skin,tissue
+brown adipose tissue,tissue
+heart ventricle,tissue
+leg,tissue
+cerebellum,tissue
+foreskin fibroblast,tissue
+subcutaneous adipose tissue,tissue
+adrenal gland,tissue
+callus,tissue
+gametocyte,tissue
+leg muscle,tissue
+eye,tissue
+bladder,tissue
+gastric tissue,tissue
+left ventricle,tissue
+collecting duct,tissue
+cerebral cortex,tissue
+ovary,tissue
+colorectal adenocarcinoma,tissue
+intestine,tissue
+dorsal fin,tissue
+bone trabeculae,tissue
+testis,tissue
+egg,tissue
+non-malignant breast legion,tissue
+telencephalon,tissue
+epididymis,tissue
+uterine cervix,tissue
+liver,tissue
+pancreas,tissue
+rotator cuff,tissue
+right ventricle,tissue
+longissimus thoracis,tissue
+renal carcinoma,tissue
+adipose tissue,tissue
+prostate gland ventral lobe,tissue
+renal cortex,tissue
+colon,tissue
+epidermis,tissue
+renal tissue,tissue
+skeletal muscle,tissue
+spleen,tissue
+hepatopancreas,tissue
+microglia,tissue
+white adipose tissue,tissue
+bone marrow,tissue
+rumen,tissue
+duodenum,tissue
+renal proximal tubule,tissue
+thorax,tissue
+mouse kidney,tissue
+caecum,tissue
+retina,tissue
+brain,tissue
+cerebrum,tissue
+forebrain,tissue
+dorsal skin,tissue
+gill filament,tissue
+uterus,tissue
+cecum,tissue
+gastrocnemius,tissue
+foot,tissue
+abdominal skin,tissue
+muscle,tissue
+mouse pancreas,tissue
+lung adenocarcinoma,tissue
+renal medulla,tissue
+midbrain,tissue
+corpus striatum,tissue
+hindgut,tissue
+skeletal muscle organ,tissue
+trachea,tissue
+hepatopancreas;muscle,tissue
+leg skin,tissue
+stomach,tissue
+esophagus,tissue
