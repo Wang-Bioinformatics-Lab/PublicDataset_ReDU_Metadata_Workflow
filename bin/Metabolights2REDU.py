@@ -13,6 +13,17 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 parent_dir = os.path.dirname(script_dir)
 
 def complete_and_fill_REDU_table(df):
+    """
+    Completes and fills a REDU table with default values and checks for allowed terms.
+
+    Args:
+    df: A pandas DataFrame containing the initial data.
+
+    Returns:
+    A DataFrame that has been filled with default values for missing columns,
+    with values replaced by "ML import: not available" if they are not in the
+    allowed terms or are missing/empty, and only containing specified columns.
+    """
     columns_present = [
         "MassiveID",
         "filename",
@@ -147,7 +158,7 @@ def get_enviromental_water(x):
     x = x.lower()
 
     if 'water' in x or 'sewerage' in x:
-        if 'waste' in x or 'sewerage' in x:
+        if 'waste' in x or 'sewerage' or 'sewage' in x:
             return ['environmental', 'water_waste']
         if 'surface' in x:
             return ['environmental', 'water_surface']
@@ -227,7 +238,16 @@ def safe_api_request(url, retries=3, expected_codes={200}):
 
 
 def Metabolights2REDU(study_id):
-    
+    """
+    Converts Metabolights study data to a REDU table format.
+
+    Args:
+    study_id: The ID of the Metabolights study to convert.
+
+    Returns:
+    A DataFrame in the REDU table format with processed and aligned data from the Metabolights study,
+    or an empty DataFrame if no applicable data is found.
+    """
     study_url = "https://www.ebi.ac.uk:443/metabolights/ws/studies/public/study/" + study_id
     study_details = safe_api_request(study_url)
 
