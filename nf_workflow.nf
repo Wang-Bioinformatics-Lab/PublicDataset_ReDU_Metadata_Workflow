@@ -117,6 +117,24 @@ process formatmwb {
     """
 }
 
+process runMetabolights {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    val x
+
+    output:
+    file 'Metabolights2REDU_ALL.tsv'
+
+    """
+    python $TOOL_FOLDER/Metabolights2REDU.py \
+    --study_id ALL \
+    --path_to_csvs $TOOL_FOLDER/translation_sheets_metabolights
+    """
+}
+
 process mergeAllMetadata {
     publishDir "./nf_output", mode: 'copy'
 
@@ -127,6 +145,7 @@ process mergeAllMetadata {
     input:
     file gnps_metadata
     file mwb_redu
+    file metabolights_redu
 
     output:
     file 'merged_metadata.tsv'
@@ -135,6 +154,7 @@ process mergeAllMetadata {
     python $TOOL_FOLDER/merge_metadata.py \
     $gnps_metadata \
     $mwb_redu \
+    $metabolights_redu \
     merged_metadata.tsv
     """
 }
@@ -145,9 +165,13 @@ workflow {
     (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch)
     gnps_metadata_ch = gnpsmatchName(passed_paths_ch, metadata_ch)
     
+    // Metabolomics Workbench
     mwb_metadata_ch = mwbRun(1)
     mwb_files_ch = mwbFiles(1)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
-    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch)
+    // Metabolights
+    metabolights_ch = runMetabolights(1)
+
+    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, runMetabolights)
 }
