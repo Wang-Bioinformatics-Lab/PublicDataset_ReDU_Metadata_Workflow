@@ -26,3 +26,7 @@ This script matches the GNPS metadata files to their respective CCMS peak datase
 
 To run the script, use the following command:<br>
 _python3 gnps_name_matcher.py_
+
+
+_**allowed_terms/allowed_terms.csv**_<br>
+The terms allowed in REDU are pulled from this csv. If you want to add more terms they have to be added to this csv. Also update the google sheet (https://docs.google.com/spreadsheets/d/1v71bnUd8fiXX51zuZIUAvYETWmpwFQj-M3mu4CNsHBU/edit#gid=791995663) by copy pasting the changed csv onto the google sheet so all terms are up to date. 
