@@ -10,53 +10,11 @@ from tqdm import tqdm
 
 
 
-def safe_api_request(url, retries=3, expected_codes={200}):
-
-  """
-  Safely requests JSON data from an API and checks for errors.
-
-  Args:
-    url: The URL of the API endpoint.
-    retries: The number of retries to attempt in case of errors.
-    expected_codes: A set of expected HTTP status codes indicating success.
-
-  Returns:
-    A dictionary containing the JSON data if successful,
-    or None if all retries fail.
-  """
-  for _ in range(retries):
-    try:
-      response = requests.get(url)
-      print(f"Requested: {url}")
-      if response.status_code in expected_codes:
-        data = response.json()
-        print("Request successful!")
-        return data
-      else:
-        print(f"Error: Unexpected status code {response.status_code}")
-        time.sleep(10)
-    except Exception as e:
-      print(f"Error requesting data: {e}")
-  print(f"All retries failed for {url}.")
-  return None
-
-
 def GetMetabolightsFilePaths(study_id):
-    """
-    Converts Metabolights study data to a REDU table format.
-
-    Args:
-    study_id: The ID of the Metabolights study to convert.
-
-    Returns:
-    A DataFrame in the REDU table format with processed and aligned data from the Metabolights study,
-    or an empty DataFrame if no applicable data is found.
-    """
     study_url = "https://www.ebi.ac.uk:443/metabolights/ws/studies/public/study/" + study_id
-    study_details = safe_api_request(study_url)
 
-    with open('filename.json', 'w') as file:
-        json.dump(study_details, file, indent=4)
+    response = requests.get(study_url)
+    study_details = response.json()
 
     study_assays = study_details['content']['assays']
 
@@ -96,42 +54,20 @@ def GetMetabolightsFilePaths(study_id):
         df_assays = pd.concat(aligned_dfs, ignore_index=True)
 
         # Duplicate rows if we have mzml AND raw files
-        df_study_raw = pd.DataFrame()
-        if 'Raw Spectral Data File' in df_assays.columns:
-            df_study_raw = df_assays[df_assays['Raw Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
-            df_study_raw['filepath'] = df_study_raw['Raw Spectral Data File']
-            df_study_raw.drop(columns=['Raw Spectral Data File', 'Derived Spectral Data File'], inplace=True)
-        
-        df_study_mzml = pd.DataFrame()
-        if 'Derived Spectral Data File' in df_assays.columns:
-            df_study_mzml = df_assays[df_assays['Derived Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
-            df_study_mzml['filepath'] = df_study_mzml['Derived Spectral Data File']
-            df_study_mzml.drop(columns=['Raw Spectral Data File', 'Derived Spectral Data File'], inplace=True)
+        extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
+        raw_files = df_assays[df_assays['Raw Spectral Data File'].str.lower().str.endswith(tuple(extensions), na=False)]['Raw Spectral Data File'].tolist() if 'Raw Spectral Data File' in df_assays.columns else []
+        mzml_files = df_assays[df_assays['Derived Spectral Data File'].str.lower().str.endswith(tuple(extensions), na=False)]['Derived Spectral Data File'].tolist() if 'Derived Spectral Data File' in df_assays.columns else []
 
-        if len(df_study_raw) > 0 and len(df_study_mzml) > 0:
-            df_study = pd.concat([df_study_mzml, df_study_raw], ignore_index=True)
-        elif len(df_study_raw) > 0:
-            df_study = df_study_raw
-        elif len(df_study_mzml) > 0:
-            df_study = df_study_mzml
-        elif len(df_study_raw) == 0 and len(df_study_mzml) == 0:
-            return pd.DataFrame()
-        
+        all_files = raw_files + mzml_files
 
-        df_study['filename'] = df_study['filepath'].apply(lambda x: os.path.basename(x))
+        df_output = pd.DataFrame(all_files, columns=['filepath'])
+        df_output['mtbls_id'] = study_id
+
+        return df_output
 
 
-        # List of allowed extensions
-        allowed_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
 
-        # Use a tuple of allowed extensions for the endswith method
-        df_study = df_study[df_study['filepath'].str.lower().str.endswith(tuple(allowed_extensions))]
-        
-        df_study['Metabolights_ID'] = study_id
 
-        df_study = df_study[['Metabolights_ID', 'filepath']]
-
-        return df_study
 
 
 if __name__ == "__main__":
