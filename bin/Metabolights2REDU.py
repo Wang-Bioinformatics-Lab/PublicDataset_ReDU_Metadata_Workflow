@@ -9,8 +9,6 @@ import numpy as np
 from tqdm import tqdm
 
 
-script_dir = os.path.dirname(os.path.realpath(__file__))
-parent_dir = os.path.dirname(script_dir)
 
 def complete_and_fill_REDU_table(df):
     """
@@ -53,13 +51,16 @@ def complete_and_fill_REDU_table(df):
         "qiita_sample_name"
     ]
 
+    df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str)
+
     # Add missing columns with default value "ML import: not available"
     for column in columns_present:
         if column not in df.columns:
             df[column] = "ML import: not available"
 
     # Read allowed terms from CSV
-    terms_df = pd.read_csv(os.path.join(parent_dir, 'allowed_terms', 'allowed_terms.csv'), low_memory=False)
+    terms_df = pd.read_csv(allowedTermSheet_dir, low_memory=False)
+    terms_df['YearOfAnalysis'] = terms_df['YearOfAnalysis'].astype(str)
 
     # Replace values with "ML import: not available" if they're not in the allowed terms or are missing/empty
     for column in columns_present:
@@ -189,19 +190,25 @@ def get_blanks(x):
         return [None, None]
 
 
-def get_taxonomy_id_from_name(species_name):
+def get_taxonomy_id_from_name(species_name, retries = 1):
     # Query NCBI's Entrez API to get the NCBI ID for the species based on its Latin name
     if species_name is not None and species_name != "NA" and species_name != "N/A":
-        try:
-            response = requests.get(
-                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}"
-            )
-            soup = BeautifulSoup(response.text, "xml")
-            ncbi_id = soup.find("IdList").find("Id").text
-            return ncbi_id
-        except Exception:
-            print(f'{species_name} returned no NCBI-ID')
-            return None
+        attempts = 0
+        while attempts < retries:
+            try:
+                response = requests.get(
+                    f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}"
+                )
+                soup = BeautifulSoup(response.text, "xml")
+                ncbi_id = soup.find("IdList").find("Id").text
+                return ncbi_id
+            except Exception as e:
+                print(f"Attempt {attempts + 1} failed for {species_name}: {e}")
+                attempts += 1
+                time.sleep(10)
+
+        print(f'{species_name} returned no NCBI-ID after {retries + 1} attempts')
+        return None
     else:
         return None
   
@@ -301,13 +308,17 @@ def Metabolights2REDU(study_id):
         df_study = df_assays.merge(df_samples, left_on='Assay_Sample Name', right_on='Samples_Sample Name', how='inner')
 
         # Duplicate rows if we have mzml AND raw files
-        df_study_raw = df_study[df_study['Assay_Raw Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
-        df_study_raw['filepath'] = df_study_raw['Assay_Raw Spectral Data File']
-        df_study_raw.drop(columns=['Assay_Raw Spectral Data File', 'Assay_Derived Spectral Data File'], inplace=True)
+        df_study_raw = pd.DataFrame()
+        if 'Assay_Raw Spectral Data File' in df_assays.columns:
+            df_study_raw = df_study[df_study['Assay_Raw Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
+            df_study_raw['filepath'] = df_study_raw['Assay_Raw Spectral Data File']
+            df_study_raw.drop(columns=['Assay_Raw Spectral Data File', 'Assay_Derived Spectral Data File'], inplace=True)
 
-        df_study_mzml = df_study[df_study['Assay_Derived Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
-        df_study_mzml['filepath'] = df_study_mzml['Assay_Derived Spectral Data File']
-        df_study_mzml.drop(columns=['Assay_Raw Spectral Data File', 'Assay_Derived Spectral Data File'], inplace=True)
+        df_study_mzml = pd.DataFrame()
+        if 'Assay_Derived Spectral Data File' in df_assays.columns:
+            df_study_mzml = df_study[df_study['Assay_Derived Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
+            df_study_mzml['filepath'] = df_study_mzml['Assay_Derived Spectral Data File']
+            df_study_mzml.drop(columns=['Assay_Raw Spectral Data File', 'Assay_Derived Spectral Data File'], inplace=True)
 
         if len(df_study_raw) > 0 and len(df_study_mzml) > 0:
             df_study = pd.concat([df_study_mzml, df_study_raw], ignore_index=True)
@@ -334,26 +345,25 @@ def Metabolights2REDU(study_id):
             #add NCBITaxonomy and Sampletype & SampleTypeSub1
             #######
             if 'Samples_Organism' in df_study.columns:
-                processed_organisms = {org: str(org) + '|' + str(get_taxonomy_id_from_name(org)) for org in df_study['Samples_Organism'].unique()}
-
+                processed_organisms = {org: str(get_taxonomy_id_from_name(org)) + '|' + str(org) for org in df_study['Samples_Organism'].unique()}
                 df_study['NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
                 df_study['NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='ML import: not available', regex=True)
 
                 df_study[['SampleType', 'SampleTypeSub1']] = 'ML import: not available'
                 
-                processed_taxonomy = {taxonomy.split('|')[1]: get_taxonomy_info(taxonomy.split('|')[1])
+                processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
                                     for taxonomy in df_study['NCBITaxonomy'].unique()
                                     if '|' in taxonomy and 'None' not in taxonomy}
 
-                df_study['SampleType'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[1], [pd.NA, pd.NA])[0] 
+                df_study['SampleType'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[0] 
                                                                     if '|' in x and 'None' not in x else pd.NA)
-                df_study['SampleTypeSub1'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[1], [pd.NA, pd.NA])[1]
+                df_study['SampleTypeSub1'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[1]
                                                                         if '|' in x and 'None' not in x else pd.NA)
 
                 df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(lambda row: get_blanks(row.Samples_Organism) if pd.isna(row.SampleType) else [row.SampleType, row.SampleTypeSub1], axis=1).apply(pd.Series)
                 df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(lambda row: get_enviromental_water(row.Samples_Organism) if pd.isna(row.SampleType) else [row.SampleType, row.SampleTypeSub1], axis=1).apply(pd.Series)
 
-                df_biofluid_vs_tissue = pd.read_csv(os.path.join(script_dir, 'translation_sheets_metabolights', 'biofluid_vs_tissue_Metabolights.csv'))
+                df_biofluid_vs_tissue = pd.read_csv(os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv'))
 
                 for index, row in df_study.iterrows():
                     if pd.isna(row['SampleTypeSub1']):
@@ -364,7 +374,7 @@ def Metabolights2REDU(study_id):
 
                 #add UBERON bodypart column
                 #######
-                df_bodypart = pd.read_csv(os.path.join(script_dir, 'translation_sheets_metabolights', 'bodypart_Metabolights.csv'))
+                df_bodypart = pd.read_csv(os.path.join(transSheet_dir, 'bodypart_Metabolights.csv'))
                 df_study = df_study.merge(df_bodypart[['ML', 'bodypart']], left_on='Samples_Organism part', right_on='ML', how='left')
                 df_study.rename(columns={'bodypart': 'UBERONBodyPartName'}, inplace=True)
                 df_study.drop('ML', axis=1, inplace=True)
@@ -372,7 +382,7 @@ def Metabolights2REDU(study_id):
             #add MassSpectrometer column
             #######
             if 'Assay_Instrument' in df_study.columns:
-                df_ms = pd.read_csv(os.path.join(script_dir, 'translation_sheets_metabolights', 'MassSpectrometer_Metabolights.csv'))
+                df_ms = pd.read_csv(os.path.join(transSheet_dir, 'MassSpectrometer_Metabolights.csv'))
                 df_study = df_study.merge(df_ms[['ML', 'MassSpectrometer']], left_on='Assay_Instrument', right_on='ML', how='left')
                 df_study.drop('ML', axis=1, inplace=True)
 
@@ -468,6 +478,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Give an Metabolights study ID and get a REDU table tsv.')
     parser.add_argument("--study_id", type=str, help='An Metabolights study ID such as "MTBLS1015". If "ALL" all studys are requested.', required=True)
+    parser.add_argument("--path_to_translation_sheet_csvs", "-csvs", type=str, help="Path to the translation csvs holding translations from MWB to REDU vocabulary (optional)", default="none")
+    parser.add_argument("--path_to_allowed_term_csv", type=str, help="Path to the csv with allowed REDU terms (optional)", default="none")
+    
     
     args = parser.parse_args()
 
@@ -476,6 +489,20 @@ if __name__ == "__main__":
         public_metabolights_studies = public_metabolights_studies['content']
     else:
         public_metabolights_studies = [args.study_id]
+
+    if args.path_to_translation_sheet_csvs == 'none':
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        transSheet_dir = os.path.join(script_dir, 'translation_sheets_metabolights')
+    else:
+        transSheet_dir = args.path_to_translation_sheet_csvs
+        script_dir = os.path.dirname(transSheet_dir)
+
+    if args.path_to_allowed_term_csv == 'none':
+        allowedTermSheet_dir = os.path.join(os.path.dirname(script_dir), 'allowed_terms', 'allowed_terms.csv')
+    else:
+        allowedTermSheet_dir = args.path_to_allowed_term_csv
+
+
 
 
     REDU_dataframes = []
