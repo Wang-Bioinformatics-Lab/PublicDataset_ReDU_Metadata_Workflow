@@ -1,0 +1,21 @@
+MWB,REDU
+ESI|NEGATIVE,electrospray ionization (negative)
+ESI|POSITIVE,electrospray ionization (positive)
+EI|POSITIVE,electron ionization
+EI|NEGATIVE,electron ionization
+EI|UNSPECIFIED,electron ionization
+ESI|Negative,electrospray ionization (negative)
+APCI|POSITIVE,atmospheric pressure chemical ionization (positive)
+APCI|NEGATIVE,atmospheric pressure chemical ionization (negative)
+ESI|POSITIVE/NEGATIVE,electrospray ionization (alternating)
+EI|Unspecified,electron ionization
+atmospheric pressure chemical ionization (negative),atmospheric pressure chemical ionization (negative)
+atmospheric pressure chemical ionization (positive),atmospheric pressure chemical ionization (positive)
+atmospheric pressure photoionization (negative),atmospheric pressure photoionization (negative)
+atmospheric pressure photoionization (positive),atmospheric pressure photoionization (positive)
+electrospray ionization (alternating),electrospray ionization (alternating)
+electrospray ionization (negative),electrospray ionization (negative)
+electrospray ionization (positive),electrospray ionization (positive)
+not specified,not specified
+electron ionization,electron ionization
+ML import: not available,ML import: not available

@@ -1,0 +1,58 @@
+MWB,REDU,REDU_DOIDOntologyIndex
+Chagas disease,Chagas disease,DOID:12140
+circadian rhythm disorders,circadian rhythm disorders,no DOID avaliable
+Crohn's disease,Crohn's disease,DOID:8778
+cystic fibrosis,cystic fibrosis,DOID:1485
+dental caries,dental caries,DOID:216
+diabetes mellitus,diabetes mellitus,DOID:9351
+disease NOS,disease NOS,disease NOS
+hemorrhagic stroke,hemorrhagic stroke,no DOID avaliable
+hypertension,hypertension,DOID:10763
+inflammatory bowel disease,inflammatory bowel disease,DOID:0050589
+intermittent hypoxia,intermittent hypoxia,no DOID avaliable
+ischemic stroke,ischemic stroke,no DOID avaliable
+Kawasaki disease,Kawasaki disease,DOID:13378
+lymphocytic choriomeningitis,lymphocytic choriomeningitis,DOID:12155
+no disease reported,no disease reported,no disease reported
+not applicable,not applicable,not applicable
+not specified,not specified,not applicable
+obesity,obesity,DOID:9970
+primary bacterial infectious disease,primary bacterial infectious disease,DOID:0050338
+psoriasis,psoriasis,DOID:8893
+sleep deprivation,sleep deprivation,no DOID avaliable
+ulcerative colitis,ulcerative colitis,DOID:8577
+gastric ulcer,gastric ulcer,DOID:10808
+COVID-19,COVID-19,DOID:0080600
+human immunodeficiency virus infectious disease,human immunodeficiency virus infectious disease,DOID:526
+Alzheimer's disease,Alzheimer's disease,DOID:10652
+HIV-associated neurocognitive disorder,HIV-associated neurocognitive disorder,no DOID available
+mental depression,mental depression,DOID:1596
+acquired immunodeficiency syndrome,acquired immunodeficiency syndrome,DOID:635
+ML import: not available,ML import: not available,ML import: not available
+caries,dental caries,DOID:216
+diabetes,diabetes mellitus,DOID:9351
+obese,obesity,DOID:9970
+depression,mental depression,DOID:1596
+Alzheimer,Alzheimer's disease,DOID:10652
+Alzheimers,Alzheimer's disease,DOID:10652
+COVID,COVID-19,DOID:0080600
+COVID19,COVID-19,DOID:0080600
+COVID 19,COVID-19,DOID:0080600
+Crohn disease,Crohn's disease,DOID:8778
+Crohns disease,Crohn's disease,DOID:8778
+caries-active,dental caries,DOID:216
+diabetic,diabetes mellitus,DOID:9351
+db/db diabetic,diabetes mellitus,DOID:9351
+db/db,diabetes mellitus,DOID:9351
+db/m,diabetes mellitus,DOID:9351
+diabetic treated,diabetes mellitus,DOID:9351
+diabetic untreated,diabetes mellitus,DOID:9351
+treated diabetic,diabetes mellitus,DOID:9351
+untreated diabetic,diabetes mellitus,DOID:9351
+hypertensive,hypertension,DOID:10763
+IBD,inflammatory bowel disease,DOID:0050589
+hypoxia,intermittent hypoxia,no DOID avaliable
+Overweight/Obese,obesity,DOID:9970
+Alzheimer’s disease model,Alzheimer's disease,DOID:10652
+Alzheimer's disease dementia,Alzheimer's disease,DOID:10652
+Alzheimer patient,Alzheimer's disease,DOID:10652

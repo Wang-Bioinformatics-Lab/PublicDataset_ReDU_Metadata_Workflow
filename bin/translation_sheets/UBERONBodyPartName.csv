@@ -1,0 +1,162 @@
+MWB,REDU,REDU_UBERONOntologyIndex
+adrenal gland,adrenal gland,UBERON:0002369
+amniotic fluid,amniotic fluid,UBERON:0000173
+anal region,anal region,UBERON:0001353
+arm skin,arm skin,UBERON:0002427
+axilla skin,axilla skin,UBERON:0015474
+bile,bile,UBERON:0001970
+bladder organ,bladder organ,UBERON:0018707
+blood,blood,UBERON:0000178
+cord blood,blood,UBERON:0000178
+blood plasma,blood plasma,UBERON:0001969
+plasma,blood plasma,UBERON:0001969
+pooled plasma,blood plasma,UBERON:0001969
+Nistplasma,blood plasma,UBERON:0001969
+baboon plasma,blood plasma,UBERON:0001969
+Pure Plasma,blood plasma,UBERON:0001969
+Baseline plasma,blood plasma,UBERON:0001969
+Maternal plasma,blood plasma,UBERON:0001969
+First trimester maternal plasma,blood plasma,UBERON:0001969
+Delivery maternal plasma,blood plasma,UBERON:0001969
+red cross plasma,blood plasma,UBERON:0001969
+NIST PLASMA,blood plasma,UBERON:0001969
+CHEAR Plasma,blood plasma,UBERON:0001969
+Mouse plasma,blood plasma,UBERON:0001969
+blood serum,blood serum,UBERON:0001977
+serum,blood serum,UBERON:0001977
+pooled serum,blood serum,UBERON:0001977
+Tail Vein Serum,blood serum,UBERON:0001977
+Systemic Serum,blood serum,UBERON:0001977
+Portal Vein Serum,blood serum,UBERON:0001977
+Blood (serum),blood serum,UBERON:0001977
+Blood (plasma),blood plasma,UBERON:0001969
+Blood (whole),blood,UBERON:0000178
+Blood. Plasma was isolated for MS analysis.,blood plasma,UBERON:0001969
+brain,brain,UBERON:0000955
+Fetal Male brain,brain,UBERON:0000955
+Fetal Female brain,brain,UBERON:0000955
+hindbrain,brain,UBERON:0000955
+"hindbrain (pons, medulla, brainstem, cerebellum)",brain,UBERON:0000955
+hippocampus,brain,UBERON:0000955
+forebrain,brain,UBERON:0000955
+WT Brain,brain,UBERON:0000955
+HIP Brain,brain,UBERON:0000955
+Medulla,brain,UBERON:0000955
+Thalamus,brain,UBERON:0000955
+Pons,brain,UBERON:0000955
+Olfactory bulb,brain,UBERON:0000955
+Olfact. Area,brain,UBERON:0000955
+Olfactory area,brain,UBERON:0000955
+Midbrain,brain,UBERON:0000955
+Iso Cortex,brain,UBERON:0000955
+Hypothalamus,brain,UBERON:0000955
+Fiber Tracts,brain,UBERON:0000955
+Cortical Subplate,brain,UBERON:0000955
+brain homogenate,brain,UBERON:0000955
+Cerebral Nuclei,brain,UBERON:0000955
+Cerebellum,brain,UBERON:0000955
+brain - cerebral hemisphere,cerebral cortex,UBERON:0000956
+Basal ganglia,brain,UBERON:0000955
+caecum,caecum,UBERON:0001153
+Cecum,caecum,UBERON:0001153
+caecal,caecum,UBERON:0001153
+calcareous tooth,calcareous tooth,UBERON:0001091
+cardiac vein,cardiac vein,UBERON:0004148
+cerebral cortex,cerebral cortex,UBERON:0000956
+cerebrospinal fluid,cerebrospinal fluid,UBERON:0001359
+csf,cerebrospinal fluid,UBERON:0001359
+colon,colon,UBERON:0001155
+Colon Mucosal Tissue,colon,UBERON:0001155
+intestine,colon,UBERON:0001155
+small intestine tissue,colon,UBERON:0001155
+compound eye,compound eye,UBERON:0000018
+coronary artery,coronary artery,UBERON:0001621
+digestive tract,digestive tract,UBERON:0001555
+duodenum,duodenum,UBERON:0002114
+duod,duodenum,UBERON:0002114
+ear,ear,UBERON:0001690
+esophagus,esophagus,UBERON:0001043
+feces,feces,UBERON:0001988
+fecal,feces,UBERON:0001988
+Stool,feces,UBERON:0001988
+gall bladder,gall bladder,UBERON:0002110
+gill filament,gill filament,UBERON:0009120
+head or neck skin,head or neck skin,UBERON:0012180
+heart,heart,UBERON:0000948
+ileum,ileum,UBERON:0002116
+mouse ileum,ileum,UBERON:0002116
+jejunal epithelium,jejunal epithelium,UBERON:0000400
+jejunum,jejunum,UBERON:0002115
+kidney,kidney,UBERON:0002113
+kidney tissue,kidney,UBERON:0002113
+lamina,lamina,UBERON:0000957
+larval thorax,larval thorax,UBERON:6001741
+liver,liver,UBERON:0002107
+baboon liver,liver,UBERON:0002107
+Maternal Liver,liver,UBERON:0002107
+Fetal Male Liver,liver,UBERON:0002107
+liver tissue,liver,UBERON:0002107
+Fetal Female Liver,liver,UBERON:0002107
+tissue (liver),liver,UBERON:0002107
+Mouse liver,liver,UBERON:0002107
+Healthy Control Liver Tissue,liver,UBERON:0002107
+lower digestive tract,lower digestive tract,UBERON:0004907
+lung,lung,UBERON:0002048
+lung airways,lung,UBERON:0002048
+bronchoalveolar lavage,lung,UBERON:0002048
+lymph,lymph,UBERON:0002391
+midgut,midgut,UBERON:0001045
+milk,milk,UBERON:0001913
+ML import: not available,ML import: not available,ML import: not available
+multicellular organism,multicellular organism,UBERON:0000468
+muscle of Aristotle's lantern,muscle of Aristotle's lantern,UBERON:0012621
+nasal cavity,nasal cavity,UBERON:0001707
+not applicable,not applicable,not applicable
+not specified,not specified,not applicable
+nuptial pad,nuptial pad,UBERON:0012243
+ocular surface region,ocular surface region,UBERON:0010409
+olfactory rosette,olfactory rosette,UBERON:2001428
+oral cavity,oral cavity,UBERON:0000167
+organism substance,organism substance,UBERON:0000463
+ovary,ovary,UBERON:0000992
+pancreas,pancreas,UBERON:0001264
+pes,pes,UBERON:0002387
+post-embryonic organism,post-embryonic organism,UBERON:0009953
+pulmonary artery,pulmonary artery,UBERON:0002012
+pulmonary vein,pulmonary vein,UBERON:0002016
+renal cortex artery,renal cortex artery,UBERON:0005268
+renal medulla,renal medulla,UBERON:0000362
+retina,retina,UBERON:0000966
+saliva,saliva,UBERON:0001836
+skeletal muscle organ,skeletal muscle organ,UBERON:0014892
+Muscle,skeletal muscle organ,UBERON:0014892
+muscles,skeletal muscle organ,UBERON:0014892
+"muscle, skeletal",skeletal muscle organ,UBERON:0014892
+muscle tissue,skeletal muscle organ,UBERON:0014892
+skin of back,skin of back,UBERON:0001068
+skin of body,skin of body,UBERON:0002097
+skin of leg,skin of leg,UBERON:0001511
+skin of manus,skin of manus,UBERON:0001519
+skin of pes,skin of pes,UBERON:0001513
+skin of prepuce of penis,skin of prepuce of penis,UBERON:0001471
+Foreskin,skin of prepuce of penis,UBERON:0001471
+skin of trunk,skin of trunk,UBERON:0001085
+spleen,spleen,UBERON:0002106
+sputum,sputum,UBERON:0007311
+stem of Y-shaped fibrocartilage skeleton of ventral pouch,stem of Y-shaped fibrocartilage skeleton of ventral pouch,UBERON:0016628
+stomach,stomach,UBERON:0000945
+sweat,sweat,UBERON:0001089
+thymus,thymus,UBERON:0002370
+trachea,trachea,UBERON:0003126
+upper digestive tract,upper digestive tract,UBERON:0004908
+urine,urine,UBERON:0001088
+Patient urine,urine,UBERON:0001088
+NIST Smoker's Urine,urine,UBERON:0001088
+CHEAR Pooled Urine,urine,UBERON:0001088
+uterine cervix,uterine cervix,UBERON:0000002
+uterus,uterus,UBERON:0000995
+vagina,vagina,UBERON:0000996
+vaginal epithelium,vagina,UBERON:0000996
+vitreous humor,vitreous humor,UBERON:0001797
+water vascular system,water vascular system,UBERON:0008251
+zygote stage,zygote stage,UBERON:0000106

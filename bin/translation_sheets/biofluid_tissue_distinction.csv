@@ -1,0 +1,76 @@
+sampletype,tissue_vs_biofluid
+adrenal gland,tissue
+anal region,tissue
+arm skin,tissue
+axilla skin,tissue
+bile,biofluid
+bladder organ,tissue
+blood,biofluid
+blood plasma,biofluid
+blood serum,biofluid
+brain,tissue
+caecum,tissue
+calcareous tooth,tissue
+cardiac vein,tissue
+colon,tissue
+coronary artery,tissue
+digestive tract,tissue
+duodenum,tissue
+ear,tissue
+esophagus,tissue
+gall bladder,tissue
+head or neck skin,tissue
+heart,tissue
+ileum,tissue
+jejunum,tissue
+kidney,tissue
+liver,tissue
+lower digestive tract,tissue
+lung,tissue
+midgut,tissue
+milk,biofluid
+nasal cavity,tissue
+oral cavity,tissue
+ovary,tissue
+pancreas,tissue
+pes,tissue
+pulmonary artery,tissue
+pulmonary vein,tissue
+saliva,biofluid
+skin of body,tissue
+skin of leg,tissue
+skin of manus,tissue
+skin of pes,tissue
+skin of trunk,tissue
+spleen,tissue
+sputum,tissue
+stomach,tissue
+thymus,tissue
+trachea,tissue
+urine,biofluid
+uterine cervix,tissue
+uterus,tissue
+vagina,tissue
+cerebrospinal fluid,biofluid
+sweat,biofluid
+lymph,biofluid
+amniotic fluid,biofluid
+cerebral cortex,tissue
+compound eye,tissue
+gill filament,tissue
+jejunal epithelium,tissue
+lamina,tissue
+larval thorax,tissue
+multicellular organism,tissue
+muscle of Aristotle's lantern,tissue
+nuptial pad,tissue
+ocular surface region,tissue
+olfactory rosette,tissue
+post-embryonic organism,tissue
+renal cortex artery,tissue
+renal medulla,tissue
+retina,tissue
+skeletal muscle organ,tissue
+skin of prepuce of penis,tissue
+vitreous humor,tissue
+zygote stage,tissue
