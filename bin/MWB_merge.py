@@ -25,7 +25,7 @@ def main():
 
     print(files_df)
 
-    files_df["short_filename"] = files_df["FILENAME"].apply(lambda x: os.path.basename(x))
+    files_df["short_filename"] = files_df["filename"].apply(lambda x: os.path.basename(x))
     files_df["key"] = files_df["STUDY_ID"] + ":" + files_df["short_filename"]
 
     metadata_df["key"] = metadata_df["MassiveID"] + ":" + metadata_df["filename"]

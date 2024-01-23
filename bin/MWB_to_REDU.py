@@ -53,9 +53,8 @@ def _get_metabolomicsworkbench_files(dataset_accession):
 
         # Generate USI column
         workbench_df["USI"] = workbench_df["URL"].apply(
-            lambda url: "mzspec:{}:{}-{}".format(
+            lambda url: "mzspec:{}:{}".format(
                 dataset_accession,
-                parse_qs(urlparse(url).query).get('A', [None])[0],
                 parse_qs(urlparse(url).query).get('F', [None])[0]
             )
         )
@@ -304,52 +303,34 @@ def get_rawFile_names(df, key_vars, new_col):
     # Extract the base key name without the number
     df['base_key'] = df['Key'].str.extract(pattern, expand=False)[0]
 
-    # Filter the DataFrame to get rows where 'base_key' is not null (matches the pattern)
-    key_df = df[df['base_key'].notnull()].copy()
+    filename_mapping = df[df['base_key'].notna()].set_index('script_id')['Value'].to_dict()
 
-    # Create a new DataFrame to hold the expanded rows
-    expanded_rows = []
-
-    # Iterate over each filename group
-    for filename, group in key_df.groupby('filename'):
-        # Iterate over each base_key within the group
-        for base_key in group['base_key'].unique():
-            # Create a row for each value associated with the base_key
-            for value in group[group['base_key'] == base_key]['Value']:
-                new_row = df[df['filename'] == filename].iloc[0].to_dict()
-                new_row[new_col] = value  # Add the new column
-                expanded_rows.append(new_row)
-
-    # Create a new DataFrame from the expanded rows
-    expanded_df = pd.DataFrame(expanded_rows)
-
-    # Drop duplicate rows, if any
-    expanded_df.drop_duplicates(inplace=True)
+    # Apply the mapping to create the new filename column
+    df[new_col] = df['script_id'].map(filename_mapping)
 
     # Handle numeric conversion for specific columns
     if new_col in ['Latitude', 'Longitude']:
-        expanded_df[new_col] = pd.to_numeric(expanded_df[new_col], errors='coerce')
+        df[new_col] = pd.to_numeric(df[new_col], errors='coerce')
     else:
-        expanded_df[new_col].fillna(value='NA', inplace=True)
+        df[new_col].fillna(value='NA', inplace=True)
 
     # Drop the temporary 'base_key' column
-    expanded_df.drop('base_key', axis=1, inplace=True)
-
-    return expanded_df
+    df.drop('base_key', axis=1, inplace=True)
+    return df
 
 def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, path_to_csvs='translation_sheets'):
     data_list = []
-    for item in data:
+    for id, item in enumerate(data):
         subject_id = item.get('Subject ID', 'NA')
         sample_id = item.get('Sample ID', 'NA')
         factors = item.get('Factors', {})
         additional_data = item.get('Additional sample data', {})
 
         for key, value in factors.items():
-            data_list.append([subject_id, sample_id, key, value])
+            data_list.append([id, subject_id, sample_id, key, value])
         for key, value in additional_data.items():
-            data_list.append([subject_id, sample_id, key, value])
-    df = pd.DataFrame(data_list, columns=['SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value'])
+            data_list.append([id, subject_id, sample_id, key, value])
+    df = pd.DataFrame(data_list, columns=['script_id', 'SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value'])
     df['Key'] = df['Key'].str.lower()
 
 
@@ -376,9 +357,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
             df = df.drop(columns=['filename_base'])
 
     df['Value'] = df['Value'].str.lower()
-
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
-    df = get_key_info_into_outer(df, key_vars=["gender", "sex"], new_col="MWB_sex")
+    df = get_key_info_into_outer(df, key_vars=["gender", "sex", "gender (f/m)", "biological_sex"], new_col="MWB_sex")
     df = get_key_info_into_outer(df, key_vars=["age", "age (years)"], new_col="MWB_age")
     df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country"],
                                  new_col="Country")
@@ -439,7 +419,6 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
         raise ValueError("This is not an MS analysis!")
 
     df_outer = pd.DataFrame(entry, index=[0])
-
     if entry['TAXONOMY_ID'] == 'NA' and entry['SUBJECT_SPECIES'] != 'NA':
         df_outer['TAXONOMY_ID'] = df_outer['SUBJECT_SPECIES'].apply(lambda x: get_taxonomy_id_from_name(x))
     df_outer['NCBITaxonomy'] = df_outer['TAXONOMY_ID'] + '|' + df_outer['SUBJECT_SPECIES']
@@ -487,7 +466,6 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                                                                'InternalStandardsUsed',
                                                                'SampleExtractionMethod',
                                                                'NCBITaxonomy',
-                                                               'ChromatographyAndPhase',
                                                                'SampleCollectionMethod',
                                                                'IonizationSourceAndPolarity',
                                                                'Country'],
@@ -504,9 +482,18 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
         column_and_csv_names = column_and_csv_names_outer
     elif case == 'inner':
         column_and_csv_names = column_and_csv_names_inner
+        present_keys = MWB_table[['Key', 'Value']].copy()
+        present_keys['Value'] = present_keys['Value'].apply(lambda x: 'numeric' if pd.to_numeric(x, errors='ignore') != x else x)
+        present_keys.drop_duplicates(inplace=True)
     elif case == 'fill':
         column_and_csv_names = [x[0] for x in fill_col_from]
         origin_cols = [x[1] for x in fill_col_from]
+    if True:
+        if os.path.exists('unmatched_values.json'):
+            with open('unmatched_values.json', 'r') as file:
+                existing_unmatched_values = json.load(file)
+        else:
+            existing_unmatched_values = {key: {} for key in column_and_csv_names_outer +  ['inner']}
 
     for index, col_csv_name in enumerate(column_and_csv_names):
 
@@ -518,22 +505,38 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
         if case == 'outer':
             MWB_table[col_csv_name] = MWB_table[col_csv_name].str.lower()
             MWB_table = pd.merge(MWB_table, df_translations, left_on=col_csv_name, right_on='MWB', how='left')
+
+            unmatched_cases = MWB_table[(MWB_table['REDU'].isna()) & (MWB_table[col_csv_name].notna()) & (MWB_table[col_csv_name] != 'na')][col_csv_name].unique().tolist()
+            for item in unmatched_cases:
+                if item in existing_unmatched_values[col_csv_name]:
+                    existing_unmatched_values[col_csv_name][item] += 1
+                else:
+                    existing_unmatched_values[col_csv_name][item] = 1
+
             MWB_table = MWB_table.drop(columns=['MWB', col_csv_name])
             MWB_table = MWB_table.rename(columns={'REDU': col_csv_name})
 
         if case == 'inner':
-            df_translations['MWB'] = df_translations['MWB'].str.lower()
             MWB_table['match'] = MWB_table['Value'].isin(df_translations['MWB'].tolist())
             MWB_table = MWB_table.merge(df_translations, left_on='Value', right_on='MWB', how='left')
+            
+
+            usedValues_table = MWB_table[(MWB_table['REDU'].notna()) & (MWB_table['Value'].notna()) & (MWB_table['Value'] != '-')][['Key', 'Value']].copy()
+            usedValues_table['Value'] = usedValues_table['Value'].apply(lambda x: 'numeric' if pd.to_numeric(x, errors='ignore') != x else x)
+            merged_df = present_keys.merge(usedValues_table, on=['Key', 'Value'], how='outer', indicator=True)
+            present_keys = merged_df[merged_df['_merge'] == 'left_only'].drop(columns=['_merge'])
+            present_keys = present_keys[~present_keys['Value'].str.contains('\.', na=False)]
+            present_keys.reset_index(drop=True, inplace=True)
+
             MWB_table[col_csv_name] = MWB_table.groupby('filename')['REDU'].transform('first')
+
             if col_csv_name == 'UBERONBodyPartName':
-                MWB_table['UBERONOntologyIndex'] = MWB_table.groupby('filename')['REDU_UBERONOntologyIndex'].transform(
-                    'first')
+                MWB_table['UBERONOntologyIndex'] = MWB_table.groupby('filename')['REDU_UBERONOntologyIndex'].transform('first')
                 MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
             if col_csv_name == 'DOIDCommonName':
-                MWB_table['DOIDOntologyIndex'] = MWB_table.groupby('filename')['REDU_DOIDOntologyIndex'].transform(
-                    'first')
+                MWB_table['DOIDOntologyIndex'] = MWB_table.groupby('filename')['REDU_DOIDOntologyIndex'].transform('first')
                 MWB_table = MWB_table.drop(columns=['REDU_DOIDOntologyIndex'])
+
             MWB_table = MWB_table.drop(['MWB', 'match', 'REDU'], axis=1)
 
         if case == 'fill':
@@ -542,10 +545,30 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
             MWB_table['REDU'] = MWB_table['REDU'].fillna('ML import: not available')
             MWB_table[col_csv_name] = MWB_table[col_csv_name].fillna(MWB_table['REDU'])
             if col_csv_name == 'UBERONBodyPartName':
-                MWB_table['UBERONOntologyIndex'] = MWB_table['UBERONOntologyIndex'].fillna(
-                    MWB_table['REDU_UBERONOntologyIndex'])
                 MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
-            MWB_table = MWB_table.drop(columns=['MWB', 'REDU', origin_cols[index]])
+                MWB_table = MWB_table.drop(columns=['MWB', 'REDU', origin_cols[index]])
+
+    if case == 'inner':
+        for index, row in present_keys.iterrows():
+            key = row['Key']
+            value = row['Value']
+
+            # Check if the key from the 'Key' column is present in the 'inner' key of the dictionary
+            if key in existing_unmatched_values['inner']:
+                # Check if the value from the 'Value' column is present in the sub-dictionary
+                if value in existing_unmatched_values['inner'][key]:
+                    existing_unmatched_values['inner'][key][value] += 1
+                else:
+                    # If the value is not present, add it with a count of 1
+                    existing_unmatched_values['inner'][key][value] = 1
+            else:
+                # If the key is not present, add it and initialize with the value and count of 1
+                existing_unmatched_values['inner'][key] = {value: 1}
+
+    if len(existing_unmatched_values) > 0:
+        with open('unmatched_values.json', 'w') as file:
+            json.dump(existing_unmatched_values, file, indent = 4)
+
 
     return MWB_table
 

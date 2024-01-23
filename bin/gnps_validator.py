@@ -14,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description='GNPS Validator')
     parser.add_argument('file_paths', help='File Paths')
     parser.add_argument('metadata_folder')
+    parser.add_argument("--AllowedTermJson_path", type=str, help="Path to json with allowed terms")
     args = parser.parse_args()
 
     # Print message to indicate importing is done
@@ -33,11 +34,11 @@ def main():
     for file_name in file_names:
         # Call the metadata_validator.py script and pass the file name as an argument
         import metadata_validator
-
-        try:
-            passes_validation, failures, errors_list, valid_rows, total_rows = metadata_validator.perform_validation(os.path.join(args.metadata_folder, os.path.basename(file_name)))
-        except:
-            pass
+        
+        #try:
+        passes_validation, failures, errors_list, valid_rows, total_rows = metadata_validator.perform_validation(os.path.join(args.metadata_folder, os.path.basename(file_name)), args.AllowedTermJson_path)
+        #except:
+        #    pass
 
         if passes_validation:
             passed_file_names.append(file_name)

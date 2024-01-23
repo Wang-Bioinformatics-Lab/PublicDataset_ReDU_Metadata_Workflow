@@ -36,7 +36,8 @@ process validateMetadata {
     """
     python $TOOL_FOLDER/gnps_validator.py \
     file_paths.tsv \
-    metadata_folder
+    metadata_folder \
+    --AllowedTermJson_path $TOOL_FOLDER/allowed_terms/allowed_terms.json
     """
 }
 
@@ -79,6 +80,26 @@ process mwbRun {
     """
 }
 
+process validateMetadata_MWB {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    file 'file_paths.tsv'
+    file 'metadata_folder' 
+
+    output:
+    file 'passed_file_names.tsv'
+
+    """
+    python $TOOL_FOLDER/gnps_validator.py \
+    file_paths.tsv \
+    metadata_folder \
+    --AllowedTermJson_path $TOOL_FOLDER/allowed_terms/allowed_terms.json
+    """
+}
+
 process mwbFiles {
     publishDir "./nf_output", mode: 'copy'
 
@@ -117,7 +138,8 @@ process formatmwb {
     """
 }
 
-process runMetabolights {
+
+process mlRun {
     publishDir "./nf_output", mode: 'copy'
 
     conda "$TOOL_FOLDER/conda_env.yml"
@@ -130,10 +152,49 @@ process runMetabolights {
 
     """
     python $TOOL_FOLDER/Metabolights2REDU.py \
-    --study_id ALL \
-    --path_to_csvs $TOOL_FOLDER/translation_sheets_metabolights
+    --study_id ALL  \
+    --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
+    --path_to_allowed_term_csv $TOOL_FOLDER/allowed_terms/allowed_terms.csv
     """
 }
+
+process mlFiles {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    val x
+
+    output:
+    file 'MetabolightsFilePaths_ALL.tsv'
+
+    """
+    python $TOOL_FOLDER/GetAllMetabolightsFiles.py \
+    --study_id ALL
+    """
+}
+
+process formatml {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    file ml_metadata
+    file ml_files
+
+    output:
+    file 'ml_redu.tsv'
+
+    """
+    python $TOOL_FOLDER/ML_merge.py \
+    $ml_metadata \
+    $ml_files \
+    ml_redu.tsv
+    """
+}
+
 
 process mergeAllMetadata {
     publishDir "./nf_output", mode: 'copy'
@@ -171,7 +232,9 @@ workflow {
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    metabolights_ch = runMetabolights(1)
+    ml_metadata_ch = mlRun(1)
+    ml_files_ch = mlFiles(1)
+    ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
-    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, runMetabolights)
+    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch)
 }

@@ -4,6 +4,7 @@ import os
 import argparse
 import csv
 import pandas as pd
+import json
 from vladiate import Vlad
 from vladiate.validators import UniqueValidator, SetValidator, Ignore, IntValidator, RangeValidator, NotEmptyValidator
 from vladiate.inputs import LocalFile
@@ -30,10 +31,12 @@ def rewrite_metadata(metadata_filename):
     metadata_df = pd.DataFrame(metadata_list)
     metadata_df.to_csv(metadata_filename, sep="\t", index=False)
 
-def perform_validation(filename, path_to_allowed_term_csv):
-    
-    terms_df = pd.read_csv(path_to_allowed_term_csv, low_memory=False)
 
+def perform_validation(filename, path_to_allowed_terms):
+
+    with open(path_to_allowed_terms, 'r', encoding='utf-8') as jsonfile:
+        terms = json.load(jsonfile)
+    print(list(set(terms['SampleType']["allowed_values"])))
     validators = {
         'filename': [
             NotEmptyValidator()
@@ -42,53 +45,53 @@ def perform_validation(filename, path_to_allowed_term_csv):
             Ignore()
         ],
         'SampleType' : [
-            SetValidator(valid_set= terms_df['SampleType'].dropna().loc[terms_df['SampleType'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['SampleType']["allowed_values"])))
         ],
         'SampleTypeSub1' : [
-            SetValidator(valid_set= terms_df['SampleTypeSub1'].dropna().loc[terms_df['SampleTypeSub1'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['SampleTypeSub1']["allowed_values"])))
         ],
         'NCBITaxonomy' : [
-            SetValidator(valid_set= terms_df['NCBITaxonomy'].dropna().loc[terms_df['NCBITaxonomy'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['NCBITaxonomy']["allowed_values"])))
         ],
         'YearOfAnalysis' : [
             IntValidator(),
             RangeValidator(low=1999, high=2030)
         ],
         'SampleCollectionMethod' : [
-            SetValidator(valid_set= terms_df['SampleCollectionMethod'].dropna().loc[terms_df['SampleCollectionMethod'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['SampleCollectionMethod']["allowed_values"]))) 
         ],
         "SampleExtractionMethod" : [
-            SetValidator(valid_set= terms_df['SampleExtractionMethod'].dropna().loc[terms_df['SampleExtractionMethod'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['SampleExtractionMethod']["allowed_values"]))) 
         ],
         'InternalStandardsUsed' : [
-            SetValidator(valid_set= terms_df['InternalStandardsUsed'].dropna().loc[terms_df['InternalStandardsUsed'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['InternalStandardsUsed']["allowed_values"]))) 
         ],
         'MassSpectrometer' : [
-            SetValidator(valid_set= terms_df['MassSpectrometer'].dropna().loc[terms_df['MassSpectrometer'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['MassSpectrometer']["allowed_values"]))) 
         ],        
         'IonizationSourceAndPolarity' : [
-            SetValidator(valid_set= terms_df['IonizationSourceAndPolarity'].dropna().loc[terms_df['IonizationSourceAndPolarity'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['IonizationSourceAndPolarity']["allowed_values"])))
         ],
         'ChromatographyAndPhase' : [
-            SetValidator(valid_set= terms_df['ChromatographyAndPhase'].dropna().loc[terms_df['ChromatographyAndPhase'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['ChromatographyAndPhase']["allowed_values"]))) 
         ],
         'BiologicalSex': [
-            SetValidator(valid_set= terms_df['BiologicalSex'].dropna().loc[terms_df['BiologicalSex'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['BiologicalSex']["allowed_values"]))) 
         ],
         'Country': [
-            SetValidator(valid_set= terms_df['Country'].dropna().loc[terms_df['Country'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['Country']["allowed_values"])))  
         ],
         'HumanPopulationDensity' : [
-            SetValidator(valid_set= terms_df['HumanPopulationDensity'].dropna().loc[terms_df['HumanPopulationDensity'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['HumanPopulationDensity']["allowed_values"])))
         ],
          'LifeStage' : [
-            SetValidator(valid_set= terms_df['LifeStage'].dropna().loc[terms_df['LifeStage'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['LifeStage']["allowed_values"]))) 
         ],
         'UBERONOntologyIndex' : [
-            SetValidator(valid_set= terms_df['UBERONOntologyIndex'].dropna().loc[terms_df['UBERONOntologyIndex'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['UBERONOntologyIndex']["allowed_values"]))) 
         ],
         'DOIDOntologyIndex' : [
-            SetValidator(valid_set= terms_df['DOIDOntologyIndex'].dropna().loc[terms_df['DOIDOntologyIndex'] != ""].unique().tolist())
+            SetValidator(valid_set= list(set(terms['DOIDOntologyIndex']["allowed_values"])))  
         ]
     }
 
@@ -160,9 +163,9 @@ def main():
     parser.add_argument('inputmetadata', help='inputmetadata')
     args = parser.parse_args()
 
-    path_to_allowed_term_csv = '/home/yasin/yasin/projects/PublicDataset_ReDU_Metadata_Workflow/allowed_terms/allowed_terms.csv'
+    path_to_allowed_terms = '/home/yasin/yasin/projects/PublicDataset_ReDU_Metadata_Workflow/allowed_terms/allowed_terms.json'
 
-    passes_validation, failures, errors_list, valid_rows, total_rows = perform_validation(args.inputmetadata, path_to_allowed_term_csv)
+    passes_validation, failures, errors_list, valid_rows, total_rows = perform_validation(args.inputmetadata, path_to_allowed_terms)
     no_validation_lines = [int(error["line_number"]) for error in errors_list]
 
     output_list = ["MING", os.path.basename(args.inputmetadata), str(total_rows), str(len(valid_rows))]
