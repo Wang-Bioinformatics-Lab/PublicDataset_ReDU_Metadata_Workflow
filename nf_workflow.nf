@@ -76,7 +76,9 @@ process mwbRun {
     """
     python $TOOL_FOLDER/MWB_to_REDU.py \
     --study_id ALL \
-    --path_to_csvs $TOOL_FOLDER/translation_sheets
+    --path_to_csvs $TOOL_FOLDER/translation_sheets \
+    --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json \
+    --duplicate_raw_file_handling keep_pols_dupl
     """
 }
 
@@ -134,7 +136,7 @@ process formatmwb {
     python $TOOL_FOLDER/MWB_merge.py \
     $mwb_metadata \
     $mwb_files \
-    mwb_redu.tsv
+    mwb_redu.tsv 
     """
 }
 
@@ -154,7 +156,7 @@ process mlRun {
     python $TOOL_FOLDER/Metabolights2REDU.py \
     --study_id ALL  \
     --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
-    --path_to_allowed_term_csv $TOOL_FOLDER/allowed_terms/allowed_terms.csv
+    --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json
     """
 }
 
@@ -191,7 +193,7 @@ process formatml {
     python $TOOL_FOLDER/ML_merge.py \
     $ml_metadata \
     $ml_files \
-    ml_redu.tsv
+    ml_redu.tsv 
     """
 }
 

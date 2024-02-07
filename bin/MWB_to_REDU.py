@@ -8,7 +8,11 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 import json
 import time
-
+from extend_allowed_terms import adapt_allowed_terms 
+from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from REDU_conversion_functions import update_unassigned_terms
+from REDU_conversion_functions import get_taxonomy_id_from_name
+import traceback
 
 def handle_duplicates(ordered_pairs):
     """
@@ -107,7 +111,7 @@ def get_taxonomy_id_from_name(species_name):
         return None
 
 
-def get_taxonomy_info(ncbi_id, cell_culture_key1, cell_culture_key2):
+def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2=''):
     if ncbi_id is not None and ncbi_id != "NA":
         cell_culture_key_words = ["cell", "media", "culture"]
         try:
@@ -348,13 +352,25 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
         raw_file_name_df = raw_file_name_df.rename(columns={'filename': 'filename_raw_path'})
         df = get_rawFile_names(df, key_vars=expected_raw_file_keys, new_col="filename_raw")
 
-        if bool(set(list(df['filename_raw'])) & set(list(raw_file_name_df['filename_base']))):
-            df = df.merge(raw_file_name_df, left_on='filename_raw', right_on='filename_base', how='left')
+
+        raw_file_name_df['filename_base_lower'] = raw_file_name_df['filename_base'].str.lower()
+        df['filename_raw_lower'] = df['filename_raw'].str.lower()
+        df['filename_lower'] = df['filename'].str.lower()
+
+        if bool(set(df['filename_raw_lower']) & set(raw_file_name_df['filename_base_lower'])):
+            df = df.merge(raw_file_name_df, left_on='filename_raw_lower', right_on='filename_base_lower', how='left')
+            df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
+        elif bool(set(df['filename_lower']) & set(raw_file_name_df['filename_base_lower'])):
+            df = df.merge(raw_file_name_df, left_on='filename_lower', right_on='filename_base_lower', how='left')
+            df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
+
+    
         else:
             raw_file_name_df['filename_base_wo_extension'] = raw_file_name_df['filename_base'].str.split('.').str[0]
-            df = df.merge(raw_file_name_df, left_on='filename_raw', right_on='filename_base_wo_extension', how='left')
-            df['filename_raw'] = df['filename_base']
+            df = df.merge(raw_file_name_df, left_on='filename_raw_lower', right_on='filename_base_wo_extension', how='left')
+            df['filename_raw_lower'] = df['filename_base']
             df = df.drop(columns=['filename_base'])
+
 
     df['Value'] = df['Value'].str.lower()
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
@@ -390,7 +406,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS_collapsed_factors(data):
     return df
 
 
-def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_csvs = 'translation_sheets'):
+def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_csvs = 'translation_sheets', **kwargs):
     entry = {
         'ANALYSIS_TYPE': MWB_mwTAB_dict.get('ANALYSIS', {}).get('ANALYSIS_TYPE', 'NA'),
         'PROJECT_TITLE': MWB_mwTAB_dict.get('PROJECT', {}).get('PROJECT_TITLE', 'NA'),
@@ -419,10 +435,40 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
         raise ValueError("This is not an MS analysis!")
 
     df_outer = pd.DataFrame(entry, index=[0])
-    if entry['TAXONOMY_ID'] == 'NA' and entry['SUBJECT_SPECIES'] != 'NA':
-        df_outer['TAXONOMY_ID'] = df_outer['SUBJECT_SPECIES'].apply(lambda x: get_taxonomy_id_from_name(x))
-    df_outer['NCBITaxonomy'] = df_outer['TAXONOMY_ID'] + '|' + df_outer['SUBJECT_SPECIES']
-    df_outer['ChromatographyAndPhase'] = df_outer['CHROMATOGRAPHY_TYPE'] + '|' + df_outer['COLUMN_NAME']
+
+    #add NCBITaxonomy
+    #######
+    unique_species = set(df_outer['SUBJECT_SPECIES'])
+    processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict) for species in unique_species}
+    df_outer['NCBITaxonomy'] = df_outer['SUBJECT_SPECIES'].map(processed_species)
+
+
+    #add LC method
+    #######
+    if 'CHROMATOGRAPHY_TYPE' in df_outer.columns:
+        df_outer['CHROMATOGRAPHY_TYPE'].fillna('', inplace=True)
+        df_outer['CHROMATOGRAPHY_TYPE'] = df_outer['CHROMATOGRAPHY_TYPE'].str.lower()
+        df_outer['ChromatographyAndPhase'] = ''
+        df_outer.loc[df_outer['CHROMATOGRAPHY_TYPE'].str.contains('reverse'), 'ChromatographyAndPhase'] = 'reverse phase'
+        df_outer.loc[df_outer['CHROMATOGRAPHY_TYPE'].str.contains('hilic'), 'ChromatographyAndPhase'] = 'normal phase (HILIC)'
+        df_outer.loc[df_outer['CHROMATOGRAPHY_TYPE'].str.contains('normal phase'), 'ChromatographyAndPhase'] = 'normal phase (HILIC)'
+        df_outer.loc[df_outer['CHROMATOGRAPHY_TYPE'].str.contains('gc'), 'ChromatographyAndPhase'] = 'gas chromatography (DB-5)'
+        
+        if 'COLUMN_NAME' in df_outer.columns:
+            df_outer['COLUMN_NAME'].fillna('', inplace=True)
+            df_outer.loc[df_outer['COLUMN_NAME'].str.contains('Phenyl', case=False) & df_outer['COLUMN_NAME'].str.contains('Hexyl', case=False), 'ChromatographyAndPhase'] = ' (Phenyl-Hexyl)'
+            df_outer.loc[df_outer['COLUMN_NAME'].str.contains('C18') & df_outer['COLUMN_NAME'].str.contains('polar', case=False), 'ChromatographyAndPhase'] = ' (polar-C18)'
+            
+            df_outer.loc[df_outer['COLUMN_NAME'].str.contains('HSS T3', case=False) & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (C18)'
+            df_outer.loc[df_outer['COLUMN_NAME'].str.contains('C18') & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (C18)'
+            df_outer.loc[df_outer['COLUMN_NAME'].str.contains('C30') & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (C30)'
+            df_outer.loc[df_outer['COLUMN_NAME'].str.contains('C8') & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (C8)'
+            df_outer.loc[df_outer['ChromatographyAndPhase'].str.contains('reverse phase') & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (NOS)'
+        else:
+            df_outer.loc[df_outer['ChromatographyAndPhase'].str.contains('reverse phase') & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (NOS)'
+
+
+    #df_outer['ChromatographyAndPhase'] = df_outer['CHROMATOGRAPHY_TYPE'] + '|' + df_outer['COLUMN_NAME']
     df_outer['YearOfAnalysis'] = df_outer['ACQUISITION_DATE'].apply(lambda x: extract_years(x))
     df_outer['YearOfAnalysis'] = df_outer.apply(
         lambda x: extract_years(x['CREATED_ON']) if x['YearOfAnalysis'] is None else x['YearOfAnalysis'], axis=1)
@@ -430,14 +476,28 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
     if df_outer['YearOfAnalysis'][0] is None:
         raise ValueError("YearOfAnalysis was not collected!")
 
-    df_outer['ChromatographyAndPhase'] = df_outer['CHROMATOGRAPHY_TYPE'] + '|' + df_outer['COLUMN_NAME']
     df_outer['IonizationSourceAndPolarity'] = df_outer['MS_TYPE'] + '|' + df_outer['ION_MODE']
 
-    df_outer['SampleType'] = None
-    df_outer['SampleTypeSub1'] = None
-    df_outer[['SampleType', 'SampleTypeSub1']] = df_outer.apply(
-        lambda x: get_taxonomy_info(x['TAXONOMY_ID'], x['SAMPLE_TYPE'], x['SUBJECT_TYPE']), axis=1,
-        result_type='expand')
+
+    df_outer.loc[:, ['SampleType', 'SampleTypeSub1']] = 'ML import: not available'
+
+    processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
+                        for taxonomy in df_outer['NCBITaxonomy'].unique()
+                        if taxonomy is not None and '|' in taxonomy and 'None' not in taxonomy}
+
+
+
+    df_outer.loc[:, 'SampleType'] = df_outer['NCBITaxonomy'].map(
+        lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[0]
+        if x is not None and '|' in x and 'None' not in x else pd.NA
+    )
+
+    df_outer.loc[:, 'SampleTypeSub1'] = df_outer['NCBITaxonomy'].map(
+        lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[1]
+        if x is not None and '|' in x and 'None' not in x else pd.NA
+    )
+
+
     df_outer[['SampleType', 'SampleTypeSub1']] = df_outer.apply(
         lambda x: get_enviromental_water(x['SAMPLE_TYPE'] + x['SUBJECT_TYPE']) if x['SampleType'] is None and x[
             'SampleTypeSub1'] is None else (x['SampleType'], x['SampleTypeSub1']), axis=1, result_type='expand')
@@ -488,7 +548,7 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
     elif case == 'fill':
         column_and_csv_names = [x[0] for x in fill_col_from]
         origin_cols = [x[1] for x in fill_col_from]
-    if True:
+    if False:
         if os.path.exists('unmatched_values.json'):
             with open('unmatched_values.json', 'r') as file:
                 existing_unmatched_values = json.load(file)
@@ -548,7 +608,7 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                 MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
                 MWB_table = MWB_table.drop(columns=['MWB', 'REDU', origin_cols[index]])
 
-    if case == 'inner':
+    if case == 'inner' and False:
         for index, row in present_keys.iterrows():
             key = row['Key']
             value = row['Value']
@@ -564,10 +624,10 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
             else:
                 # If the key is not present, add it and initialize with the value and count of 1
                 existing_unmatched_values['inner'][key] = {value: 1}
-
-    if len(existing_unmatched_values) > 0:
-        with open('unmatched_values.json', 'w') as file:
-            json.dump(existing_unmatched_values, file, indent = 4)
+    if False:
+        if len(existing_unmatched_values) > 0:
+            with open('unmatched_values.json', 'w') as file:
+                json.dump(existing_unmatched_values, file, indent = 4)
 
 
     return MWB_table
@@ -609,11 +669,14 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
 
 
 def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
-                              duplicate_raw_file_handling='remove_duplicates', export_to_tsv = False):
+                              duplicate_raw_file_handling='remove_duplicates', export_to_tsv = False, **kwargs):
 
+
+    allowedTerm_dict = kwargs['allowedTerm_dict']
+
+    print(study_id)
     raw_file_name_tupple = _get_metabolomicsworkbench_files(study_id)
     raw_file_name_df = pd.DataFrame(raw_file_name_tupple[0])
-
     if len(raw_file_name_df) == 0:
         print('No raw data detected. Ignoring {}'.format(str(study_id)))
         return None
@@ -641,14 +704,18 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
             else:
                 print('This is not an MS-analysis. Ignoring ' + str(analysis_details["analysis_id"]))
                 continue
+        
         except Exception as e:
-            print('No analysis_type-key in ' + study_id)
+            traceback_info = traceback.format_exc()
+            print(f"No analysis_type-key in {study_id}: {e}\nTraceback:\n{traceback_info}")
             continue
+
         
         redu_df = MWB_to_REDU_wrapper(MWB_analysis_ID=analysis_details["analysis_id"],
                                       raw_file_name_df=raw_file_name_df[['filename', 'filename_base']],
                                       path_to_csvs=path_to_csvs,
-                                      Massive_ID = study_id + '|' + str(analysis_details["analysis_id"]))
+                                      Massive_ID=study_id + '|' + str(analysis_details["analysis_id"]),
+                                      allowedTerm_dict=allowedTerm_dict)
 
         if isinstance(redu_df, pd.DataFrame):
             redu_dfs.append(redu_df)
@@ -737,7 +804,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
 
 def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=None, Massive_ID='',
-                        path_to_csvs='translation_sheets'):
+                        path_to_csvs='translation_sheets', **kwargs):
     if mwTab_json is None and MWB_analysis_ID is None:
         raise SystemExit("mwTab_json or MWB_analysis_ID has to be provided!")
 
@@ -753,20 +820,24 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
         except json.JSONDecodeError:
             print("Did not receive valid mwTab json for {}!".format(str(MWB_analysis_ID)))
             return None
+        
+    allowedTerm_dict = kwargs['allowedTerm_dict']
 
     try:
 
         complete_df = translate_MWB_to_REDU_by_logic(
             translate_MWB_to_REDU_from_csv(
                 translate_MWB_to_REDU_from_csv(
-                    create_dataframe_outer_dict(mwTab_json, raw_file_name_df=raw_file_name_df, path_to_csvs=path_to_csvs),
+                    create_dataframe_outer_dict(mwTab_json, raw_file_name_df=raw_file_name_df, path_to_csvs=path_to_csvs, allowedTerm_dict=allowedTerm_dict),
                     path_to_csvs=path_to_csvs),
                 case='fill',
                 path_to_csvs=path_to_csvs),
             path_to_csvs=path_to_csvs)
 
     except Exception as e:
-        print(f"Error: {e}")
+        traceback_info = traceback.format_exc()
+        print(f"An error occurred in MWB_to_REDU_wrapper: {e}\nTraceback:\n{traceback_info}")
+
         return None
 
     # remove cases where filenames_raw appear more than once
@@ -788,7 +859,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
     complete_df[['SampleCollectionDateandTime',
                  'DepthorAltitudeMeters',
                  'qiita_sample_name']] = 'ML import: not available'
-
+            
     missing_not_imported = ["SampleType",
                             "SampleTypeSub1",
                             "NCBITaxonomy",
@@ -868,6 +939,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Give an MWB study ID and get a REDU table tsv.')
     parser.add_argument("--study_id", "-mwb_id", type=str, help='An MWB study ID such as "ST002050". If "ALL" all study IDs are requested.', required=True)
     parser.add_argument("--path_to_csvs", "-csvs", type=str, help="Path to the translation csvs holding translations from MWB to REDU vocabulary (optional)", default="translation_sheets")
+    parser.add_argument("--path_to_allowed_term_json", "-json", type=str, help="Allowed vocabulary json (optional)", default="allowed_terms")
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
 
     args = parser.parse_args()
@@ -875,6 +947,12 @@ if __name__ == '__main__':
     study_id = args.study_id
     path_to_csvs = args.path_to_csvs
     duplicate_raw_file_handling = args.duplicate_raw_file_handling
+    path_to_allowed_term_json = args.path_to_allowed_term_json
+
+    # Read allowed terms json
+    with open(path_to_allowed_term_json, 'r') as file:
+        allowedTerm_dict = json.load(file)
+
 
     # result
     if study_id == "ALL":
@@ -897,7 +975,8 @@ if __name__ == '__main__':
                 result = MWB_to_REDU_study_wrapper(study_id=study_id,
                                           path_to_csvs=path_to_csvs,
                                           duplicate_raw_file_handling=duplicate_raw_file_handling,
-                                          export_to_tsv=False)
+                                          export_to_tsv=False,
+                                          allowedTerm_dict=allowedTerm_dict)
                 print('Extracted information for {} samples.'.format(len(result)))
                 if len(result) > 1:
                     all_results_list.append(result)
@@ -912,6 +991,7 @@ if __name__ == '__main__':
         MWB_to_REDU_study_wrapper(study_id=study_id,
                                   path_to_csvs=path_to_csvs,
                                   duplicate_raw_file_handling=duplicate_raw_file_handling,
-                                  export_to_tsv=True)
+                                  export_to_tsv=True,
+                                  allowedTerm_dict=allowedTerm_dict)
 
     print("Output files written to working directory")

@@ -37,6 +37,9 @@ def main():
     # # Filtering columsn to original
     # merged_df = merged_df[metadata_df.columns]
 
+    metadata_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'}, inplace=True)
+    metadata_df.drop('key', axis=1, inplace=True)
+
 
     # Saving file
     metadata_df.to_csv(args.output_merged_file, sep='\t', index=False)

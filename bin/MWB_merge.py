@@ -21,11 +21,7 @@ def main():
 
     metadata_df["MassiveID"] = metadata_df["MassiveID"].apply(lambda x: x.split('|')[0])
 
-    print(metadata_df)
-
-    print(files_df)
-
-    files_df["short_filename"] = files_df["filename"].apply(lambda x: os.path.basename(x))
+    files_df["short_filename"] = files_df["FILENAME"].apply(lambda x: os.path.basename(x))
     files_df["key"] = files_df["STUDY_ID"] + ":" + files_df["short_filename"]
 
     metadata_df["key"] = metadata_df["MassiveID"] + ":" + metadata_df["filename"]
@@ -35,7 +31,10 @@ def main():
 
     # Filtering columsn to original
     merged_df = merged_df[metadata_df.columns]
-    print(merged_df)
+    
+    merged_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'}, inplace=True)
+    merged_df.drop('key', axis=1, inplace=True)
+   
 
     # Saving file
     merged_df.to_csv(args.output_merged_file, sep='\t', index=False)

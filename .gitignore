@@ -10,3 +10,4 @@ nohup.out
 nextflow_output.log
 bin/__pycache__
 Metabolights2REDU_*.tsv
+bin/allowed_terms/allowed_terms_autoupdate.json

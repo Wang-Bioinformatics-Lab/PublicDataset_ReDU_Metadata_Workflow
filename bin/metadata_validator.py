@@ -36,7 +36,8 @@ def perform_validation(filename, path_to_allowed_terms):
 
     with open(path_to_allowed_terms, 'r', encoding='utf-8') as jsonfile:
         terms = json.load(jsonfile)
-    print(list(set(terms['SampleType']["allowed_values"])))
+        
+    
     validators = {
         'filename': [
             NotEmptyValidator()
@@ -161,11 +162,11 @@ def perform_summary(filename):
 def main():
     parser = argparse.ArgumentParser(description='Validate Stuff.')
     parser.add_argument('inputmetadata', help='inputmetadata')
+    parser.add_argument('path_to_allowed_terms_json', help='Path to json with allowed terms.')
     args = parser.parse_args()
 
-    path_to_allowed_terms = '/home/yasin/yasin/projects/PublicDataset_ReDU_Metadata_Workflow/allowed_terms/allowed_terms.json'
 
-    passes_validation, failures, errors_list, valid_rows, total_rows = perform_validation(args.inputmetadata, path_to_allowed_terms)
+    passes_validation, failures, errors_list, valid_rows, total_rows = perform_validation(args.inputmetadata, args.path_to_allowed_terms_json)
     no_validation_lines = [int(error["line_number"]) for error in errors_list]
 
     output_list = ["MING", os.path.basename(args.inputmetadata), str(total_rows), str(len(valid_rows))]

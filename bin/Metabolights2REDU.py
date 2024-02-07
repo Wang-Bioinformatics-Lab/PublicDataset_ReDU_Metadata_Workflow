@@ -7,73 +7,47 @@ import json
 import time
 import numpy as np
 from tqdm import tqdm
+from extend_allowed_terms import adapt_allowed_terms 
+from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from REDU_conversion_functions import update_unassigned_terms
+from REDU_conversion_functions import get_taxonomy_id_from_name
+import traceback
 
 
-
-def complete_and_fill_REDU_table(df):
+def complete_and_fill_REDU_table(df, allowedTerm_dict):
     """
-    Completes and fills a REDU table with default values and checks for allowed terms.
+    Completes and fills a REDU table with values based on a dictionary of allowed terms and missing values.
 
     Args:
     df: A pandas DataFrame containing the initial data.
+    allowedTerm_dict: A dictionary containing allowed terms and missing values for each column.
 
     Returns:
     A DataFrame that has been filled with default values for missing columns,
-    with values replaced by "ML import: not available" if they are not in the
-    allowed terms or are missing/empty, and only containing specified columns.
+    with values replaced by the corresponding "missing" value from the dictionary 
+    if they are not in the allowed terms or are missing/empty, except for specific columns.
     """
-    columns_present = [
-        "MassiveID",
-        "filename",
-        "SampleType",
-        "SampleTypeSub1",
-        "NCBITaxonomy",
-        "YearOfAnalysis",
-        "SampleCollectionMethod",
-        "SampleExtractionMethod",
-        "InternalStandardsUsed",
-        "MassSpectrometer",
-        "IonizationSourceAndPolarity",
-        "ChromatographyAndPhase",
-        "SubjectIdentifierAsRecorded",
-        "AgeInYears",
-        "BiologicalSex",
-        "UBERONBodyPartName",
-        "TermsofPosition",
-        "HealthStatus",
-        "DOIDCommonName",
-        "ComorbidityListDOIDIndex",
-        "SampleCollectionDateandTime",
-        "Country",
-        "HumanPopulationDensity",
-        "LatitudeandLongitude",
-        "DepthorAltitudeMeters",
-        "qiita_sample_name"
-    ]
+    # Convert year to string for comparison
+    if 'YearOfAnalysis' in df.columns:
+        df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str)
 
-    df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str)
+    # Add missing columns with their respective default missing value from the dictionary
+    for key, value in allowedTerm_dict.items():
+        if key not in df.columns:
+            df[key] = value['missing']
 
-    # Add missing columns with default value "ML import: not available"
-    for column in columns_present:
-        if column not in df.columns:
-            df[column] = "ML import: not available"
+    # Replace values with the respective "missing" value if they're not in the allowed terms or are missing/empty
+    for key, value in allowedTerm_dict.items():
+        allowed_terms = value['allowed_values']
+        missing_value = value['missing']
+        if key in df.columns:
+            if key not in ["MassiveID", "filename", "AgeInYears"]:
+                df[key] = df[key].apply(lambda x: x if x in allowed_terms else missing_value).fillna(missing_value).replace("", missing_value)
+            else:
+                df[key] = df[key].fillna(missing_value).replace("", missing_value)
 
-    # Read allowed terms from CSV
-    terms_df = pd.read_csv(allowedTermSheet_dir, low_memory=False)
-    terms_df['YearOfAnalysis'] = terms_df['YearOfAnalysis'].astype(str)
-
-    # Replace values with "ML import: not available" if they're not in the allowed terms or are missing/empty
-    for column in columns_present:
-        if column in terms_df.columns and column not in ["MassiveID", "filename", "AgeInYears"]:
-            allowed_terms = terms_df[column].dropna().unique()
-            df[column] = df[column].apply(lambda x: x if x in allowed_terms else "ML import: not available")
-        else:
-            df[column] = df[column].fillna("ML import: not available").replace("", "ML import: not available")
-
-    # Return the dataframe with only the columns specified in columns_present
-    return df[columns_present + ['USI']]
-
-
+    # Ensure the dataframe contains only the columns specified in the dictionary plus 'USI'
+    return df[[*allowedTerm_dict.keys(), 'USI']]
 
 def find_column_after_target_column(df, target_column='', search_column_prefix='Samples_Unit'):
     if target_column in df.columns:
@@ -86,6 +60,64 @@ def find_column_after_target_column(df, target_column='', search_column_prefix='
                 if next_column.startswith(search_column_prefix):
                     return next_column
     return ''  # Return None if no matching column is found
+
+
+def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
+
+    allowedTerm_dict = kwargs['allowedTerm_dict']
+    unassigned_term_json = kwargs['unassigned_term_json']
+
+
+    taxonomy_data = allowedTerm_dict["NCBITaxonomy"]["allowed_values"]
+    for entry in taxonomy_data:
+        parts = entry.split('|')
+        if len(parts) == 2:
+            ncbi_id, name = parts
+            if name.lower() == organism_name.lower():
+                return ncbi_id + '|' + str(name)
+        else:
+            continue
+
+    req_ncbi_name = get_taxonomy_id_from_name(organism_name)
+    autoupdate = False
+
+
+    if req_ncbi_name is not None and unassigned_term_json != 'none':
+
+        print([req_ncbi_name + '__AUTOUPDATE'])
+
+        path, ext = os.path.splitext(allowedTerm_dict)
+
+        # Add the suffix to the path and recombine with the extension
+        allowedTerm_dict_AUTOUPDATE = f"{path}_AUTOUPDATE.json"
+
+        allowedTerm_dict = adapt_allowed_terms(terms_dict = allowedTerm_dict, 
+                                               redu_variable = 'NCBITaxonomy', 
+                                               term_list = [req_ncbi_name + '__AUTOUPDATE'], 
+                                               add_or_remove = 'add', 
+                                               load_dict_from_path = 'no', 
+                                               save_dict_to_path = allowedTerm_dict_AUTOUPDATE)
+
+        autoupdate = True
+
+    if unassigned_term_json != 'none':
+        update_unassigned_terms(organism_name, autoupdated=autoupdate, unassigned_file=unassigned_term_json)
+    return None
+
+def update_unassigned_terms(organism_name, autoupdated=False, unassigned_file='unassigned_terms.json'):
+    if os.path.exists(unassigned_file):
+        with open(unassigned_file, 'r') as file:
+            unassigned_data = json.load(file)
+    else:
+        unassigned_data = {"Samples_Organism": {}}
+    
+    if organism_name in unassigned_data["Samples_Organism"]:
+        unassigned_data["Samples_Organism"][organism_name]["count"] += 1
+    else:
+        unassigned_data["Samples_Organism"][organism_name] = {"count": 1, "autoupdated": autoupdated}
+
+    with open(unassigned_file, 'w') as file:
+        json.dump(unassigned_data, file, indent=4)
 
 
 def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
@@ -159,7 +191,7 @@ def get_enviromental_water(x):
     x = x.lower()
 
     if 'water' in x or 'sewerage' in x:
-        if 'waste' in x or 'sewerage' or 'sewage' in x:
+        if 'waste' in x or 'sewerage' in x or 'sewage' in x:
             return ['environmental', 'water_waste']
         if 'surface' in x:
             return ['environmental', 'water_surface']
@@ -167,7 +199,7 @@ def get_enviromental_water(x):
             return ['environmental', 'water_ground']
         if 'storm' in x:
             return ['environmental', 'water_storm']
-        if 'sea' in x or 'ocean' in x or 'coast':
+        if 'sea' in x or 'ocean' in x or 'coast' in x:
             return ['environmental', 'water_seawater']
         else:
             return [None, None]
@@ -190,28 +222,41 @@ def get_blanks(x):
         return [None, None]
 
 
-def get_taxonomy_id_from_name(species_name, retries = 1):
-    # Query NCBI's Entrez API to get the NCBI ID for the species based on its Latin name
-    if species_name is not None and species_name != "NA" and species_name != "N/A":
-        attempts = 0
-        while attempts < retries:
-            try:
-                response = requests.get(
-                    f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}"
-                )
+def get_taxonomy_id_from_name(species_name, retries=3):
+    if species_name is None or species_name in ["NA", "N/A"]:
+        return None
+
+    attempts = 0
+    while attempts < retries:
+        try:
+            response = requests.get(
+                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}&retmode=xml"
+            )
+
+            if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "xml")
-                ncbi_id = soup.find("IdList").find("Id").text
-                return ncbi_id
-            except Exception as e:
-                print(f"Attempt {attempts + 1} failed for {species_name}: {e}")
-                attempts += 1
+                id_list = soup.find("IdList")
+                if id_list is not None and id_list.find("Id") is not None:
+                    ncbi_id = id_list.find("Id").text
+                    term = soup.find("Term").text.split("[")[0].strip()
+                    if term.lower() == species_name.lower():
+                        return str(ncbi_id) + '|' + species_name
+                    else:
+                        return None
+                else:
+                    return  None
+            else:
+                print(f"Server responded with status code {response.status_code} for {species_name}.")
                 time.sleep(10)
 
-        print(f'{species_name} returned no NCBI-ID after {retries + 1} attempts')
-        return None
-    else:
-        return None
-  
+        except Exception as e:
+            print(f"Attempt {attempts + 1} failed for {species_name}: {e}")
+            time.sleep(10)
+
+        attempts += 1
+
+    print(f'{species_name} returned no NCBI-ID after {retries} attempts')
+    return  None
 
 def safe_api_request(url, retries=3, expected_codes={200}):
 
@@ -243,8 +288,31 @@ def safe_api_request(url, retries=3, expected_codes={200}):
   print(f"All retries failed for {url}.")
   return None
 
+def rename_duplicated_column_names(df):
+    # We need this to get rid of duplicated columns
+    new_column_names = []
 
-def Metabolights2REDU(study_id):
+    # Dictionary to keep track of the count of duplicate column names
+    dup_count = {}
+
+    # Iterate through the columns using index
+    for idx, col in enumerate(df.columns):
+        if col in df.columns[:idx]:
+            # If the column name is a duplicate, append a count to its name
+            dup_count[col] = dup_count.get(col, 0) + 1
+            new_name = f"{col}_{dup_count[col]}"
+            new_column_names.append(new_name)
+        else:
+            # If not a duplicate, keep the original name
+            new_column_names.append(col)
+
+    # Set the new column names to the DataFrame
+    df.columns = new_column_names
+
+    return df
+
+
+def Metabolights2REDU(study_id, **kwargs):
     """
     Converts Metabolights study data to a REDU table format.
 
@@ -275,12 +343,13 @@ def Metabolights2REDU(study_id):
                 headers[value['index']] = 'Assay_' + value['header']
 
             df = pd.DataFrame(assay_json['assayTable']['data'])
+            df = rename_duplicated_column_names(df)
+
             df.columns = headers
             
             ms_study_assays.append(df)
 
     if len(ms_study_assays) > 0:
-
         all_columns = set()
         for df in ms_study_assays:
             all_columns.update(df.columns)
@@ -291,47 +360,58 @@ def Metabolights2REDU(study_id):
             for col in all_columns:
                 if col not in df.columns:
                     df[col] = np.nan
+            # Reorder columns and add to the aligned list
+            df = rename_duplicated_column_names(df)
+            aligned_dfs.append(df[list(all_columns)])
 
-        # Reorder columns and add to the aligned list
-        aligned_dfs.append(df[list(all_columns)])
-
+        # Concatenate all dataframes into a single dataframe
         df_assays = pd.concat(aligned_dfs, ignore_index=True)
-
+        
         #get info on samples (there is only one sample table per study)
         headers = [None] * len(study_details['content']['sampleTable']['fields'])
         for key, value in study_details['content']['sampleTable']['fields'].items():
             headers[value['index']] = 'Samples_' + value['header']
 
         df_samples = pd.DataFrame(study_details['content']['sampleTable']['data'])
+        df_samples = rename_duplicated_column_names(df_samples)
         df_samples.columns = headers
     
         df_study = df_assays.merge(df_samples, left_on='Assay_Sample Name', right_on='Samples_Sample Name', how='inner')
 
         # Duplicate rows if we have mzml AND raw files
         df_study_raw = pd.DataFrame()
-        if 'Assay_Raw Spectral Data File' in df_assays.columns:
+        
+        if 'Assay_Raw Spectral Data File' in df_study.columns:
             df_study_raw = df_study[df_study['Assay_Raw Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
             df_study_raw['filepath'] = df_study_raw['Assay_Raw Spectral Data File']
-            df_study_raw.drop(columns=['Assay_Raw Spectral Data File', 'Assay_Derived Spectral Data File'], inplace=True)
+            # Check if the column exists before dropping
+            if 'Assay_Raw Spectral Data File' in df_study_raw.columns:
+                df_study_raw.drop(columns=['Assay_Raw Spectral Data File'], inplace=True)
+            if 'Assay_Derived Spectral Data File' in df_study_raw.columns:
+                df_study_raw.drop(columns=['Assay_Derived Spectral Data File'], inplace=True)
 
         df_study_mzml = pd.DataFrame()
-        if 'Assay_Derived Spectral Data File' in df_assays.columns:
+        if 'Assay_Derived Spectral Data File' in df_study.columns:
             df_study_mzml = df_study[df_study['Assay_Derived Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
             df_study_mzml['filepath'] = df_study_mzml['Assay_Derived Spectral Data File']
-            df_study_mzml.drop(columns=['Assay_Raw Spectral Data File', 'Assay_Derived Spectral Data File'], inplace=True)
+            # Check if the column exists before dropping
+            if 'Assay_Raw Spectral Data File' in df_study_mzml.columns:
+                df_study_mzml.drop(columns=['Assay_Raw Spectral Data File'], inplace=True)
+            if 'Assay_Derived Spectral Data File' in df_study_mzml.columns:
+                df_study_mzml.drop(columns=['Assay_Derived Spectral Data File'], inplace=True)
 
         if len(df_study_raw) > 0 and len(df_study_mzml) > 0:
-            df_study = pd.concat([df_study_mzml, df_study_raw], ignore_index=True)
+            df_study = pd.concat([df_study_mzml, df_study_raw], ignore_index=True).copy(deep=True)
         elif len(df_study_raw) > 0:
-            df_study = df_study_raw
+            df_study = df_study_raw.copy(deep=True)
         elif len(df_study_mzml) > 0:
-            df_study = df_study_mzml
+            df_study = df_study_mzml.copy(deep=True)
         elif len(df_study_raw) == 0 and len(df_study_mzml) == 0:
             return pd.DataFrame()
         
 
+        df_study = rename_duplicated_column_names(df_study)
         df_study['filename'] = df_study['filepath'].apply(lambda x: os.path.basename(x))
-
 
         # List of allowed extensions
         allowed_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
@@ -339,29 +419,50 @@ def Metabolights2REDU(study_id):
         # Use a tuple of allowed extensions for the endswith method
         df_study = df_study[df_study['filepath'].str.lower().str.endswith(tuple(allowed_extensions))]
         
-        df_study['YearOfAnalysis'] = submissionYear
 
         if len(df_study) > 0:
+            
+            allowedTerm_dict = kwargs['allowedTerm_dict']
+            unassigned_term_json = kwargs['unassigned_term_json']
+
+
+            df_study.loc[:, 'YearOfAnalysis'] = submissionYear
+
             #add NCBITaxonomy and Sampletype & SampleTypeSub1
             #######
             if 'Samples_Organism' in df_study.columns:
-                processed_organisms = {org: str(get_taxonomy_id_from_name(org)) + '|' + str(org) for org in df_study['Samples_Organism'].unique()}
-                df_study['NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
-                df_study['NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='ML import: not available', regex=True)
+                #processed_organisms = {org: str(get_taxonomy_id_from_name(org)) + '|' + str(org) for org in df_study['Samples_Organism'].unique()}
+                processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict, unassigned_term_json=unassigned_term_json)) for org in df_study['Samples_Organism'].unique()}
 
-                df_study[['SampleType', 'SampleTypeSub1']] = 'ML import: not available'
+                df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
+                df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='ML import: not available', regex=True)
                 
+                df_study.loc[:, ['SampleType', 'SampleTypeSub1']] = 'ML import: not available'
+
                 processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
                                     for taxonomy in df_study['NCBITaxonomy'].unique()
                                     if '|' in taxonomy and 'None' not in taxonomy}
 
-                df_study['SampleType'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[0] 
+
+                df_study.loc[:,'SampleType'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[0] 
                                                                     if '|' in x and 'None' not in x else pd.NA)
-                df_study['SampleTypeSub1'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[1]
+                df_study.loc[:,'SampleTypeSub1'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[1]
                                                                         if '|' in x and 'None' not in x else pd.NA)
 
-                df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(lambda row: get_blanks(row.Samples_Organism) if pd.isna(row.SampleType) else [row.SampleType, row.SampleTypeSub1], axis=1).apply(pd.Series)
-                df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(lambda row: get_enviromental_water(row.Samples_Organism) if pd.isna(row.SampleType) else [row.SampleType, row.SampleTypeSub1], axis=1).apply(pd.Series)
+                df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(
+                    lambda row: get_blanks(row.Samples_Organism) 
+                    if (pd.isna(row.SampleType) or row.SampleType == 'ML import: not available') 
+                    else [row.SampleType, row.SampleTypeSub1], 
+                    axis=1
+                ).apply(pd.Series)
+
+                df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(
+                    lambda row: get_enviromental_water(row.Samples_Organism) 
+                    if (pd.isna(row.SampleType) or row.SampleType == 'ML import: not available') 
+                    else [row.SampleType, row.SampleTypeSub1], 
+                    axis=1
+                ).apply(pd.Series)
+
 
                 df_biofluid_vs_tissue = pd.read_csv(os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv'))
 
@@ -382,6 +483,7 @@ def Metabolights2REDU(study_id):
             #add MassSpectrometer column
             #######
             if 'Assay_Instrument' in df_study.columns:
+                df_study['Assay_Instrument'].fillna('', inplace=True)
                 df_ms = pd.read_csv(os.path.join(transSheet_dir, 'MassSpectrometer_Metabolights.csv'))
                 df_study = df_study.merge(df_ms[['ML', 'MassSpectrometer']], left_on='Assay_Instrument', right_on='ML', how='left')
                 df_study.drop('ML', axis=1, inplace=True)
@@ -389,6 +491,8 @@ def Metabolights2REDU(study_id):
             #add IonizationMethod/Polarity column
             #######
             if 'Assay_Ion source' in df_study.columns and 'Assay_Scan polarity' in df_study.columns:
+                df_study['Assay_Ion source'].fillna('', inplace=True)
+                df_study['Assay_Scan polarity'].fillna('', inplace=True)
                 df_study['Assay_Ion source'] = df_study['Assay_Ion source'].str.lower()
                 df_study['IonizationSourceAndPolarity'] = ''
                 df_study.loc[df_study['Assay_Ion source'].str.contains('electrospray'), 'IonizationSourceAndPolarity'] = 'electrospray ionization'
@@ -402,6 +506,7 @@ def Metabolights2REDU(study_id):
             #add LC method
             #######
             if 'Assay_Column type' in df_study.columns:
+                df_study['Assay_Column type'].fillna('', inplace=True)
                 df_study['Assay_Column type'] = df_study['Assay_Column type'].str.lower()
                 df_study['ChromatographyAndPhase'] = ''
                 df_study.loc[df_study['Assay_Column type'].str.contains('reverse'), 'ChromatographyAndPhase'] = 'reverse phase'
@@ -409,6 +514,7 @@ def Metabolights2REDU(study_id):
                 df_study.loc[df_study['Assay_Column type'].str.contains('normal phase'), 'ChromatographyAndPhase'] = 'normal phase (HILIC)'
                 
                 if 'Assay_Column model' in df_study.columns:
+                    df_study['Assay_Column model'].fillna('', inplace=True)
                     df_study.loc[df_study['Assay_Column model'].str.contains('Phenyl', case=False) & df_study['Assay_Column model'].str.contains('Hexyl', case=False), 'ChromatographyAndPhase'] = ' (Phenyl-Hexyl)'
                     df_study.loc[df_study['Assay_Column model'].str.contains('C18') & df_study['Assay_Column model'].str.contains('polar', case=False), 'ChromatographyAndPhase'] = ' (polar-C18)'
                     
@@ -467,7 +573,7 @@ def Metabolights2REDU(study_id):
             df_study['MassiveID'] = study_id
             df_study['USI'] = 'mzspec:' + study_id + ':' + df_study['filepath']
 
-            df_study = complete_and_fill_REDU_table(df_study)
+            df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict)
 
             return df_study
 
@@ -479,7 +585,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Give an Metabolights study ID and get a REDU table tsv.')
     parser.add_argument("--study_id", type=str, help='An Metabolights study ID such as "MTBLS1015". If "ALL" all studys are requested.', required=True)
     parser.add_argument("--path_to_translation_sheet_csvs", "-csvs", type=str, help="Path to the translation csvs holding translations from MWB to REDU vocabulary (optional)", default="none")
-    parser.add_argument("--path_to_allowed_term_csv", type=str, help="Path to the csv with allowed REDU terms (optional)", default="none")
+    parser.add_argument("--path_to_allowed_term_json", type=str, help="Path to the json with allowed REDU terms (optional)", default="none")
+    parser.add_argument("--path_to_unassigned_term_json", type=str, help="If you want to export a json with terms that have not been associated with anything (optional)", default="none")
     
     
     args = parser.parse_args()
@@ -497,21 +604,27 @@ if __name__ == "__main__":
         transSheet_dir = args.path_to_translation_sheet_csvs
         script_dir = os.path.dirname(transSheet_dir)
 
-    if args.path_to_allowed_term_csv == 'none':
-        allowedTermSheet_dir = os.path.join(os.path.dirname(script_dir), 'allowed_terms', 'allowed_terms.csv')
+    if args.path_to_allowed_term_json == 'none':
+        allowedTermSheet_json = os.path.join(script_dir, 'allowed_terms', 'allowed_terms.json')
     else:
-        allowedTermSheet_dir = args.path_to_allowed_term_csv
-
-
+        print('set')
+        allowedTermSheet_json = args.path_to_allowed_term_json
+    print('here')
+    print(allowedTermSheet_json)
+    print('there')
+    # Read allowed terms json
+    with open(allowedTermSheet_json, 'r') as file:
+        allowedTerm_dict = json.load(file)
 
 
     REDU_dataframes = []
     redu_table_single = pd.DataFrame()
     for study_id in tqdm(public_metabolights_studies):
         try:
-            redu_table_single = Metabolights2REDU(study_id)
+            redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, unassigned_term_json = args.path_to_unassigned_term_json)
         except Exception as e:
-            print(f"An error occurred with study_id {study_id}: {e}")
+            traceback_info = traceback.format_exc()
+            print(f"An error occurred with study_id {study_id}: {e}\nTraceback:\n{traceback_info}")
             continue
         if redu_table_single is not None and len(redu_table_single) > 0:
             REDU_dataframes.append(redu_table_single)

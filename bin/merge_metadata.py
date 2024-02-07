@@ -10,6 +10,14 @@ def main():
     parser.add_argument('output_metadata')
     args = parser.parse_args()
 
+    columns_to_use = ["filename", "ATTRIBUTE_DatasetAccession", "SampleType", "SampleTypeSub1", 
+                      "NCBITaxonomy", "YearOfAnalysis", "UBERONBodyPartName", "BiologicalSex", "AgeInYears",  "LifeStage", 
+                      "Country", "HealthStatus", "ChromatographyAndPhase", "IonizationSourceAndPolarity",
+                      "MassSpectrometer", "SampleExtractionMethod",  "SampleCollectionMethod", "ComorbidityListDOIDIndex", 
+                      "DOIDCommonName", "DOIDOntologyIndex", "DepthorAltitudeMeters", "HumanPopulationDensity", "InternalStandardsUsed", 
+                      "LatitudeandLongitude", "SampleCollectionDateandTime", "SubjectIdentifierAsRecorded", "TermsofPosition", 
+                      "UBERONOntologyIndex", "UniqueSubjectID", "USI", "DataSource"]
+
     # read GNPS metadata
     gnps_df = pd.read_csv(args.gnps_metadata, sep='\t')
     gnps_df["DataSource"] = "GNPS"
@@ -26,7 +34,7 @@ def main():
     merged_df = pd.concat([gnps_df, redu_df, metabo_df], ignore_index=True)
 
     # include only columns from gnps
-    merged_df = merged_df[gnps_df.columns]
+    merged_df = merged_df[columns_to_use]
 
     # write merged metadata to file
     merged_df.to_csv(args.output_metadata, sep='\t', index=False)

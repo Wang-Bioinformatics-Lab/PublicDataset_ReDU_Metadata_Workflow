@@ -8,8 +8,22 @@ from subprocess import PIPE, run
 
 ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
 gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
+gnps_column_names_added = ['USI']
 
-def _match_filenames(dataset_metadata_df):
+def _make_usi_from_filename(s):
+    # Replace initial "f." with "mzspec:"
+    if s.startswith("f."):
+        s = "mzspec:" + s[2:]
+    # Replace the first "/" with ":"
+    first_slash_index = s.find('/')
+    if first_slash_index != -1:
+        s = s[:first_slash_index] + ':' + s[first_slash_index+1:]
+    return s
+
+
+
+
+def _match_filenames_and_add_usi(dataset_metadata_df):
     try:            
         # Get the value of the first row of the 'column_name' column
         dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
@@ -41,6 +55,7 @@ def _match_filenames(dataset_metadata_df):
             # We've found a match
             print("Found match", found_file_paths[0])
             metadata_row["filename"] = "f." + found_file_paths[0]
+            metadata_row["USI"] = _make_usi_from_filename(metadata_row["filename"])
 
             output_row_list.append(metadata_row)
         else:
@@ -85,13 +100,13 @@ def main():
             continue
 
         # Matching the metadata
-        enriched_metadata_df = _match_filenames(dataset_metadata_df)
+        enriched_metadata_df = _match_filenames_and_add_usi(dataset_metadata_df)
         if enriched_metadata_df is not None:
             all_metadata_list.append(enriched_metadata_df)
 
     # Create a DataFrame from the list with headers
     merged_metadata_df = pd.concat(all_metadata_list)
-    merged_metadata_df = merged_metadata_df[gnps_column_names]
+    merged_metadata_df = merged_metadata_df[gnps_column_names + gnps_column_names_added]
 
     # Save the DataFrame to a TSV file without column names
     merged_metadata_df.to_csv('gnps_metadata_all.tsv', sep='\t', index=False)

@@ -1,11 +1,15 @@
 import json
 import os
 
-def adapt_allowed_terms(terms_dict, redu_variable, term_list, add_or_remove):
+def adapt_allowed_terms(terms_dict, redu_variable, term_list, add_or_remove, load_dict_from_path = 'no', save_dict_to_path = 'no'):
 
     # ['MassiveID', 'filename', 'SampleType', 'SampleTypeSub1', 'NCBITaxonomy', 'YearOfAnalysis', 'SampleCollectionMethod', 'SampleExtractionMethod', 'InternalStandardsUsed', 'MassSpectrometer', 'IonizationSourceAndPolarity', 
     # 'ChromatographyAndPhase', 'SubjectIdentifierAsRecorded', 'AgeInYears', 'BiologicalSex', 'UBERONBodyPartName', 'TermsofPosition', 'HealthStatus', 'DOIDCommonName', 'ComorbidityListDOIDIndex', 'SampleCollectionDateandTime', 
     # 'Country', 'HumanPopulationDensity', 'LatitudeandLongitude', 'DepthorAltitudeMeters', 'sample_name', 'UniqueSubjectID', 'LifeStage', 'UBERONOntologyIndex', 'DOIDOntologyIndex']
+
+    if load_dict_from_path != 'no':
+        with open(load_dict_from_path, 'r', encoding='utf-8') as jsonfile:
+            terms_dict = json.load(jsonfile)
 
     if len(term_list) > 0:
         pass
@@ -38,6 +42,11 @@ def adapt_allowed_terms(terms_dict, redu_variable, term_list, add_or_remove):
             else:
                 print(f"Warning: '{value}' not found in '{redu_variable}'.")
 
+    if save_dict_to_path != 'no':
+        with open(save_dict_to_path, 'w', encoding='utf-8') as jsonfile:
+            json.dump(terms_dict, jsonfile, ensure_ascii=False, indent=4)
+
+
     return terms_dict
 
 
@@ -67,19 +76,31 @@ def update_translation_sheets(terms_dict, path_to_translation_sheet_folder):
 
     
 
+def update_dict_fromautoupdate(data):
+    """
+    Update the given dictionary by removing '__AUTOUPDATE' from allowed values and eliminating duplicates.
 
+    :param data: dict, the original dictionary to be updated
+    """
+    for key in data:
+        updated_values = set()
+        for value in data[key]["allowed_values"]:
+            updated_values.add(value.replace("__AUTOUPDATE", ""))
+        data[key]["allowed_values"] = list(updated_values)
+
+    return data
 
 
 
 if __name__ == '__main__':
 
+    #pass
 
 
+    path_to_allowed_terms = '/home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms_autoupdate.json'
 
-    # path_to_allowed_terms = '/home/yasin/yasin/projects/PublicDataset_ReDU_Metadata_Workflow/allowed_terms/allowed_terms.json'
-
-    # with open(path_to_allowed_terms, 'r', encoding='utf-8') as jsonfile:
-    #     terms_dict = json.load(jsonfile)
+    with open(path_to_allowed_terms, 'r', encoding='utf-8') as jsonfile:
+        terms_dict = json.load(jsonfile)
 
 
     # new_redu_variable_to_add = ''
@@ -101,5 +122,7 @@ if __name__ == '__main__':
     #                                  list_of_terms_to_add_or_remove, 
     #                                  'remove')
 
-    # with open(path_to_allowed_terms, 'w', encoding='utf-8') as jsonfile:
-    #     json.dump(terms_dict, jsonfile, ensure_ascii=False, indent=4)
+    terms_dict = update_dict_fromautoupdate(terms_dict)
+
+    with open(path_to_allowed_terms, 'w', encoding='utf-8') as jsonfile:
+        json.dump(terms_dict, jsonfile, ensure_ascii=False, indent=4)
