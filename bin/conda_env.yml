@@ -4,9 +4,11 @@ channels:
 dependencies:
   - python=3.8.8
   - pandas
+  - pip
   - pip:
-    - xmltodict
-    - requests
-    - vladiate
-    - bs4
-    - tqdm
+      - xmltodict
+      - requests
+      - vladiate
+      - bs4
+      - tqdm
+      - owlready2

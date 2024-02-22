@@ -63,9 +63,9 @@ process gnpsmatchName {
 }
 
 process mwbRun {
-    publishDir "./nf_output", mode: 'copy'
-
     conda "$TOOL_FOLDER/conda_env.yml"
+
+    publishDir "./nf_output", mode: 'copy'
 
     input:
     val x
@@ -74,12 +74,31 @@ process mwbRun {
     file 'REDU_from_MWB_all.tsv'
 
     """
+    echo "Conda env info:"
+    conda info
+    echo "Python version:"
+    python --version
+    echo "Which Python:"
+    which python
+    echo "Pip list:"
+    pip list
     python $TOOL_FOLDER/MWB_to_REDU.py \
     --study_id ALL \
     --path_to_csvs $TOOL_FOLDER/translation_sheets \
     --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json \
-    --duplicate_raw_file_handling keep_pols_dupl
+    --duplicate_raw_file_handling keep_all \
+    --path_to_uberon_owl $TOOL_FOLDER/allowed_terms/uberon-base.owl \
+    --path_to_cl_owl $TOOL_FOLDER/allowed_terms/cl.owl \
+    --path_to_plant_owl $TOOL_FOLDER/allowed_terms/po.owl
     """
+
+    // """
+    // python $TOOL_FOLDER/MWB_to_REDU.py \
+    // --study_id ALL \
+    // --path_to_csvs $TOOL_FOLDER/translation_sheets \
+    // --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json \
+    // --duplicate_raw_file_handling keep_pols_dupl
+    // """
 }
 
 process validateMetadata_MWB {
@@ -142,9 +161,10 @@ process formatmwb {
 
 
 process mlRun {
-    publishDir "./nf_output", mode: 'copy'
 
     conda "$TOOL_FOLDER/conda_env.yml"
+
+    publishDir "./nf_output", mode: 'copy'
 
     input:
     val x
@@ -156,7 +176,10 @@ process mlRun {
     python $TOOL_FOLDER/Metabolights2REDU.py \
     --study_id ALL  \
     --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
-    --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json
+    --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json \
+    --path_to_uberon_owl $TOOL_FOLDER/allowed_terms/uberon-base.owl \
+    --path_to_cl_owl $TOOL_FOLDER/allowed_terms/cl.owl \
+    --path_to_plant_owl $TOOL_FOLDER/allowed_terms/po.owl
     """
 }
 
