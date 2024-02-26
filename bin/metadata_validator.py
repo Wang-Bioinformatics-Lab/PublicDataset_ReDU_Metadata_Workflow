@@ -32,11 +32,9 @@ def rewrite_metadata(metadata_filename):
     metadata_df.to_csv(metadata_filename, sep="\t", index=False)
 
 
-def perform_validation(filename, path_to_allowed_terms):
+def perform_validation(filename, terms):
 
-    with open(path_to_allowed_terms, 'r', encoding='utf-8') as jsonfile:
-        terms = json.load(jsonfile)
-        
+    legacy_missing_values = ['ML import: not available', 'not applicable', 'not collected', 'no disease reported', 'not specified', 'no DOID avaliable', 'disease NOS']
     
     validators = {
         'filename': [
@@ -46,53 +44,53 @@ def perform_validation(filename, path_to_allowed_terms):
             Ignore()
         ],
         'SampleType' : [
-            SetValidator(valid_set= list(set(terms['SampleType']["allowed_values"])))
+            SetValidator(valid_set= list(set(terms['SampleType']["allowed_values"] + legacy_missing_values)))
         ],
         'SampleTypeSub1' : [
-            SetValidator(valid_set= list(set(terms['SampleTypeSub1']["allowed_values"])))
+            SetValidator(valid_set= list(set(terms['SampleTypeSub1']["allowed_values"] + legacy_missing_values)))
         ],
         'NCBITaxonomy' : [
-            SetValidator(valid_set= list(set(terms['NCBITaxonomy']["allowed_values"])))
+            SetValidator(valid_set= list(set(terms['NCBITaxonomy']["allowed_values"] + legacy_missing_values)))
         ],
         'YearOfAnalysis' : [
             IntValidator(),
             RangeValidator(low=1999, high=2030)
         ],
         'SampleCollectionMethod' : [
-            SetValidator(valid_set= list(set(terms['SampleCollectionMethod']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['SampleCollectionMethod']["allowed_values"] + legacy_missing_values))) 
         ],
         "SampleExtractionMethod" : [
-            SetValidator(valid_set= list(set(terms['SampleExtractionMethod']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['SampleExtractionMethod']["allowed_values"] + legacy_missing_values))) 
         ],
         'InternalStandardsUsed' : [
-            SetValidator(valid_set= list(set(terms['InternalStandardsUsed']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['InternalStandardsUsed']["allowed_values"] + legacy_missing_values))) 
         ],
         'MassSpectrometer' : [
-            SetValidator(valid_set= list(set(terms['MassSpectrometer']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['MassSpectrometer']["allowed_values"] + legacy_missing_values))) 
         ],        
         'IonizationSourceAndPolarity' : [
-            SetValidator(valid_set= list(set(terms['IonizationSourceAndPolarity']["allowed_values"])))
+            SetValidator(valid_set= list(set(terms['IonizationSourceAndPolarity']["allowed_values"] + legacy_missing_values)))
         ],
         'ChromatographyAndPhase' : [
-            SetValidator(valid_set= list(set(terms['ChromatographyAndPhase']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['ChromatographyAndPhase']["allowed_values"] + legacy_missing_values))) 
         ],
         'BiologicalSex': [
-            SetValidator(valid_set= list(set(terms['BiologicalSex']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['BiologicalSex']["allowed_values"] + legacy_missing_values))) 
         ],
         'Country': [
-            SetValidator(valid_set= list(set(terms['Country']["allowed_values"])))  
+            SetValidator(valid_set= list(set(terms['Country']["allowed_values"] + legacy_missing_values)))  
         ],
         'HumanPopulationDensity' : [
-            SetValidator(valid_set= list(set(terms['HumanPopulationDensity']["allowed_values"])))
+            SetValidator(valid_set= list(set(terms['HumanPopulationDensity']["allowed_values"] + legacy_missing_values)))
         ],
          'LifeStage' : [
-            SetValidator(valid_set= list(set(terms['LifeStage']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['LifeStage']["allowed_values"] + legacy_missing_values))) 
         ],
         'UBERONOntologyIndex' : [
-            SetValidator(valid_set= list(set(terms['UBERONOntologyIndex']["allowed_values"]))) 
+            SetValidator(valid_set= list(set(terms['UBERONOntologyIndex']["allowed_values"] + legacy_missing_values))) 
         ],
         'DOIDOntologyIndex' : [
-            SetValidator(valid_set= list(set(terms['DOIDOntologyIndex']["allowed_values"])))  
+            SetValidator(valid_set= list(set(terms['DOIDOntologyIndex']["allowed_values"] + legacy_missing_values)))  
         ]
     }
 

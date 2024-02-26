@@ -4,6 +4,7 @@ import urllib
 import requests
 import io 
 import sys
+import json
 import argparse
 import subprocess
 import collections
@@ -29,6 +30,9 @@ def main():
     # List to store names of files that have passed validation
     passed_file_names = []
 
+    with open(args.AllowedTermJson_path, 'r', encoding='utf-8') as jsonfile:
+        terms = json.load(jsonfile)
+
     # Loop through each file in the list of file names and validate each one
     print("echo Validating Files now ...")
     for file_name in file_names:
@@ -36,7 +40,7 @@ def main():
         import metadata_validator
         
         #try:
-        passes_validation, failures, errors_list, valid_rows, total_rows = metadata_validator.perform_validation(os.path.join(args.metadata_folder, os.path.basename(file_name)), args.AllowedTermJson_path)
+        passes_validation, failures, errors_list, valid_rows, total_rows = metadata_validator.perform_validation(os.path.join(args.metadata_folder, os.path.basename(file_name)), terms)
         #except:
         #    pass
 

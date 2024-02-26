@@ -15,57 +15,20 @@ from REDU_conversion_functions import get_taxonomy_id_from_name
 from REDU_conversion_functions import get_uberon_table
 from REDU_conversion_functions import get_ontology_table
 from REDU_conversion_functions import get_taxonomy_info
+#from read_and_validate_redu_from_github import complete_and_fill_REDU_table
+from REDU_conversion_functions import complete_and_fill_REDU_table
+from REDU_conversion_functions import find_column_after_target_column
 import traceback
 from owlready2 import get_ontology
 
-
-def complete_and_fill_REDU_table(df, allowedTerm_dict):
-    """
-    Completes and fills a REDU table with values based on a dictionary of allowed terms and missing values.
-
-    Args:
-    df: A pandas DataFrame containing the initial data.
-    allowedTerm_dict: A dictionary containing allowed terms and missing values for each column.
-
-    Returns:
-    A DataFrame that has been filled with default values for missing columns,
-    with values replaced by the corresponding "missing" value from the dictionary 
-    if they are not in the allowed terms or are missing/empty, except for specific columns.
-    """
-    # Convert year to string for comparison
-    if 'YearOfAnalysis' in df.columns:
-        df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str)
-
-    # Add missing columns with their respective default missing value from the dictionary
-    for key, value in allowedTerm_dict.items():
-        if key not in df.columns:
-            df[key] = value['missing']
-
-    # Replace values with the respective "missing" value if they're not in the allowed terms or are missing/empty
-    for key, value in allowedTerm_dict.items():
-        allowed_terms = value['allowed_values']
-        missing_value = value['missing']
-        if key in df.columns:
-            if key not in ["MassiveID", "filename", "AgeInYears"]:
-                df[key] = df[key].apply(lambda x: x if x in allowed_terms else missing_value).fillna(missing_value).replace("", missing_value)
-            else:
-                df[key] = df[key].fillna(missing_value).replace("", missing_value)
-
-    # Ensure the dataframe contains only the columns specified in the dictionary plus 'USI'
-    return df[[*allowedTerm_dict.keys(), 'USI']]
-
-def find_column_after_target_column(df, target_column='', search_column_prefix='Samples_Unit'):
-    if target_column in df.columns:
-        target_index = df.columns.get_loc(target_column)
-        # Check the next 3 columns after the target column
-        for i in range(1, 4):
-            if target_index + i < len(df.columns):
-                next_column = df.columns[target_index + i]
-                # Check if the next column starts with the search_column_prefix
-                if next_column.startswith(search_column_prefix):
-                    return next_column
-    return ''  # Return None if no matching column is found
-
+def prefer_extension(group):
+    extensions = group['extension'].values
+    if 'mzml' in extensions or 'mzxml' in extensions:
+        group['keep'] = (group['extension'] == 'mzml') | (group['extension'] == 'mzxml')
+    else:
+        # Mark only the first row to keep if no preferred extension found
+        group['keep'] = [True] + [False] * (len(group) - 1)
+    return group
 
 def update_unassigned_terms(organism_name, autoupdated=False, unassigned_file='unassigned_terms.json'):
     if os.path.exists(unassigned_file):
@@ -273,6 +236,7 @@ def Metabolights2REDU(study_id, **kwargs):
         df_samples.columns = headers
     
         df_study = df_assays.merge(df_samples, left_on='Assay_Sample Name', right_on='Samples_Sample Name', how='inner')
+        df_study['row_id'] = range(1, len(df_study) + 1)
 
         # Duplicate rows if we have mzml AND raw files
         df_study_raw = pd.DataFrame()
@@ -310,14 +274,32 @@ def Metabolights2REDU(study_id, **kwargs):
         
 
         df_study = rename_duplicated_column_names(df_study)
-        df_study['filename'] = df_study['filepath'].apply(lambda x: os.path.basename(x))
+        df_study['filename'] = df_study['filepath']#.apply(lambda x: os.path.basename(x))
+
+        # Ensure the filename is a string and lowercase
+        df_study['filename_lower'] = df_study['filename'].astype(str).str.lower()
+
+        # Perform the split operation with expansion to get two columns
+        split_values = df_study['filename_lower'].str.rsplit('.', n=1, expand=True)
 
         # List of allowed extensions
         allowed_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
+        df_study = df_study[df_study['filename_lower'].apply(lambda x: any(x.endswith(ext) for ext in allowed_extensions))]
 
-        # Use a tuple of allowed extensions for the endswith method
-        df_study = df_study[df_study['filepath'].str.lower().str.endswith(tuple(allowed_extensions))]
-        
+        if len(df_study) == 0:
+            return None
+
+        # Assign the split columns to 'base' and 'extension'
+        df_study['base'] = split_values[0]
+
+        # Initially set 'extension' to None to handle rows without an extension
+        df_study['extension'] = None
+
+        # Only update 'extension' for rows where a split occurred
+        df_study.loc[split_values[1].notna(), 'extension'] = split_values[1]
+
+        df_study = df_study.groupby('row_id').apply(prefer_extension)
+        df_study = df_study[df_study['keep']]
 
         if len(df_study) > 0:
             
@@ -527,7 +509,7 @@ def Metabolights2REDU(study_id, **kwargs):
 
             #add AgeInYears 
             #######
-                df_study['LifeStage'] = df_study['AgeInYears'].apply(lambda x: age_category(x))
+                    df_study['LifeStage'] = df_study['AgeInYears'].apply(lambda x: age_category(x))
 
             #add Sex
             #######
@@ -553,11 +535,11 @@ def Metabolights2REDU(study_id, **kwargs):
             #add MassiveID and USIs
             #######
             df_study['MassiveID'] = study_id
-            df_study['USI'] = 'mzspec:' + study_id + ':' + df_study['filepath']
             
             df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict)
             df_study = df_study.drop_duplicates() #no idea where the duplicates sometimes come from
-
+            print(df_study.columns)
+            print(df_study.head)
             #remove files if they are assigned multiple times as we cannot tell which sample they belong to (this is probably because people make mistakes when creating their study)
             df_study['count'] = df_study.groupby('USI')['USI'].transform('size')
             df_study = df_study[df_study['count'] == 1]
@@ -573,10 +555,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Give an Metabolights study ID and get a REDU table tsv.')
     parser.add_argument("--study_id", type=str, help='An Metabolights study ID such as "MTBLS1015". If "ALL" all studys are requested.', required=True)
     parser.add_argument("--path_to_translation_sheet_csvs", "-csvs", type=str, help="Path to the translation csvs holding translations from MWB to REDU vocabulary", default="none")
-    parser.add_argument("--path_to_allowed_term_json", type=str, help="Path to the json with allowed REDU terms", default="none")
-    parser.add_argument("--path_to_uberon_owl", type=str, help="Path to the owl with UBERON terms", default="none")
-    parser.add_argument("--path_to_cl_owl", type=str, help="Path to the owl with CL terms", default="none")
-    parser.add_argument("--path_to_plant_owl", type=str, help="Path to the owl with CL terms", default="none")
+    parser.add_argument("--path_to_allowed_term_json", type=str, help="Path to the json with allowed REDU terms")
+    parser.add_argument("--path_to_uberon_cl_po_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--path_to_unassigned_term_json", type=str, help="If you want to export a json with terms that have not been associated with anything (optional)", default="none")
     
     
@@ -600,31 +580,13 @@ if __name__ == "__main__":
     else:
         allowedTermSheet_json = args.path_to_allowed_term_json
 
-    if args.path_to_uberon_owl == 'none':
-        path_to_uberon_owl = os.path.join(script_dir, 'allowed_terms', 'uberon-base.owl')
-    else:
-        path_to_uberon_owl = args.path_to_uberon_owl
-
-    if args.path_to_cl_owl == 'none':
-        path_to_cl_owl = os.path.join(script_dir, 'allowed_terms', 'cl.owl')
-    else:
-        path_to_cl_owl = args.path_to_cl_owl
-
-    if args.path_to_plant_owl == 'none':
-        path_to_plant_owl = os.path.join(script_dir, 'allowed_terms', 'po.owl')
-    else:
-        path_to_plant_owl = args.path_to_plant_owl
 
     # Read allowed terms json
     with open(allowedTermSheet_json, 'r') as file:
         allowedTerm_dict = json.load(file)
 
-    # Read Uberon owl
-    uberon_onto = get_uberon_table(path_to_uberon_owl)
-    cl_onto = get_ontology_table(path_to_cl_owl, ont_prefix = 'CL_')
-    po_onto = get_ontology_table(path_to_plant_owl, ont_prefix = 'PO_', rm_synonym_info = True)
-
-    ontology_table = pd.concat([uberon_onto, cl_onto, po_onto], ignore_index=True, sort=False)
+    # Read ontology
+    ontology_table = pd.read_csv(args.path_to_uberon_cl_po_csv)
 
     REDU_dataframes = []
     redu_table_single = pd.DataFrame()
@@ -636,13 +598,16 @@ if __name__ == "__main__":
             print(f"An error occurred with study_id {study_id}: {e}\nTraceback:\n{traceback_info}")
             continue
         if redu_table_single is not None and len(redu_table_single) > 0:
+            print(f'Added {len(redu_table_single)} samples.')
             REDU_dataframes.append(redu_table_single)
+        else:
+            print(f'Added {0} samples.')
 
     if len(REDU_dataframes) > 0:
         redu_tables_all = pd.concat(REDU_dataframes, ignore_index=True)
         redu_tables_all = redu_tables_all.drop_duplicates()
         redu_tables_all.to_csv('Metabolights2REDU_' + args.study_id + '.tsv', sep='\t', index=False, header=True)
-        print(f'Output has been saved to Metabolights2REDU_{args.study_id}.tsv!')
+        print(f'Output of {len(redu_tables_all)} samples has been saved to Metabolights2REDU_{args.study_id}.tsv!')
     else:
         print('nothing to return!')
 

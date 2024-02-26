@@ -139,11 +139,9 @@ def get_taxonomy_id_from_name(species_name):
 
 def convert_to_numeric_or_original(x):
     try:
-        # Attempt to convert to numeric; if successful, return 'numeric'
         numeric_x = pd.to_numeric(x)
         return 'numeric'
     except ValueError:
-        # If a ValueError is raised, return the original value
         return x
 
 
@@ -452,9 +450,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
                 potential_matches = set(df[match_df]).intersection(set(raw_file_name_df[match_raw_file_name_df]))
 
             if potential_matches:
-                # If there are exact matches, perform a traditional merge
                 df = df[['script_id', 'SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value', match_df]]
-                
                 df = df.merge(raw_file_name_df, left_on=match_df, right_on=match_raw_file_name_df, how='left')
             else:
 
@@ -586,7 +582,6 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
             df_outer.loc[df_outer['ChromatographyAndPhase'].str.contains('reverse phase') & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (NOS)'
 
 
-    #df_outer['ChromatographyAndPhase'] = df_outer['CHROMATOGRAPHY_TYPE'] + '|' + df_outer['COLUMN_NAME']
     df_outer['YearOfAnalysis'] = df_outer['ACQUISITION_DATE'].apply(lambda x: extract_years(x))
     df_outer['YearOfAnalysis'] = df_outer.apply(
         lambda x: extract_years(x['CREATED_ON']) if x['YearOfAnalysis'] is None else x['YearOfAnalysis'], axis=1)
@@ -766,8 +761,6 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
 
     MWB_table = MWB_table.merge(df_translations, left_on='UBERONBodyPartName', right_on='sampletype', how='left')
     
-    # pd.set_option('future.no_silent_downcasting', True)
-
     # Convert both columns to string type before filling NA values
     MWB_table['SampleTypeSub1'] = MWB_table['SampleTypeSub1'].astype(str)
     MWB_table['tissue_vs_biofluid'] = MWB_table['tissue_vs_biofluid'].astype(str)
@@ -775,8 +768,6 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
     # Now you can fill NA values without worrying about datatype issues
     MWB_table['SampleTypeSub1'] = MWB_table['SampleTypeSub1'].fillna(MWB_table['tissue_vs_biofluid'])
 
-    #MWB_table['SampleTypeSub1'] = MWB_table['SampleTypeSub1'].fillna(MWB_table['tissue_vs_biofluid'])
-    # MWB_table = MWB_table.infer_objects()
     MWB_table = MWB_table.drop(columns=['sampletype', 'tissue_vs_biofluid'])
 
 
@@ -816,11 +807,6 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         return None
 
     raw_file_name_df['filename_base'] = raw_file_name_df['filename'].apply(lambda x: os.path.basename(x))
-    # print(raw_file_name_df)
-    # if raw_file_name_df['filename_base'].duplicated().any():
-    #     print('Duplicate raw file names present in study {}. (Could attempt to read analysis_id from path)'.format(
-    #         str(study_id)))
-    #     return None
 
     stdy_info_req = requests.get(
         'https://www.metabolomicsworkbench.org/rest/study/study_id/{}/analysis'.format(str(study_id)))
@@ -885,21 +871,6 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     else:
         return None
 
-
-
-    #add USI and correct filename (at this point filenames in redu table could be with our without extension)
-    # raw_file_name_df['filename_match'] = raw_file_name_df['filename'].apply(lambda x: os.path.splitext(os.path.basename(x))[0])
-    # raw_file_name_df['filename'] = raw_file_name_df['filename'].apply(lambda x: os.path.basename(x))
-
-    # redu_df_final['filename_match'] = redu_df_final['filename'].apply(lambda x: os.path.splitext(os.path.basename(x))[0])
-    # redu_df_final = redu_df_final.drop(columns=['filename'])
-
-    # print(redu_df_final)
-
-    # merged_df = pd.merge(redu_df_final, raw_file_name_df[['filename_match', 'filename', 'USI']],
-    #                      left_on='filename_match', right_on='filename_match', how='inner')
-
-    # redu_df_final = merged_df.drop(columns=['filename_match'])
 
     #ensure correct order of columns
     redu_df_final = redu_df_final[["MassiveID",
@@ -991,7 +962,6 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
 
     complete_df['MassiveID'] = Massive_ID
     complete_df['MassiveID'] = complete_df['MassiveID'].apply(lambda x: x.split('|')[0])
-    #complete_df['MassiveID'] = complete_df.apply(lambda x: str(x['MassiveID'].split('|')[0]), axis=1)
 
     complete_df['UniqueSubjectID'] = complete_df.apply(
         lambda x: str(x['MassiveID']) + '_' + str(x['SubjectIdentifierAsRecorded']) 
@@ -1032,6 +1002,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
                             "DepthorAltitudeMeters",
                             "qiita_sample_name"
                             ]
+    
     complete_df[missing_not_imported] = complete_df[missing_not_imported].replace(
         {np.nan: 'ML import: not available', None: 'ML import: not available'})
 
@@ -1045,8 +1016,6 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
                  'qiita_sample_name']] = 'ML import: not available'
 
     REDU_df = complete_df[["MassiveID",
-                           #'filename_raw_path',
-                           #'STUDY_ID',
                            "filename",
                            "SampleType",
                            "SampleTypeSub1",
@@ -1087,9 +1056,7 @@ if __name__ == '__main__':
     parser.add_argument("--study_id", "-mwb_id", type=str, help='An MWB study ID such as "ST002050". If "ALL" all study IDs are requested.', required=True)
     parser.add_argument("--path_to_csvs", "-csvs", type=str, help="Path to the translation csvs holding translations from MWB to REDU vocabulary (optional)", default="translation_sheets")
     parser.add_argument("--path_to_allowed_term_json", "-json", type=str, help="Allowed vocabulary json (optional)", default="allowed_terms")
-    parser.add_argument("--path_to_uberon_owl", type=str, help="Path to the owl with UBERON terms", default="none")
-    parser.add_argument("--path_to_cl_owl", type=str, help="Path to the owl with CL terms", default="none")
-    parser.add_argument("--path_to_plant_owl", type=str, help="Path to the owl with CL terms", default="none")
+    parser.add_argument("--path_to_uberon_cl_po_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
 
     #python3.8 workflows/PublicDataset_ReDU_Metadata_Workflow/bin/MWB_to_REDU.py --study_id ALL --path_to_csvs /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/translation_sheets --path_to_allowed_term_json /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms.json --path_to_uberon_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/uberon-base.owl --path_to_cl_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/cl.owl --path_to_plant_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/po.owl --duplicate_raw_file_handling keep_all
@@ -1106,20 +1073,10 @@ if __name__ == '__main__':
     with open(path_to_allowed_term_json, 'r') as file:
         allowedTerm_dict = json.load(file)
 
-    path_to_uberon_owl = args.path_to_uberon_owl
-    uberon_onto = get_uberon_table(path_to_uberon_owl)
+    # Read ontology
+    ontology_table = pd.read_csv(args.path_to_uberon_cl_po_csv)
 
-    path_to_cl_owl = args.path_to_cl_owl
-    cl_onto = get_ontology_table(path_to_cl_owl, ont_prefix = 'CL_')
-
-    path_to_plant_owl = args.path_to_plant_owl
-    po_onto = get_ontology_table(path_to_plant_owl, ont_prefix = 'PO_', rm_synonym_info = True)
-    
-
-    ontology_table = pd.concat([uberon_onto, cl_onto, po_onto], ignore_index=True, sort=False)
-
-
-
+   
     # result
     if study_id == "ALL":
         # Getting all files

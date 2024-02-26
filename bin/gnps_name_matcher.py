@@ -3,6 +3,7 @@ import pandas as pd
 import argparse
 import collections
 import requests
+import glob
 from io import StringIO
 from subprocess import PIPE, run
 
@@ -74,10 +75,13 @@ def main():
      
     ccms_filenames = collections.defaultdict(set)
     
-    # Read the TSV file and specify the delimiter as a tab
-    df = pd.read_csv(args.passed_file_names, delimiter='\t', header=None, names=['Name'])
-    # Extract the names from a specific column (e.g., column 'Name')
-    passed_file_names = df['Name'].tolist()
+    if args.passed_file_names != 'all':
+        # Read the TSV file and specify the delimiter as a tab
+        df = pd.read_csv(args.passed_file_names, delimiter='\t', header=None, names=['Name'])
+        # Extract the names from a specific column (e.g., column 'Name')
+        passed_file_names = df['Name'].tolist()
+    else:
+        passed_file_names = glob.glob(f"{args.metadata_folder}/redu_*.tsv")
 
     print("echo Iterating though rows now")
     
@@ -89,6 +93,7 @@ def main():
         # print("echo Working on")
         # csv_path = os.path.join(current_dir, './data.csv' file)
         dataset_metadata_df = pd.read_csv( file , delimiter='\t')
+        
         #Renaming the coloumn, Matching common columns and rearranging them in same order to final file
         dataset_metadata_df = dataset_metadata_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'})
         common_cols = list(set(gnps_column_names).intersection(set(dataset_metadata_df.columns)))
@@ -102,6 +107,7 @@ def main():
         # Matching the metadata
         enriched_metadata_df = _match_filenames_and_add_usi(dataset_metadata_df)
         if enriched_metadata_df is not None:
+            print('returning at least some files')
             all_metadata_list.append(enriched_metadata_df)
 
     # Create a DataFrame from the list with headers

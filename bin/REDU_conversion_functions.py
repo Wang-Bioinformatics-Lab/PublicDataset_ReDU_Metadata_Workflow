@@ -7,8 +7,57 @@ from bs4 import BeautifulSoup
 from owlready2 import get_ontology
 import owlready2
 import pandas as pd
+import tqdm
 
 
+
+def complete_and_fill_REDU_table(df, allowedTerm_dict):
+    """
+    Completes and fills a REDU table with values based on a dictionary of allowed terms and missing values.
+
+    Args:
+    df: A pandas DataFrame containing the initial data.
+    allowedTerm_dict: A dictionary containing allowed terms and missing values for each column.
+
+    Returns:
+    A DataFrame that has been filled with default values for missing columns,
+    with values replaced by the corresponding "missing" value from the dictionary 
+    if they are not in the allowed terms or are missing/empty, except for specific columns.
+    """
+    # Convert year to string for comparison
+    if 'YearOfAnalysis' in df.columns:
+        df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str)
+
+    # Add missing columns with their respective default missing value from the dictionary
+    for key, value in allowedTerm_dict.items():
+        if key not in df.columns:
+            df[key] = value['missing']
+
+    # Replace values with the respective "missing" value if they're not in the allowed terms or are missing/empty
+    for key, value in allowedTerm_dict.items():
+        allowed_terms = value['allowed_values']
+        missing_value = value['missing']
+        if key in df.columns:
+            if key not in ["MassiveID", "filename", "AgeInYears"]:
+                df[key] = df[key].apply(lambda x: x if x in allowed_terms else missing_value).fillna(missing_value).replace("", missing_value)
+            else:
+                df[key] = df[key].fillna(missing_value).replace("", missing_value)
+
+    # Ensure the dataframe contains only the columns specified in the dictionary plus 'USI'
+    return df[[*allowedTerm_dict.keys(), 'USI']]
+
+
+def find_column_after_target_column(df, target_column='', search_column_prefix='Samples_Unit'):
+    if target_column in df.columns:
+        target_index = df.columns.get_loc(target_column)
+        # Check the next 3 columns after the target column
+        for i in range(1, 4):
+            if target_index + i < len(df.columns):
+                next_column = df.columns[target_index + i]
+                # Check if the next column starts with the search_column_prefix
+                if next_column.startswith(search_column_prefix):
+                    return next_column
+    return ''  # Return None if no matching column is found
 
 def age_category(age):
     if age is None:
@@ -32,6 +81,43 @@ def age_category(age):
     else:
         return ''
     
+
+def get_taxonomic_name_from_id(ncbi_id):
+    url = f"https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?id={ncbi_id}"
+    attempts = 0
+    max_attempts = 3
+
+    while attempts < max_attempts:
+        try:
+            response = requests.get(url)
+            response.raise_for_status()  # Check for HTTP errors.
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Attempt to find the taxonomic name more reliably.
+            title_content = soup.title.string
+            # Adjusting strategy to account for potential differences in page structure.
+            if "Taxonomy browser" in title_content:
+                taxonomic_name = title_content.split("(")[-1].split(")")[0]
+            else:
+                # Fallback if the expected pattern is not found
+                header = soup.find('h2')
+                if header and "Taxonomy browser" in header.text:
+                    taxonomic_name = header.text.split("(")[-1].split(")")[0]
+                else:
+                    raise ValueError("Taxonomic name pattern not recognized.")
+
+            if taxonomic_name:  # Check if a name was found
+                return taxonomic_name
+            else:
+                raise ValueError("Taxonomic name not found.")
+        except Exception as e:
+            print(f"Attempt {attempts + 1}: An error occurred - {e}")
+            time.sleep(6)  # Wait before retrying
+            attempts += 1
+
+    return None
+                      
+
 def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
     if ncbi_id is not None and ncbi_id != "NA":
         cell_culture_key_words = ["cell", "media", "culture"]
@@ -113,23 +199,12 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
             continue
 
     req_ncbi_name = get_taxonomy_id_from_name(organism_name)
-    autoupdate = False
-
 
     if req_ncbi_name is not None:
 
-        print([req_ncbi_name + '__AUTOUPDATE'])
+        req_name = get_taxonomic_name_from_id(req_ncbi_name)
+        return ncbi_id + '|' + str(req_name)
 
-        allowedTerm_dict = adapt_allowed_terms(terms_dict = allowedTerm_dict, 
-                                               redu_variable = 'NCBITaxonomy', 
-                                               term_list = [req_ncbi_name + '__AUTOUPDATE'], 
-                                               add_or_remove = 'add', 
-                                               load_dict_from_path = '/home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms_autoupdate.json', 
-                                               save_dict_to_path = '/home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms_autoupdate.json')
-
-        autoupdate = True
-
-    update_unassigned_terms(organism_name, autoupdated=autoupdate)
     return None
 
 def update_unassigned_terms(organism_name, column_key = "Samples_Organism", autoupdated=False, unassigned_file='unassigned_terms.json'):
@@ -228,35 +303,57 @@ def get_uberon_table(owl_path):
 
 
 
-def get_ontology_table(owl_path, ont_prefix,rm_synonym_info = False):
+def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex'):
     onto = get_ontology(owl_path).load()
 
-            
+    filter_class = None
+    descendants = set()
+    if descendant_node:
+        # Search for the specific class using its node ID
+        filter_class = onto.search_one(iri="*" + descendant_node)
+        if filter_class:
+            # Get all its descendants
+            descendants = set(filter_class.descendants())
+            # Optionally remove the filter_class itself from the set of descendants to exclude it
+            descendants.discard(filter_class)
+
     data = []
-    for cls in onto.classes():
+    for cls in tqdm.tqdm(onto.classes(), desc="Processing classes"):
+        # Skip the class if it is the filter_class itself and descendant_node is provided
+        if descendant_node and cls == filter_class:
+            continue
+
         label = cls.label.first() if cls.label else None
         synonyms = [synonym for synonym in cls.hasExactSynonym] if hasattr(cls, 'hasExactSynonym') else []
 
         if not synonyms:
             synonyms = [label] if label else []
 
+        # Determine if the current class is a descendant of the specified node
+        is_descendant = cls in descendants
 
         for synonym in synonyms:
             data.append({
-                "UBERONOntologyIndex": cls.name,
+                index_column_name: cls.name,
                 "Label": label,
-                "Synonym": synonym
+                "Synonym": synonym,
+                "Is Descendant": is_descendant  # Add this information to each entry
             })
 
     df = pd.DataFrame(data)
-
     df = df[(df["Label"].notna() | df["Synonym"].notna()) & ((df["Label"] != '') | (df["Synonym"] != ''))]
-    df = df[df['UBERONOntologyIndex'].str.startswith(ont_prefix, na=False)]
+    df = df[df[index_column_name].str.startswith(ont_prefix, na=False)]
 
-    if rm_synonym_info == True:
+    if rm_synonym_info:
         df['Synonym'] = df['Synonym'].str.replace(r' \([^)]*\)', '', regex=True)
-    
+
+    # Optionally, you might want to filter the dataframe to include only the descendants
+    if descendant_node:
+        df = df[df["Is Descendant"] == True]
+
     return df
+
+
 
 
 
