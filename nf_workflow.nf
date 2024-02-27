@@ -89,12 +89,6 @@ process gnpsmatchName {
     ${passed_file_names} \
     metadata_folder
     """
-
-    // """
-    // python $TOOL_FOLDER/gnps_name_matcher.py \
-    // passed_file_names.tsv \
-    // metadata_folder
-    // """
 }
 
 process mwbRun {
@@ -118,35 +112,8 @@ process mwbRun {
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
     --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv
     """
-
-    // """
-    // python $TOOL_FOLDER/MWB_to_REDU.py \
-    // --study_id ALL \
-    // --path_to_csvs $TOOL_FOLDER/translation_sheets \
-    // --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json \
-    // --duplicate_raw_file_handling keep_pols_dupl
-    // """
 }
 
-// process validateMetadata_MWB {
-//     publishDir "./nf_output", mode: 'copy'
-
-//     conda "$TOOL_FOLDER/conda_env.yml"
-
-//     input:
-//     file 'file_paths.tsv'
-//     file 'metadata_folder' 
-
-//     output:
-//     file 'passed_file_names.tsv'
-
-//     """
-//     python $TOOL_FOLDER/gnps_validator.py \
-//     file_paths.tsv \
-//     metadata_folder \
-//     --AllowedTermJson_path $TOOL_FOLDER/allowed_terms/allowed_terms.json
-//     """
-// }
 
 process mwbFiles {
     publishDir "./nf_output", mode: 'copy'
@@ -208,16 +175,6 @@ process mlRun {
     --path_to_allowed_term_json ${allowed_terms} \
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path}
     """
-
-    // """
-    // python $TOOL_FOLDER/Metabolights2REDU.py \
-    // --study_id ALL  \
-    // --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
-    // --path_to_allowed_term_json $TOOL_FOLDER/allowed_terms/allowed_terms.json \
-    // --path_to_uberon_owl $TOOL_FOLDER/allowed_terms/uberon-base.owl \
-    // --path_to_cl_owl $TOOL_FOLDER/allowed_terms/cl.owl \
-    // --path_to_plant_owl $TOOL_FOLDER/allowed_terms/po.owl
-    // """
 }
 
 process mlFiles {
