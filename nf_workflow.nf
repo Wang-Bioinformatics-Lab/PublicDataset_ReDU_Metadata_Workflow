@@ -115,7 +115,8 @@ process mwbRun {
     --path_to_csvs $TOOL_FOLDER/translation_sheets \
     --path_to_allowed_term_json ${allowed_terms} \
     --duplicate_raw_file_handling keep_all \
-    --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path}
+    --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
+    --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv
     """
 
     // """
@@ -378,4 +379,5 @@ workflow {
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
     merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch)
+
 }

@@ -29,7 +29,14 @@ def clean_path(path):
     return path
 
 
-def merge_repeated_fileobservations_across_mwatb(df):
+def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
+
+    if 'polarity_table' in kwargs.keys():
+        polarity_table = kwargs['polarity_table']
+    else:
+        polarity_table = pd.DataFrame(columns=['USI', 'negative_polarity_count', 'positive_polarity_count'])
+
+
     def process_group(group):
         # Initialize the list for columns to make the most common
         li_make_most_common = []
@@ -55,6 +62,13 @@ def merge_repeated_fileobservations_across_mwatb(df):
                 group[col] = group[col].iloc[0]
         
         return group
+
+    df = df.merge(polarity_table, left_on='USI', right_on='USI', how='left')
+
+    df = df[~((df['IonizationSourceAndPolarity'].str.contains('negative')) & (df['positive_polarity_count'] > 0))]
+    df = df[~((df['IonizationSourceAndPolarity'].str.contains('positive')) & (df['negative_polarity_count'] > 0))]
+    df = df[~((df['IonizationSourceAndPolarity'].str.contains('alternating')) & ((df['negative_polarity_count'] == 0) | (df['positive_polarity_count'] == 0)))]
+
 
     # Group by 'USI' and apply the processing function to each group
     df = df.groupby('filename').apply(process_group)
@@ -909,7 +923,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
                                    ]]
 
 
-    redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final)
+    redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
 
     redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, add_usi = False, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
 
@@ -1062,6 +1076,7 @@ if __name__ == '__main__':
     parser.add_argument("--path_to_allowed_term_json", "-json", type=str, help="Allowed vocabulary json (optional)", default="allowed_terms")
     parser.add_argument("--path_to_uberon_cl_po_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
+    parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
 
     #python3.8 workflows/PublicDataset_ReDU_Metadata_Workflow/bin/MWB_to_REDU.py --study_id ALL --path_to_csvs /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/translation_sheets --path_to_allowed_term_json /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms.json --path_to_uberon_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/uberon-base.owl --path_to_cl_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/cl.owl --path_to_plant_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/po.owl --duplicate_raw_file_handling keep_all
     print('Starting MWB2REDU script,..')
@@ -1080,6 +1095,8 @@ if __name__ == '__main__':
     # Read ontology
     ontology_table = pd.read_csv(args.path_to_uberon_cl_po_csv)
 
+    # Read polarity file
+    polarity_table = pd.read_csv(args.path_to_polarity_info)
    
     # result
     if study_id == "ALL":
@@ -1104,7 +1121,8 @@ if __name__ == '__main__':
                                           duplicate_raw_file_handling=duplicate_raw_file_handling,
                                           export_to_tsv=False,
                                           allowedTerm_dict=allowedTerm_dict,
-                                          ontology_table=ontology_table)
+                                          ontology_table=ontology_table,
+                                          polarity_table=polarity_table)
                 print('Extracted information for {} samples.'.format(len(result)))
                 if len(result) > 1:
                     all_results_list.append(result)
@@ -1121,6 +1139,7 @@ if __name__ == '__main__':
                                   duplicate_raw_file_handling=duplicate_raw_file_handling,
                                   export_to_tsv=True,
                                   allowedTerm_dict=allowedTerm_dict,
-                                  ontology_table=ontology_table)
+                                  ontology_table=ontology_table,
+                                  polarity_table=polarity_table)
 
     print("Output files written to working directory")
