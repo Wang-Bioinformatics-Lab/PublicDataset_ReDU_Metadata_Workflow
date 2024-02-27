@@ -7,9 +7,11 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 import json
+from tqdm import tqdm
 import time
 from extend_allowed_terms import adapt_allowed_terms 
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import update_unassigned_terms
 from REDU_conversion_functions import get_taxonomy_id_from_name
 from REDU_conversion_functions import get_uberon_table
@@ -909,6 +911,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final)
 
+    redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, add_usi = False, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
+
 
     if export_to_tsv == True:
         redu_df_final.to_csv('{}_REDU_from_MWB.tsv'.format(study_id), sep='\t', index=False, header=True)
@@ -1091,7 +1095,7 @@ if __name__ == '__main__':
         study_list = list(set(study_list))
 
         all_results_list = []
-        for study_id in study_list:
+        for study_id in tqdm(study_list):
             print("Processing ", study_id)
 
             try:

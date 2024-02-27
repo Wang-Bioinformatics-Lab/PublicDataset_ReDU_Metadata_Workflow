@@ -9,7 +9,7 @@ from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_uberon_table
 from REDU_conversion_functions import get_ontology_table
 
-def complete_and_fill_REDU_table(df, allowedTerm_dict, **kwargs):
+def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_allowed_file_extensions = [], **kwargs):
     """
     Completes and fills a REDU table with values based on a dictionary of allowed terms and missing values.
 
@@ -25,10 +25,15 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, **kwargs):
 
     if 'UBERONOntologyIndex_table' in kwargs.keys():
         uberon_ontology_table = kwargs['UBERONOntologyIndex_table']
+    else:
+        uberon_ontology_table = pd.DataFrame(columns=['Label', 'UBERONOntologyIndex'])
+
     if 'DOIDOntologyIndex_table' in kwargs.keys():
         doid_ontology_table = kwargs['DOIDOntologyIndex_table']
         if 'UBERONOntologyIndex' in doid_ontology_table.columns:
             doid_ontology_table.rename(columns={'UBERONOntologyIndex': 'DOIDOntologyIndex'}, inplace=True)
+    else:
+        doid_ontology_table = pd.DataFrame(columns=['Label', 'DOIDOntologyIndex'])
 
     # Convert year to string for comparison
     if 'YearOfAnalysis' in df.columns:
@@ -42,11 +47,15 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, **kwargs):
     columns_to_remove = ['LifeStage', 'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'USI']
     df.drop(columns=[col for col in columns_to_remove if col in df.columns], inplace=True)
 
+    input_columns = set(df.columns)
+
     # Add missing columns with their respective default missing value from the dictionary or generate values if generate == True
     for key, value in allowedTerm_dict.items():
         if key not in df.columns:
             if value['generate'] == 'False':
+                print(f'{key}: ADDED!')
                 if value['missing'] == 'not allowed':
+                    print(f'{key}: MISSING. STOPPING INTERPRETATION!')
                     return pd.DataFrame()
                 else:
                     df[key] = value['missing']
@@ -61,34 +70,73 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, **kwargs):
                 if key == 'DOIDOntologyIndex':
                     df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']], left_on='DOIDCommonName', right_on='Label', how='left')
                     df.drop(columns=['Label'], inplace=True)
-                if key == 'USI':
-                    pass
-                    # df['USI'] = 'mzspec:' + df['MassiveID'] + ':' + df['filename']
+                if key == 'USI' and add_usi == True:
+                    df['USI'] = 'mzspec:' + df['MassiveID'] + ':' + df['filename']
 
 
-    # Replace values with the respective "missing" value if they're not in the allowed terms or are missing/empty
     for key, value in allowedTerm_dict.items():
-        allowed_terms = value['allowed_values']
-        missing_value = value['missing']
-        if key in df.columns:
-            if value['generate'] == 'False':
-                if key != 'filename' and len(allowed_terms) > 1:
-                    df[key] = df[key].apply(lambda x: x if x in allowed_terms else missing_value).fillna(missing_value).replace("", missing_value)
-                elif allowed_terms[0] == '00':
-                    df[key] = df[key].fillna(missing_value).replace("", missing_value)
-                elif allowed_terms[0] == 'numeric':
-                    df[key] = pd.to_numeric(df[key], errors='coerce').fillna(missing_value).replace("", missing_value)
-                elif allowed_terms[0] == 'numeric|numeric':
-                    df[key] = df[key].apply(
-                        lambda x: x if all(part.replace('.', '', 1).isdigit() or part.lstrip('-').replace('.', '', 1).isdigit() for part in x.split('|')) else missing_value
-                    ).replace("", missing_value)
-                elif key == 'filename':
-                    df['filename'] = df['filename'].apply(lambda x: x if any(x.endswith(ext) for ext in allowed_terms) else missing_value)
+        if key in df.columns and value['generate'] == 'False':
+            allowed_terms = value['allowed_values']
+            missing_value = value['missing']
 
+            # Extract unique values from the DataFrame column
+            unique_values = df[key].unique()
+            
+            # Initialize value_map for each condition
+            if key not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) > 1:
+                # General case for non-specific keys with multiple allowed terms
+                value_map = {
+                    observed_value: (
+                        observed_value if observed_value in allowed_terms 
+                        else next((y for y in allowed_terms if "|" in str(observed_value) and y.split("|")[1] == str(observed_value).split("|")[1]), 
+                                next((y for y in allowed_terms if "|" in str(observed_value) and y.split("|")[0] == str(observed_value).split("|")[0]), 
+                                    missing_value))
+                    ) for observed_value in unique_values
+                }
+            elif key in ['NCBITaxonomy', 'MassSpectrometer']:
+                # Specific handling for 'NCBITaxonomy' and 'MassSpectrometer' where direct matching is applied
+                value_map = {
+                    observed_value: observed_value if observed_value in allowed_terms else missing_value
+                    for observed_value in unique_values
+                }
+            elif allowed_terms[0] == '00':
+                # Handling for terms where '00' indicates a placeholder for any value
+                value_map = {x: x if pd.notna(x) and x != "" else missing_value for x in unique_values}
+            elif allowed_terms[0] == 'numeric':
+                # Numeric handling is kept as is
+                df[key] = pd.to_numeric(df[key], errors='coerce').fillna(missing_value).replace("", missing_value)
+                continue
+            elif allowed_terms[0] == 'numeric|numeric':
+                # Handling for numeric ranges split by '|'
+                value_map = {
+                    x: x if all(part.replace('.', '', 1).isdigit() or part.lstrip('-').replace('.', '', 1).isdigit() for part in x.split('|')) else missing_value
+                    for x in unique_values
+                }
+            elif key == 'filename':
+                # Specific handling for filenames with allowed extensions
+                value_map = {x: x if any(x.lower().endswith(ext.lower()) for ext in allowed_terms + other_allowed_file_extensions) else missing_value for x in unique_values}
+
+            # Apply the mapping for columns, except 'numeric' which is handled separately
+            if key != 'numeric':
+                df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
+            
+
+            filtered_map = {k: v for k, v in value_map.items() if k != v}
+            if filtered_map: 
+                print(f"{key}:")
+                for k, v in filtered_map.items():
+                    print(f"  {k}: {v}")
 
     # Ensure the dataframe contains only the columns specified in the dictionary
-    keys_to_include = [key for key in allowedTerm_dict.keys() if key != 'USI']
+    keys_to_include = [key for key in allowedTerm_dict.keys() if key != 'USI' or add_usi]
+
+    ignored_columns = input_columns - set(keys_to_include)
+    print("IGNORED COLUMNS:")
+    for column in ignored_columns:
+        print(f"  {column}")
+
     return df[keys_to_include]
+
 
 
 def clean_read_tsv_quoted_lines(path):

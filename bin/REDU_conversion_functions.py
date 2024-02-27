@@ -44,7 +44,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict):
                 df[key] = df[key].fillna(missing_value).replace("", missing_value)
 
     # Ensure the dataframe contains only the columns specified in the dictionary plus 'USI'
-    return df[[*allowedTerm_dict.keys(), 'USI']]
+    return df[[*allowedTerm_dict.keys()]]
 
 
 def find_column_after_target_column(df, target_column='', search_column_prefix='Samples_Unit'):

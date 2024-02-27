@@ -15,8 +15,8 @@ from REDU_conversion_functions import get_taxonomy_id_from_name
 from REDU_conversion_functions import get_uberon_table
 from REDU_conversion_functions import get_ontology_table
 from REDU_conversion_functions import get_taxonomy_info
-#from read_and_validate_redu_from_github import complete_and_fill_REDU_table
-from REDU_conversion_functions import complete_and_fill_REDU_table
+from read_and_validate_redu_from_github import complete_and_fill_REDU_table
+#from REDU_conversion_functions import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 import traceback
 from owlready2 import get_ontology
@@ -536,10 +536,9 @@ def Metabolights2REDU(study_id, **kwargs):
             #######
             df_study['MassiveID'] = study_id
             
-            df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict)
+            df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
             df_study = df_study.drop_duplicates() #no idea where the duplicates sometimes come from
-            print(df_study.columns)
-            print(df_study.head)
+
             #remove files if they are assigned multiple times as we cannot tell which sample they belong to (this is probably because people make mistakes when creating their study)
             df_study['count'] = df_study.groupby('USI')['USI'].transform('size')
             df_study = df_study[df_study['count'] == 1]
@@ -610,7 +609,4 @@ if __name__ == "__main__":
         print(f'Output of {len(redu_tables_all)} samples has been saved to Metabolights2REDU_{args.study_id}.tsv!')
     else:
         print('nothing to return!')
-
-
-
 
