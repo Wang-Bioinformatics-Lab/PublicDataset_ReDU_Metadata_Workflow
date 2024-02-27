@@ -28,5 +28,5 @@ To run the script, use the following command:<br>
 _python3 gnps_name_matcher.py_
 
 
-_**allowed_terms/allowed_terms.csv**_<br>
-The terms allowed in REDU are pulled from this csv. If you want to add more terms they have to be added to this csv. Also update the google sheet (https://docs.google.com/spreadsheets/d/1v71bnUd8fiXX51zuZIUAvYETWmpwFQj-M3mu4CNsHBU/edit#gid=791995663) by copy pasting the changed csv onto the google sheet so all terms are up to date. 
+_**data/allowed_terms.json**_<br>
+The terms allowed in REDU are pulled from this json. Terms from controlled ontologies for variables MassSpectrometer, NCBITaxonomy, UBERONBodyPartName, and DOIDCommonName are added to json within the workflow. Run the data/get_data.sh to download required data. Additional terms can be added to the json, but dont forget to update also in the the google sheet (https://docs.google.com/spreadsheets/d/1v71bnUd8fiXX51zuZIUAvYETWmpwFQj-M3mu4CNsHBU/edit#gid=791995663). 
