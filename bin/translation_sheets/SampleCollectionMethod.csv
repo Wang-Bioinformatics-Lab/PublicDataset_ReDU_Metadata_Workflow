@@ -1,0 +1,64 @@
+MWB,REDU
+"blood draw, capillary","blood draw, capillary"
+"blood draw, venous","blood draw, venous"
+blood NOS,blood NOS
+dermaplane,dermaplane
+"extract, solid phase extraction (C18)","extract, solid phase extraction (C18)"
+feces,feces
+hollow fiber-liquid phase microextraction,hollow fiber-liquid phase microextraction
+"in vivo, head space solid phase microextraction","in vivo, head space solid phase microextraction"
+liquid,liquid
+"liquid, solid phase extraction (ABN)","liquid, solid phase extraction (ABN)"
+"liquid, solid phase extraction (C18)","liquid, solid phase extraction (C18)"
+"liquid, solid phase extraction (PPL)","liquid, solid phase extraction (PPL)"
+lumbar puncture,lumbar puncture
+ML import: not available,ML import: not available
+needle trap device,needle trap device
+not applicable,not applicable
+not specified,not specified
+"solid material, dried","solid material, dried"
+"solid material, dried in silica at room temperature","solid material, dried in silica at room temperature"
+"solid material, fresh","solid material, fresh"
+"solid material, frozen","solid material, frozen"
+"solid material, head space solid phase microextraction","solid material, head space solid phase microextraction"
+"solid material, NOS","solid material, NOS"
+"solid material, PDMS patch, head space solid phase microextraction","solid material, PDMS patch, head space solid phase microextraction"
+"solid, solid phase extraction (C18)","solid, solid phase extraction (C18)"
+"swabs, dry","swabs, dry"
+"swabs, moist (50% EtOH)","swabs, moist (50% EtOH)"
+"swabs, solution (100% EtOH)","swabs, solution (100% EtOH)"
+"swabs, solution (95% EtOH)","swabs, solution (95% EtOH)"
+"urine, 24-hour","urine, 24-hour"
+"urine, NOS","urine, NOS"
+"urine, spot","urine, spot"
+"liquid, solid phase extraction (polymeric resin)","liquid, solid phase extraction (polymeric resin)"
+Venipuncture,"blood draw, venous"
+Intravenous,"blood draw, venous"
+snap freezen in LN2 right after placenta was isolated,"solid material, frozen"
+tissue flash frozen in liquid nitrogen immediately after sacrifice,"solid material, frozen"
+50 mg collected and flash frozen in Liquid N2,"solid material, frozen"
+Venous,"blood draw, venous"
+Pipette,liquid
+Peripheral venipuncture,"blood draw, venous"
+Heart tissue was collected under sterile conditions and immediately frozen in liquid nitrogen,"solid material, frozen"
+"Surgical removal, tissue snap-freezing","solid material, frozen"
+Centrifugation from suspension culture.,"solid material, fresh"
+Snap frozen,"solid material, frozen"
+Snap freezen in LN2 right after excretion,feces
+swab,"swabs, dry"
+Blood sample (3-5ml) was collected from the aorta of the rat under anesthesia centrifuged to obtain serum,blood NOS
+Venepuncture,"blood draw, venous"
+Fasting venipuncture,"blood draw, venous"
+Jugular vein puncture,"blood draw, venous"
+submandibular and terminal blood collection,blood NOS
+"Whole blood is collected in an EDTA vacutainer (Visit 2; after two weeks of fluticasone therapy) and is stored on ice. Within 2 hr of collection, the sample is centrifuged at 2000 rpm in a 4°C refrigerated benchtop centrifuge and the plasma is recovered and stored in aliquots at -80°C.",blood NOS
+cardiac puncture,blood NOS
+Flash frozen in Liquid N2,"solid material, frozen"
+22-gauge needle with gentle suction,needle trap device
+aspiration,needle trap device
+"Aspiration of 4 mL media, transfer of sample (1 mL) to 1.5 mL tubes",needle trap device
+Blood collection using venipuncture needle,"blood draw, venous"
+Clean catch or catheterized,"urine, NOS"
+Fecal matter collection,feces
+flash freezing in liquid nitrogen,"solid material, frozen"
+IV,"blood draw, venous"

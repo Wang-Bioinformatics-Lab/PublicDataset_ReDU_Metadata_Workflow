@@ -1,0 +1,433 @@
+MWB,REDU
+Agilent 5973,Agilent GC 6890|MS:5973
+Agilent 5973N,Agilent GC 6890|MS:5973
+Agilent 5977B,Agilent GC 7820A-MS 5977B|not available
+Agilent 5997B,Agilent GC 7820A-MS 5977B|not available
+Agilent 6490 QQQ,6490 Triple Quadrupole LC/MS|MS:1002446
+Agilent 6490 QQQ Agilent 6490,6490 Triple Quadrupole LC/MS|MS:1002446
+Agilent 6490A QQQ,6490 Triple Quadrupole LC/MS|MS:1002446
+Agilent 6540 QTOF,6540 Q-TOF LC/MS|MS:1002789
+Agilent 6545,6545 Q-TOF LC/MS|MS:1002791
+Agilent 6545 LC/QTOF,6545 Q-TOF LC/MS|MS:1002791
+Agilent 6545 QTOF,6545 Q-TOF LC/MS|MS:1002791
+Agilent 6545 QToF,6545 Q-TOF LC/MS|MS:1002791
+Agilent 6545 Q-TOF,6545 Q-TOF LC/MS|MS:1002791
+Agilent 6545XT QTOF,6545 Q-TOF LC/MS|MS:1002791
+Agilent 6890,Agilent GC 6890|MS:5973
+Agilent qTOF 6545,6545 Q-TOF LC/MS|MS:1002791
+Bruker Daltonics maXis-II UHR-ESI-QqTOF,Bruker Daltonics maXis series|MS:1001547
+Bruker Impact HD,impact HD|MS:1002667
+Bruker Impact II HD,impact II|MS:1002666
+Bruker impact II UHPLC-QTOF system,impact II|MS:1002666
+Bruker maXis II,Bruker Daltonics maXis series|MS:1001547
+Bruker Maxis II ETD,Bruker Daltonics maXis series|MS:1001547
+Bruker maXis Impact qTOF,Bruker Daltonics maXis series|MS:1001547
+Bruker MicrOTOF II,Bruker Daltonics micrOTOF series|MS:1001536
+Bruker MicrOTOF II spectrometer,Bruker Daltonics micrOTOF series|MS:1001536
+Bruker micrOTOFQ II,Bruker Daltonics micrOTOF series|MS:1001536
+Q Exactive,Q Exactive|MS:1001911
+Q Exactive Focus,Q Exactive|MS:1001911
+Thermo Exactive,Q Exactive|MS:1001911
+Thermo Exactive Orbitrap,Q Exactive|MS:1001911
+Thermo Exactive Plus Orbitrap,Q Exactive Plus|MS:1002634
+Thermo LTQ,LTQ Orbitrap|MS:1000449
+Thermo LTQ Orbitrap Velos,LTQ Orbitrap Velos|MS:1001742
+Thermo LTQ XL,LTQ XL|MS:1000854
+Thermo LTQ-Orbitrap Velos Pro,LTQ Orbitrap Velos|MS:1001742
+Thermo Q Exactive Orbitrap,Q Exactive|MS:1001911
+Thermo Q Exactive Orbitrap Thermo Q Exactive Orbitrap,Q Exactive|MS:1001911
+Thermo Q Exactive Orbitrap Thermo Scientific- Q Exactive,Q Exactive|MS:1001911
+Thermo Q Exactive Orbitrap Thermo Scientific- Q Exactive:,Q Exactive|MS:1001911
+Thermo Q Exactive Orbitrap Thermo Scientific Q-Exactive,Q Exactive|MS:1001911
+Thermo Q Exactive Plus Orbitrap,Q Exactive Plus|MS:1002634
+Thermo Q-Exactive,Q Exactive|MS:1001911
+Thermo Scientific TSQ Altis Triple Quadrupole Mass Spectrometer,TSQ|MS:1000750
+Thermo TQS Vantage,TSQ|MS:1000750
+Thermo Trace DSQ,TSQ|MS:1000750
+Thermo TSQ Quantum Ultra,TSQ|MS:1000750
+Thermo TSQ8000_evo,TSQ|MS:1000750
+Thermo Velos LTQ Orbitrap,LTQ Orbitrap Velos|MS:1001742
+Thermo Velos Pro Linear Ion Trap,LTQ Orbitrap Velos|MS:1001742
+Thermo Velos Pro Orbitrap,LTQ Orbitrap Velos|MS:1001742
+ThermoFisher Q Exactive Hybrid Quadrupole-Orbitrap Mass Spectrometry (QE),Q Exactive|MS:1001911
+Waters Synapt G2 QTOF,Xevo G2 Tof|MS:1001784
+Waters Synapt G2 S QTOF,Xevo G2-S QTof|MS:1002276
+Waters Synapt G2 Si QTOF,Xevo G2-S QTof|MS:1002276
+Waters Synapt G2 XS QTOF,Xevo G2 XS Tof|MS:1002729
+Waters Synapt-G2-Si,Xevo G2-S QTof|MS:1002276
+Waters Synapt-HDMS,Synapt HDMS|MS:1001781
+Waters TQ-S MS,Xevo TQ-S|1001792
+Waters Xebo-G2-S,Xevo G2-S QTof|MS:1002276
+Waters Xevo G2 XS QTof,Xevo G2 XS Tof|MS:1002729
+Waters Xevo G2 XS QTOF,Xevo G2 XS Tof|MS:1002729
+Waters Xevo G2-XS,Xevo G2 XS Tof|MS:1002729
+Waters Xevo-G2-S,Xevo G2-S QTof|MS:1002276
+Waters Xevo-G2-XS,Xevo G2 XS Tof|MS:1002729
+Waters Xevo-TQ-S,Xevo TQ-S|MS:1001792
+"Xevo G2-XS, Waters",Xevo G2 XS Tof|MS:1002729
+6540 Q-TOF LC/MS|MS:1002789,6540 Q-TOF LC/MS|MS:1002789
+impact HD|MS:1002667,impact HD|MS:1002667
+impact|MS:1002077,impact|MS:1002077
+LTQ Orbitrap XL|MS:1000556,LTQ Orbitrap XL|MS:1000556
+maXis II|MS:1003004,maXis II|MS:1003004
+micrOTOF-Q II|MS:1000704,micrOTOF-Q II|MS:1000704
+not specified,not specified
+Q Exactive Plus|MS:1002634,Q Exactive Plus|MS:1002634
+Q Exactive|MS:1001911,Q Exactive|MS:1001911
+Xevo G2 XS Tof|MS:1002729,Xevo G2 XS Tof|MS:1002729
+Agilent GC 6890-MS 5973,Agilent GC 6890-MS 5973
+Xevo TQ-S|1001792,Xevo TQ-S|1001792
+6430 Triple Quadrupole LC/MS|MS:1002799,6430 Triple Quadrupole LC/MS|MS:1002799
+6490 Triple Quadrupole LC/MS|MS:1002446,6490 Triple Quadrupole LC/MS|MS:1002446
+Bruker Daltonics esquire series|MS:1001533,Bruker Daltonics esquire series|MS:1001533
+Bruker Daltonics maXis series|MS:1001547,Bruker Daltonics maXis series|MS:1001547
+Bruker Daltonics micrOTOF series|MS:1001536,Bruker Daltonics micrOTOF series|MS:1001536
+LTQ Orbitrap Velos|MS:1001742,LTQ Orbitrap Velos|MS:1001742
+LTQ Orbitrap|MS:1000449,LTQ Orbitrap|MS:1000449
+LTQ XL|MS:1000854,LTQ XL|MS:1000854
+Quattro Ultima|MS:1000192,Quattro Ultima|MS:1000192
+Synapt HDMS|MS:1001781,Synapt HDMS|MS:1001781
+TSQ Quantum Access|MS:1000644,TSQ Quantum Access|MS:1000644
+TSQ|MS:1000750,TSQ|MS:1000750
+TripleTOF 5600+|MS:1002584,TripleTOF 5600+|MS:1002584
+Xevo G2 Tof|MS:1001784,Xevo G2 Tof|MS:1001784
+Xevo G2-S QTof|MS:1002276,Xevo G2-S QTof|MS:1002276
+Xevo TQ-S|MS:1001792,Xevo TQ-S|MS:1001792
+impact II|MS:1002666,impact II|MS:1002666
+Agilent GC 6890|MS:5973,Agilent GC 6890|MS:5973
+6545 Q-TOF LC/MS|MS:1002791,6545 Q-TOF LC/MS|MS:1002791
+Agilent GC 7820A-MS 5977B|not available,Agilent GC 7820A-MS 5977B|not available
+TEMPUS TOF,TEMPUS TOF|MS:1000196
+Q-Tof micro,Q-Tof micro|MS:1000188
+MAT95XP,MAT95XP|MS:1000175
+apex IV,apex IV|MS:1000141
+Xevo Q-Tof,Xevo Q-Tof|MS:1001785
+apex ultra,apex ultra|MS:1000695
+MAT900XP Trap,MAT900XP Trap|MS:1000174
+Shimadzu MALDI-7090,Shimadzu MALDI-7090|MS:1002382
+Bruker Daltonics HCT Series,Bruker Daltonics HCT Series|MS:1000697
+6330 Ion Trap LC/MS,6330 Ion Trap LC/MS|MS:1000475
+Bruker Daltonics flex series,Bruker Daltonics flex series|MS:1001534
+LCMS-8045,LCMS-8045|MS:1003001
+TSQ 7000,TSQ 7000|MS:1000749
+API 2000,API 2000|MS:1000145
+Pegasus 4D,Pegasus 4D|MS:1001945
+Thermo Finnigan instrument model,Thermo Finnigan instrument model|MS:1000125
+LTQ Velos,LTQ Velos|MS:1000855
+ITQ 700,ITQ 700|MS:1000635
+6110 Quadrupole LC/MS,6110 Quadrupole LC/MS|MS:1000468
+SQ Detector 2,SQ Detector 2|MS:1002274
+Voyager-DE STR,Voyager-DE STR|MS:1000204
+micrOTOF II,micrOTOF II|MS:1001540
+Bruker Daltonics timsTOF series,Bruker Daltonics timsTOF series|MS:1003123
+TSQ Vantage,TSQ Vantage|MS:1001510
+BioTOF-Q,BioTOF-Q|MS:1000152
+ACQUITY UPLC,ACQUITY UPLC|MS:1001761
+amaZon ETD,amaZon ETD|MS:1001542
+5800 TOF/TOF,5800 TOF/TOF|MS:1001482
+8800 Triple Quadrupole ICP-MS,8800 Triple Quadrupole ICP-MS|MS:1002805
+GCMS-QP2010SE,GCMS-QP2010SE|MS:1003152
+TSQ Quantum,TSQ Quantum|MS:1000199
+6220 Time-of-Flight LC/MS,6220 Time-of-Flight LC/MS|MS:1000675
+API 365,API 365|MS:1002590
+Finnigan MAT instrument model,Finnigan MAT instrument model|MS:1000493
+microflex,microflex|MS:1000177
+LCMS-2010A,LCMS-2010A|MS:1000606
+ACQUITY UPLC Systems with 2D Technology,ACQUITY UPLC Systems with 2D Technology|MS:1001765
+6150 Quadrupole LC/MS,6150 Quadrupole LC/MS|MS:1002795
+QSTAR Elite,QSTAR Elite|MS:1000655
+Agilent 6546 QTOF,Agilent 6546 QTOF|not available
+IsoPrime,IsoPrime|MS:1000164
+6120A Quadrupole LC/MS,6120A Quadrupole LC/MS|MS:1000469
+6538 Q-TOF LC/MS,6538 Q-TOF LC/MS|MS:1002788
+Synapt MS,Synapt MS|MS:1001782
+6310 Ion Trap LC/MS,6310 Ion Trap LC/MS|MS:1000473
+DFS,DFS|MS:1000640
+autoflex,autoflex|MS:1001555
+Acquity SQD,Acquity SQD|MS:1001787
+EVOQ Elite,EVOQ Elite|MS:1002297
+Xevo G3 QTof,Xevo G3 QTof|MS:1003380
+GC Quantum,GC Quantum|MS:1000558
+3100,3100|MS:1001786
+GCT,GCT|MS:1000159
+Quattro micro GC,Quattro micro GC|MS:1001789
+MALDI SYNAPT G2-Si,MALDI SYNAPT G2-Si|MS:1002727
+Dionex instrument model,Dionex instrument model|MS:1000491
+API 150EX,API 150EX|MS:1000143
+SSQ 7000,SSQ 7000|MS:1000748
+AutoSpec Premier,AutoSpec Premier|MS:1002277
+MALDI LTQ XL,MALDI LTQ XL|MS:1000642
+6550A iFunnel Q-TOF LC/MS,6550A iFunnel Q-TOF LC/MS|MS:1002784
+apex Q,apex Q|MS:1000142
+QTRAP 6500,QTRAP 6500|MS:1002581
+IsoProbe,IsoProbe|MS:1000165
+API 3000,API 3000|MS:1000146
+Orbitrap Fusion,Orbitrap Fusion|MS:1002416
+IonSpec instrument model,IonSpec instrument model|MS:1000123
+esquire 6000,esquire 6000|MS:1000157
+NG-5400,NG-5400|MS:1000180
+6130 Quadrupole LC/MS,6130 Quadrupole LC/MS|MS:1000470
+6550 iFunnel Q-TOF LC/MS,6550 iFunnel Q-TOF LC/MS|MS:1002783
+SELECT SERIES Cyclic IMS,SELECT SERIES Cyclic IMS|MS:1003184
+Bruker Daltonics apex series,Bruker Daltonics apex series|MS:1001556
+6560 Q-TOF LC/MS,6560 Q-TOF LC/MS|MS:1002792
+AXIMA Assurance Linear MALDI-TOF,AXIMA Assurance Linear MALDI-TOF|MS:1000612
+LTQ XL ETD,LTQ XL ETD|MS:1000638
+rapifleX,rapifleX|MS:1003122
+timsTOF SCP,timsTOF SCP|MS:1003231
+Xevo G2-XS QTof,Xevo G2-XS QTof|MS:1003252
+HiRes ESI,HiRes ESI|MS:1000162
+Synapt XS,Synapt XS|MS:1003183
+LECO instrument model,LECO instrument model|MS:1001800
+DSQ II,DSQ II|MS:1000641
+6460 Triple Quadrupole LC/MS,6460 Triple Quadrupole LC/MS|MS:1002445
+2000 QTRAP,2000 QTRAP|MS:1002577
+Orbitrap Exploris 480,Orbitrap Exploris 480|MS:1003028
+HCTultra ETD II,HCTultra ETD II|MS:1000700
+SymBiot XVI,SymBiot XVI|MS:1000195
+6410 Triple Quadrupole LC/MS,6410 Triple Quadrupole LC/MS|MS:1000477
+compact,compact|MS:1002280
+API 5000,API 5000|MS:1000654
+autoflex III smartbeam,autoflex III smartbeam|MS:1000696
+Bruker Daltonics BioTOF series,Bruker Daltonics BioTOF series|MS:1001535
+TruTOF,TruTOF|MS:1001804
+Element 2,Element 2|MS:1000646
+Q TRAP,Q TRAP|MS:1000187
+Synapt G2-S HDMS,Synapt G2-S HDMS|MS:1001779
+Triple Quad 6500+,Triple Quad 6500+|MS:1002595
+Exactive,Exactive|MS:1000649
+6495B Triple Quadrupole LC/MS,6495B Triple Quadrupole LC/MS|MS:1002801
+LCQ Advantage,LCQ Advantage|MS:1000167
+3200 QTRAP,3200 QTRAP|MS:1000651
+Xevo TQ MS,Xevo TQ MS|MS:1001790
+Triple Quad 3500,Triple Quad 3500|MS:1002591
+SCION SQ,SCION SQ|MS:1002295
+QTRAP 5500,QTRAP 5500|MS:1000931
+Synapt G2 HDMS,Synapt G2 HDMS|MS:1001777
+3500 QTRAP,3500 QTRAP|MS:1002579
+TSQ 9000,TSQ 9000|MS:1002876
+LTQ FT Ultra,LTQ FT Ultra|MS:1000557
+LTQ Orbitrap XL ETD,LTQ Orbitrap XL ETD|MS:1000639
+API 300,API 300|MS:1002588
+DSQ,DSQ|MS:1000634
+6470A Triple Quadrupole LC/MS,6470A Triple Quadrupole LC/MS|MS:1000935
+TSQ Endura,TSQ Endura|MS:1002419
+microflex LRF,microflex LRF|MS:1001543
+ultima,ultima|MS:1000200
+Xevo G2-S Tof,Xevo G2-S Tof|MS:1002275
+6230B Time-of-Flight LC/MS,6230B Time-of-Flight LC/MS|MS:1002798
+4000 QTRAP,4000 QTRAP|MS:1000139
+X500R QTOF,X500R QTOF|MS:1002674
+ITQ 1100,ITQ 1100|MS:1000637
+autoflex III TOF/TOF smartbeam,autoflex III TOF/TOF smartbeam|MS:1001554
+Q-Tof Premier,Q-Tof Premier|MS:1000632
+Orbitrap Eclipse,Orbitrap Eclipse|MS:1003029
+TRITON,TRITON|MS:1000198
+Bruker Daltonics SCION series,Bruker Daltonics SCION series|MS:1002293
+ACQUITY UPLC H-Class Bio,ACQUITY UPLC H-Class Bio|MS:1001763
+Applied Biosystems instrument model,Applied Biosystems instrument model|MS:1000495
+amaZon Speed ETD,amaZon Speed ETD|MS:1002300
+Velos Plus,Velos Plus|MS:1001909
+quattro micro,quattro micro|MS:1000191
+7000A Triple Quadrupole GC/MS,7000A Triple Quadrupole GC/MS|MS:1002802
+timsTOF fleX,timsTOF fleX|MS:1003124
+SCIEX instrument model,SCIEX instrument model|MS:1000121
+LTQ,LTQ|MS:1000447
+GC IsoLink,GC IsoLink|MS:1000648
+Xevo TQ-XS,Xevo TQ-XS|MS:1002730
+M@LDI L,M@LDI L|MS:1000170
+neptune,neptune|MS:1000179
+OmniFlex,OmniFlex|MS:1000183
+Q Exactive UHMR,Q Exactive UHMR|MS:1003245
+TSQ Altis,TSQ Altis|MS:1002874
+DELTAplusXP,DELTAplusXP|MS:1000154
+API 100LC,API 100LC|MS:1002586
+Shimadzu MALDI-TOF instrument model,Shimadzu MALDI-TOF instrument model|MS:1000602
+6230A Time-of-Flight LC/MS,6230A Time-of-Flight LC/MS|MS:1002797
+Varian instrument model,Varian instrument model|MS:1000489
+HCT,HCT|MS:1000160
+TRACE DSQ,TRACE DSQ|MS:1000197
+AXIMA Confidence MALDI-TOF,AXIMA Confidence MALDI-TOF|MS:1000611
+Triple Quad 4500,Triple Quad 4500|MS:1002592
+TSQ Quantum Ultra,TSQ Quantum Ultra|MS:1000751
+MALDI Synapt G2-S HDMS,MALDI Synapt G2-S HDMS|MS:1001773
+Surveyor MSQ,Surveyor MSQ|MS:1000193
+6520A Quadrupole Time-of-Flight LC/MS,6520A Quadrupole Time-of-Flight LC/MS|MS:1000677
+Bruker Daltonics solarix series,Bruker Daltonics solarix series|MS:1001548
+ITQ 900,ITQ 900|MS:1000636
+6495A Triple Quadrupole LC/MS,6495A Triple Quadrupole LC/MS|MS:1002800
+Thermo Scientific instrument model,Thermo Scientific instrument model|MS:1000494
+TSQ Quantum Ultra AM,TSQ Quantum Ultra AM|MS:1000743
+LTQ Velos ETD,LTQ Velos ETD|MS:1000856
+LCQ Classic,LCQ Classic|MS:1000168
+Shimadzu Scientific Instruments instrument model,Shimadzu Scientific Instruments instrument model|MS:1000603
+6530A Q-TOF LC/MS,6530A Q-TOF LC/MS|MS:1002786
+autoflex II,autoflex II|MS:1000148
+6340 Ion Trap LC/MS,6340 Ion Trap LC/MS|MS:1000476
+4800 Proteomics Analyzer,4800 Proteomics Analyzer|MS:1000658
+ultraflex TOF/TOF,ultraflex TOF/TOF|MS:1000202
+TripleTOF 5600,TripleTOF 5600|MS:1000932
+LCMS-9030,LCMS-9030|MS:1002998
+Xevo TQ-S micro,Xevo TQ-S micro|MS:1002731
+Bruker Daltonics instrument model,Bruker Daltonics instrument model|MS:1000122
+ultrafleXtreme,ultrafleXtreme|MS:1001544
+DELTA plusAdvantage,DELTA plusAdvantage|MS:1000153
+LXQ,LXQ|MS:1000450
+MALDI Synapt G2 HDMS,MALDI Synapt G2 HDMS|MS:1001771
+Orbitrap Astral,Orbitrap Astral|MS:1003378
+MALDI LTQ Orbitrap,MALDI LTQ Orbitrap|MS:1000643
+TSQ Altis Plus,TSQ Altis Plus|MS:1003292
+LCMS-8040,LCMS-8040|MS:1003002
+TRIZAIC UPLC nanoTile,TRIZAIC UPLC nanoTile|MS:1001769
+Orbitrap Exploris 120,Orbitrap Exploris 120|MS:1003095
+Voyager-DE PRO,Voyager-DE PRO|MS:1000203
+TripleTOF 6600,TripleTOF 6600|MS:1002533
+Triple Quad 6500,Triple Quad 6500|MS:1002594
+AXIMA CFR MALDI-TOF,AXIMA CFR MALDI-TOF|MS:1000607
+proteomics solution 1,proteomics solution 1|MS:1000186
+TSQ Quantiva,TSQ Quantiva|MS:1002418
+autoflex TOF/TOF,autoflex TOF/TOF|MS:1000149
+Orbitrap Ascend,Orbitrap Ascend|MS:1003356
+6495C Triple Quadrupole LC/MS,6495C Triple Quadrupole LC/MS|MS:1000937
+Thermo Fisher Scientific instrument model,Thermo Fisher Scientific instrument model|MS:1000483
+4700 Proteomics Analyzer,4700 Proteomics Analyzer|MS:1000140
+PolarisQ,PolarisQ|MS:1000185
+6210 Time-of-Flight LC/MS,6210 Time-of-Flight LC/MS|MS:1000472
+Agilent instrument model,Agilent instrument model|MS:1000490
+OMEGA-2001,OMEGA-2001|MS:1000182
+LCMS-2020,LCMS-2020|MS:1003003
+Element GD,Element GD|MS:1000647
+MAT95XP Trap,MAT95XP Trap|MS:1000176
+LCQ Fleet,LCQ Fleet|MS:1000578
+LTQ FT,LTQ FT|MS:1000448
+AXIMA-QIT,AXIMA-QIT|MS:1000608
+LTQ Orbitrap Classic,LTQ Orbitrap Classic|MS:1002835
+Acquity UPLC PDA,Acquity UPLC PDA|MS:1000818
+ZenoTOF 7600,ZenoTOF 7600|MS:1003293
+1200 series LC/MSD VL,1200 series LC/MSD VL|MS:1000478
+ISQ,ISQ|MS:1001908
+SELECT SERIES MRT,SELECT SERIES MRT|MS:1003185
+API 350,API 350|MS:1002589
+AXIMA-CFR plus,AXIMA-CFR plus|MS:1000609
+Element XR,Element XR|MS:1000645
+Synapt G2-S MS,Synapt G2-S MS|MS:1001780
+Waters instrument model,Waters instrument model|MS:1000126
+autoflex II TOF/TOF,autoflex II TOF/TOF|MS:1001553
+MALDI Synapt MS,MALDI Synapt MS|MS:1001776
+Citius HRT,Citius HRT|MS:1001802
+micrOTOF,micrOTOF|MS:1000702
+microTOF LC,microTOF LC|MS:1000178
+Q-Tof Ultima,Q-Tof Ultima|MS:1000189
+microflex LT,microflex LT|MS:1000701
+Platform ICP,Platform ICP|MS:1000184
+API 100,API 100|MS:1002585
+ACQUITY RDa Detector,ACQUITY RDa Detector|MS:1003381
+timsTOF,timsTOF|MS:1003229
+LCQ Deca,LCQ Deca|MS:1000554
+7800 Quadrupole ICP-MS,7800 Quadrupole ICP-MS|MS:1002804
+Hitachi instrument model,Hitachi instrument model|MS:1000488
+HCTplus,HCTplus|MS:1000161
+Orbitrap Exploris 240,Orbitrap Exploris 240|MS:1003094
+Shimadzu instrument model,Shimadzu instrument model|MS:1000124
+QTRAP 4500,QTRAP 4500|MS:1002580
+6542 Q-TOF LC/MS,6542 Q-TOF LC/MS|MS:1002790
+BioTOF II,BioTOF II|MS:1000151
+EVOQ Qube,EVOQ Qube|MS:1002298
+Acquity UPLC FLR,Acquity UPLC FLR|MS:1000819
+nanoACQUITY UPLC,nanoACQUITY UPLC|MS:1001766
+amaZon Speed,amaZon Speed|MS:1002301
+6140 Quadrupole LC/MS,6140 Quadrupole LC/MS|MS:1000471
+6420 Triple Quadrupole LC/MS,6420 Triple Quadrupole LC/MS|MS:1002444
+TripleTOF 4600,TripleTOF 4600|MS:1002583
+Pegasus III,Pegasus III|MS:1002278
+LCMS-2010EV,LCMS-2010EV|MS:1000605
+6470B Triple Quadrupole LC/MS,6470B Triple Quadrupole LC/MS|MS:1000936
+microflex II,microflex II|MS:1001550
+MAT253,MAT253|MS:1000172
+Acquity TQD,Acquity TQD|MS:1001788
+OMEGA,OMEGA|MS:1000181
+micrOTOF-Q,micrOTOF-Q|MS:1000703
+SYNAPT G2-Si,SYNAPT G2-Si|MS:1002726
+6510 Quadrupole Time-of-Flight LC/MS,6510 Quadrupole Time-of-Flight LC/MS|MS:1000676
+esquire 4000,esquire 4000|MS:1000156
+ultraflex III TOF/TOF,ultraflex III TOF/TOF|MS:1000705
+Pegasus HRT,Pegasus HRT|MS:1001801
+amaZon X,amaZon X|MS:1001546
+timsTOF Pro 2,timsTOF Pro 2|MS:1003230
+API 3200,API 3200|MS:1000653
+6570 Q-TOF LC/MS,6570 Q-TOF LC/MS|MS:1002793
+API 150EX Prep,API 150EX Prep|MS:1000144
+UltroTOF-Q,UltroTOF-Q|MS:1001539
+QSTAR XL,QSTAR XL|MS:1000657
+maXis 4G,maXis 4G|MS:1002279
+7000B Triple Quadrupole GC/MS,7000B Triple Quadrupole GC/MS|MS:1002803
+nanoACQUITY UPLC with HDX Technology,nanoACQUITY UPLC with HDX Technology|MS:1001768
+nanoACQUITY UPLC System with 1D Technology,nanoACQUITY UPLC System with 1D Technology|MS:1001767
+M@LDI LR,M@LDI LR|MS:1000171
+2500 QTRAP,2500 QTRAP|MS:1002578
+Orbitrap Fusion Lumos,Orbitrap Fusion Lumos|MS:1002732
+HCTultra PTM,HCTultra PTM|MS:1000699
+Exactive Plus,Exactive Plus|MS:1002526
+HCTultra,HCTultra|MS:1000698
+Triple Quad 7500,Triple Quad 7500|MS:1003144
+ML import: not available,ML import: not available
+QSTAR,QSTAR|MS:1000190
+API 4000,API 4000|MS:1000147
+1200 series LC/MSD SL,1200 series LC/MSD SL|MS:1000467
+ACQUITY UPLC I-Class,ACQUITY UPLC I-Class|MS:1001764
+API 165,API 165|MS:1002587
+SCIEX TOF/TOF database,SCIEX TOF/TOF database|MS:1001481
+GCT Premier,GCT Premier|MS:1001770
+Accela PDA,Accela PDA|MS:1000623
+maXis,maXis|MS:1001541
+IsoProbe T,IsoProbe T|MS:1000166
+BioTOF III,BioTOF III|MS:1001538
+4800 Plus MALDI TOF/TOF,4800 Plus MALDI TOF/TOF|MS:1000652
+SCION TQ,SCION TQ|MS:1002296
+ultraflex,ultraflex|MS:1000201
+6530B Q-TOF LC/MS,6530B Q-TOF LC/MS|MS:1002787
+LCMS-8050,LCMS-8050|MS:1003000
+QSTAR Pulsar,QSTAR Pulsar|MS:1000656
+explorer,explorer|MS:1000158
+Xevo G2 Q-Tof,Xevo G2 Q-Tof|MS:1001783
+6520B Q-TOF LC/MS,6520B Q-TOF LC/MS|MS:1002785
+Q Exactive HF,Q Exactive HF|MS:1002523
+Q Exactive HF-X,Q Exactive HF-X|MS:1002877
+BioTOF,BioTOF|MS:1001537
+TSQ Quantis,TSQ Quantis|MS:1002875
+Pegasus BT,Pegasus BT|MS:1002719
+LCMS-8060,LCMS-8060|MS:1002999
+MALDI Synapt G2 MS,MALDI Synapt G2 MS|MS:1001772
+SymBiot I,SymBiot I|MS:1000194
+timsTOF Pro,timsTOF Pro|MS:1003005
+Bruker Daltonics amaZon series,Bruker Daltonics amaZon series|MS:1001545
+Orbitrap ID-X,Orbitrap ID-X|MS:1003112
+MALDI Synapt G2-S MS,MALDI Synapt G2-S MS|MS:1001774
+Bruker Daltonics EVOQ series,Bruker Daltonics EVOQ series|MS:1002294
+6320 Ion Trap LC/MS,6320 Ion Trap LC/MS|MS:1000474
+LCMS-IT-TOF,LCMS-IT-TOF|MS:1000604
+LTQ Orbitrap Discovery,LTQ Orbitrap Discovery|MS:1000555
+QTRAP 6500+,QTRAP 6500+|MS:1002582
+Synapt G2 MS,Synapt G2 MS|MS:1001778
+Auto Spec Ultima NT,Auto Spec Ultima NT|MS:1000150
+HiRes MALDI,HiRes MALDI|MS:1000163
+Surveyor PDA,Surveyor PDA|MS:1000622
+Vion IMS QTof,Vion IMS QTof|MS:1002728
+solariX,solariX|MS:1001549
+micrOTOF-Q III,micrOTOF-Q III|MS:1002299
+Xevo TQD,Xevo TQD|MS:1001791
+ACQUITY UPLC H-Class,ACQUITY UPLC H-Class|MS:1001762
+LCQ Deca XP Plus,LCQ Deca XP Plus|MS:1000169
+MAT900XP,MAT900XP|MS:1000173
+Orbitrap Fusion ETD,Orbitrap Fusion ETD|MS:1002417
+LTQ Orbitrap Velos Pro,LTQ Orbitrap Velos Pro|MS:1003096
+6224 Time-of-Flight LC/MS,6224 Time-of-Flight LC/MS|MS:1002796
+MALDI Synapt HDMS,MALDI Synapt HDMS|MS:1001775
+6120B Quadrupole LC/MS,6120B Quadrupole LC/MS|MS:1002794
+timsTOF Ultra,timsTOF Ultra|MS:1003383
+TSQ 8000 Evo,TSQ 8000 Evo|MS:1002525
+Thermo Electron instrument model,Thermo Electron instrument model|MS:1000492
+LTQ Orbitrap Elite,LTQ Orbitrap Elite|MS:1001910
+Pegasus,Pegasus|MS:1001803
+AXIMA Performance MALDI-TOF/TOF,AXIMA Performance MALDI-TOF/TOF|MS:1000610
+Triple Quad 5500,Triple Quad 5500|MS:1002593

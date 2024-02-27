@@ -66,7 +66,35 @@ def GetMetabolightsFilePaths(study_id):
         return df_output
 
 
+def safe_api_request(url, retries=3, expected_codes={200}):
 
+  """
+  Safely requests JSON data from an API and checks for errors.
+
+  Args:
+    url: The URL of the API endpoint.
+    retries: The number of retries to attempt in case of errors.
+    expected_codes: A set of expected HTTP status codes indicating success.
+
+  Returns:
+    A dictionary containing the JSON data if successful,
+    or None if all retries fail.
+  """
+  for _ in range(retries):
+    try:
+      response = requests.get(url)
+      print(f"Requested: {url}")
+      if response.status_code in expected_codes:
+        data = response.json()
+        print("Request successful!")
+        return data
+      else:
+        print(f"Error: Unexpected status code {response.status_code}")
+        time.sleep(10)
+    except Exception as e:
+      print(f"Error requesting data: {e}")
+  print(f"All retries failed for {url}.")
+  return None
 
 
 

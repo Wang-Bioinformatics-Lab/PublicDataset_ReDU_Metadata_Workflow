@@ -4,3 +4,10 @@
 .nextflow*
 testONR*
 outputs
+work
+nf_output
+nohup.out
+nextflow_output.log
+bin/__pycache__
+Metabolights2REDU_*.tsv
+bin/allowed_terms

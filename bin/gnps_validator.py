@@ -4,6 +4,7 @@ import urllib
 import requests
 import io 
 import sys
+import json
 import argparse
 import subprocess
 import collections
@@ -14,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description='GNPS Validator')
     parser.add_argument('file_paths', help='File Paths')
     parser.add_argument('metadata_folder')
+    parser.add_argument("--AllowedTermJson_path", type=str, help="Path to json with allowed terms")
     args = parser.parse_args()
 
     # Print message to indicate importing is done
@@ -28,16 +30,19 @@ def main():
     # List to store names of files that have passed validation
     passed_file_names = []
 
+    with open(args.AllowedTermJson_path, 'r', encoding='utf-8') as jsonfile:
+        terms = json.load(jsonfile)
+
     # Loop through each file in the list of file names and validate each one
     print("echo Validating Files now ...")
     for file_name in file_names:
         # Call the metadata_validator.py script and pass the file name as an argument
         import metadata_validator
-
-        try:
-            passes_validation, failures, errors_list, valid_rows, total_rows = metadata_validator.perform_validation(os.path.join(args.metadata_folder, os.path.basename(file_name)))
-        except:
-            pass
+        
+        #try:
+        passes_validation, failures, errors_list, valid_rows, total_rows = metadata_validator.perform_validation(os.path.join(args.metadata_folder, os.path.basename(file_name)), terms)
+        #except:
+        #    pass
 
         if passes_validation:
             passed_file_names.append(file_name)
