@@ -279,7 +279,7 @@ process read_and_clean_github_redu_metadata {
     python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
     /home/yasin/projects/ReDU_metadata/metadata \
     metadata_folder \
-    --AllowedTermJson_path $TOOL_FOLDER/allowed_terms/allowed_terms.json \
+    --AllowedTermJson_path ${allowed_terms} \
     --path_to_uberon_cl_po_csv ${UBERON_CL_PO_ontology_csv} \
     --path_to_doid_csv ${DOID_ontology_csv}
     """
@@ -308,6 +308,53 @@ process gnpsmatchName_github {
 }
 
 
+process read_and_clean_before_github_redu_metadata {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    path metadata_ch
+    path UBERON_CL_PO_ontology_csv
+    path DOID_ontology_csv
+    path allowed_terms
+
+    output:
+    file 'metadata_folder'
+
+    """
+    
+    python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
+    ${metadata_ch} \
+    metadata_folder \
+    --AllowedTermJson_path ${allowed_terms} \
+    --path_to_uberon_cl_po_csv ${UBERON_CL_PO_ontology_csv} \
+    --path_to_doid_csv ${DOID_ontology_csv}
+    """
+}
+
+
+process gnpsmatchName_before_github {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    cache false
+
+    input:
+    // file 'passed_file_names.tsv'
+    file 'metadata_folder' 
+
+    output:
+    file 'gnps_metadata_all.tsv'
+
+    """
+    python $TOOL_FOLDER/gnps_name_matcher.py \
+    all \
+    metadata_folder
+    """
+}
+
 
 workflow {
 
@@ -322,8 +369,8 @@ workflow {
 
     // Massive REDU data
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
-    (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch, allowed_terms)
-    gnps_metadata_ch = gnpsmatchName(passed_paths_ch, metadata_ch)
+    msv_metadata_ch = read_and_clean_before_github_redu_metadata(metadata_ch, uberon_cl_co_onto, doid_onto, allowed_terms)
+    gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch)
     
     // Metabolomics Workbench
     mwb_metadata_ch = mwbRun(uberon_cl_co_onto, allowed_terms)

@@ -81,7 +81,7 @@ def main():
         # Extract the names from a specific column (e.g., column 'Name')
         passed_file_names = df['Name'].tolist()
     else:
-        passed_file_names = glob.glob(f"{args.metadata_folder}/redu_*.tsv")
+        passed_file_names = glob.glob(f"{args.metadata_folder}/*.tsv")
 
     print("echo Iterating though rows now")
     

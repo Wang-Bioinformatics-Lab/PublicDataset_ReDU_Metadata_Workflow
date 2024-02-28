@@ -494,7 +494,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
 
                 df['filename_raw'] = df['filename_raw_path']
                 df['filename'] = df['filename_raw_path']
-                
                 df.drop(columns=['match_index'], inplace=True)
 
             df['filename_raw_lower'] = df['filename_base']
@@ -519,6 +518,9 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
     df = df.drop(columns=['Key', 'Value', 'Longitude', 'Latitude'])
     df = df.drop_duplicates().reset_index(drop=True)
 
+    df['filename'] = df['filename_raw_path']
+
+    print(df)
     return df
 
 
