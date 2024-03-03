@@ -70,18 +70,21 @@ def main():
     parser = argparse.ArgumentParser(description='GNPS Name Matcher')
     parser.add_argument('passed_file_names', help='Input TSV file')
     parser.add_argument('metadata_folder')
+    parser.add_argument('output_filename')
 
     args = parser.parse_args()
      
     ccms_filenames = collections.defaultdict(set)
     
-    if args.passed_file_names != 'all':
+    if args.passed_file_names == 'all':
+        passed_file_names = glob.glob(f"{args.metadata_folder}/*.tsv")
+    elif args.passed_file_names == 'single':
+        passed_file_names = []
+    else:
         # Read the TSV file and specify the delimiter as a tab
         df = pd.read_csv(args.passed_file_names, delimiter='\t', header=None, names=['Name'])
         # Extract the names from a specific column (e.g., column 'Name')
         passed_file_names = df['Name'].tolist()
-    else:
-        passed_file_names = glob.glob(f"{args.metadata_folder}/*.tsv")
 
     print("echo Iterating though rows now")
     
@@ -115,7 +118,7 @@ def main():
     merged_metadata_df = merged_metadata_df[gnps_column_names + gnps_column_names_added]
 
     # Save the DataFrame to a TSV file without column names
-    merged_metadata_df.to_csv('gnps_metadata_all.tsv', sep='\t', index=False)
+    merged_metadata_df.to_csv(args.output_filename, sep='\t', index=False)
 
 
 if __name__ == '__main__':

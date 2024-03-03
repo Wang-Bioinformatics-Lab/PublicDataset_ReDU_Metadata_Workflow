@@ -536,6 +536,7 @@ def Metabolights2REDU(study_id, **kwargs):
             #######
             df_study['MassiveID'] = study_id
             
+            ontology_table = ontology_table.drop_duplicates(subset=['Label'])
             df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
             df_study = df_study.drop_duplicates() #no idea where the duplicates sometimes come from
 

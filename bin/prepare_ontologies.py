@@ -121,7 +121,6 @@ if __name__ == '__main__':
 
     #create ontology table to fill DOIDOntologyIndex from bodyparts
     doid_ontology_table = get_ontology_table(args.path_to_doid_owl, ont_prefix = 'DOID_', index_column_name = 'DOIDOntologyIndex')
-
     doid_ontology_table['DOIDOntologyIndex'] = doid_ontology_table['DOIDOntologyIndex'].str.replace('_', ':')
 
 
