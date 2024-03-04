@@ -18,6 +18,8 @@ download_file "http://aber-owl.net/media/ontologies/PO/26/po.owl" "${SCRIPT_DIR}
 download_file "http://aber-owl.net/media/ontologies/CL/104/cl.owl" "${SCRIPT_DIR}/cl.owl"
 download_file "http://aber-owl.net/media/ontologies/DOID/678/doid.owl" "${SCRIPT_DIR}/doid.owl"
 download_file "http://aber-owl.net/media/ontologies/MS/188/ms.owl" "${SCRIPT_DIR}/ms.owl"
+download_file "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv" "${SCRIPT_DIR}/microbe_masst_table.csv"
+download_file "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/plant_masst_table.csv" "${SCRIPT_DIR}/plant_masst_table.csv"
 download_file "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip" "${SCRIPT_DIR}/taxdmp.zip"
 
 # Unzip taxdmp.zip, keep names.dmp, and remove the rest

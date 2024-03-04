@@ -383,8 +383,6 @@ process MASST_to_REDU {
 
     input:
     path redu_table
-    path microbeMASST_table
-    path plantMASST_table
     path allowed_terms
 
     output:
@@ -395,8 +393,8 @@ process MASST_to_REDU {
     python $TOOL_FOLDER/MASST_to_REDU.py \
     ${redu_table} \
     adjusted_metadata_folder \
-    --path_microbeMASST ${microbeMASST_table} \
-    --path_plantMASST ${plantMASST_table} \
+    --path_microbeMASST $DATA_FOLDER/microbe_masst_table.csv \
+    --path_plantMASST $DATA_FOLDER/plant_masst_table.csv \
     --AllowedTermJson_path ${allowed_terms}
     """
 }
@@ -442,8 +440,8 @@ workflow {
     gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch)
 
     // MicrobeMASST and PlantMASST
-    (microbeMASST_table, plantMASST_table) = downloadMicrobePlantMASST(1)
-    masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, microbeMASST_table, plantMASST_table, allowed_terms)
+    // (microbeMASST_table, plantMASST_table) = downloadMicrobePlantMASST(1)
+    masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, allowed_terms)
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch)
 
     // Metabolomics Workbench
