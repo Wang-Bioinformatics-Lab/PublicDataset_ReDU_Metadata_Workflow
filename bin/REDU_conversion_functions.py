@@ -189,6 +189,8 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
 
     allowedTerm_dict = kwargs['allowedTerm_dict']
     taxonomy_data = allowedTerm_dict["NCBITaxonomy"]["allowed_values"]
+
+    organism_name = str(organism_name)
     for entry in taxonomy_data:
         parts = entry.split('|')
         if len(parts) == 2:
@@ -197,7 +199,8 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
                 return ncbi_id + '|' + str(name)
         else:
             continue
-
+    
+    return None
     req_ncbi_name = get_taxonomy_id_from_name(organism_name)
 
     if req_ncbi_name is not None:

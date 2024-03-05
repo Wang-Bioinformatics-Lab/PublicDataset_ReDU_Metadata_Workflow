@@ -391,7 +391,7 @@ def filter_unresolved_contradictions(potential_matches, contradictions):
 
     return potential_matches
 
-def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, path_to_csvs='translation_sheets', **kwargs):
+def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
     data_list = []
     for id, item in enumerate(data):
         subject_id = item.get('Subject ID', 'NA')
@@ -414,21 +414,25 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
 
 
     if not any(key in df['Key'].values for key in expected_raw_file_keys):
-        df[['filename_raw', 'filename_raw_path']] = df.apply(lambda x: get_raw_file_names(x['Value'], x['filename'], raw_file_name_df),
-                                                             axis=1, result_type='expand')
-        df['filename_raw'] = df.groupby('filename')['filename_raw'].transform('first')
-        df['filename_raw_path'] = df.groupby('filename')['filename_raw_path'].transform('first')
-    else:
+        #if we have no raw file key try to use the SampleID as raw_file_name
+        df_new_row = df.drop_duplicates(['script_id', 'SubjectIdentifierAsRecorded', 'filename']).copy()
+        df_new_row['Key'] = 'raw_file_name'
+        df_new_row['Value'] = df_new_row['filename']
+        df = pd.concat([df, df_new_row], ignore_index=True)
+
+    if any(key in df['Key'].values for key in expected_raw_file_keys):
+        #attempt to get raw files from associated keys
         raw_file_name_df = raw_file_name_df.rename(columns={'filename': 'filename_raw_path'})
         df = get_rawFile_names(df, key_vars=expected_raw_file_keys, new_col="filename_raw")
-
         #explode cases where we have multiple files by separators
         if raw_file_name_df['filename_base'].str.contains(" ").any():
             split_by_this = '[;,]+'
         else:
             split_by_this = '[; ,]+'
 
-        df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this)).explode('filename_raw')
+        #df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this)).explode('filename_raw')
+        df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this).apply(lambda x: list(set(x)))).explode('filename_raw')
+
 
         df.reset_index(drop=True, inplace=True)
 
@@ -444,11 +448,10 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
     
         else:
-            df['filename_base_wo_extension'] = df['filename_lower'].str.split('.').str[0]
+            df['filename_base_wo_extension'] = df['filename_raw_lower'].str.split('.').str[0]
             raw_file_name_df['filename_base_wo_extension'] = raw_file_name_df['filename_base'].str.split('.').str[0].str.lower()
             raw_file_name_df['filename_raw'] = raw_file_name_df['filename_raw_path'].str.lower()
             raw_file_name_df['filename_raw_lower'] = raw_file_name_df['filename_raw'].str.lower()
-            # df = df.merge(raw_file_name_df, left_on='filename_lower', right_on='filename_base_wo_extension', how='left')
 
             
             match_df = 'filename_raw_lower'
@@ -514,13 +517,12 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
     df[['SampleType_inner', 'SampleTypeSub1_inner']] = df.apply(lambda x: get_blanks(x['Value']), axis=1,
                                                                 result_type='expand')
 
-    df = translate_MWB_to_REDU_from_csv(df, case='inner', path_to_csvs=path_to_csvs, ontology_table=ontology_table)
+    df = translate_MWB_to_REDU_from_csv(df, case='inner', path_to_csvs=path_to_csvs, add_to_cols=add_to_cols, ontology_table=ontology_table, allowedTerm_dict=allowedTerm_dict)
     df = df.drop(columns=['Key', 'Value', 'Longitude', 'Latitude'])
     df = df.drop_duplicates().reset_index(drop=True)
 
     df['filename'] = df['filename_raw_path']
 
-    print(df)
     return df
 
 
@@ -573,6 +575,10 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
     unique_species = set(df_outer['SUBJECT_SPECIES'])
     processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict) for species in unique_species}
     df_outer['NCBITaxonomy'] = df_outer['SUBJECT_SPECIES'].map(processed_species)
+
+    attempt_taxa_extraction_from_inner = False
+    if all(value is None for value in processed_species.values()):
+        attempt_taxa_extraction_from_inner = True
 
 
     #add LC method
@@ -633,13 +639,23 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
         else (x['SampleType'], x['SampleTypeSub1']), axis=1, result_type='expand'
     )
 
+    if df_outer['NCBITaxonomy'].iloc[0] is None:
+        add_to_cols = ['NCBITaxonomy']
+    else:
+        add_to_cols = []
 
     df_inner_SUBJECT_SAMPLE_FACTORS = create_dataframe_from_SUBJECT_SAMPLE_FACTORS(
         MWB_mwTAB_dict['SUBJECT_SAMPLE_FACTORS'],
         raw_file_name_df=raw_file_name_df,
         path_to_csvs=path_to_csvs,
-        ontology_table=ontology_table
+        ontology_table=ontology_table,
+        attempt_taxa_extraction_from_inner=attempt_taxa_extraction_from_inner,
+        add_to_cols=add_to_cols
     )
+
+    if 'NCBITaxonomy' in df_inner_SUBJECT_SAMPLE_FACTORS.columns:
+        df_outer.drop('NCBITaxonomy', axis=1, inplace=True)
+
 
     df_outer = pd.concat([df_outer] * len(df_inner_SUBJECT_SAMPLE_FACTORS), ignore_index=True)
     df_outer_inner = pd.concat([df_outer, df_inner_SUBJECT_SAMPLE_FACTORS], axis=1)
@@ -669,26 +685,22 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                                    fill_col_from=[['UBERONBodyPartName', 'SAMPLE_TYPE']],
                                    case='outer',
                                    path_to_csvs='translation_sheets',
+                                   add_to_cols=[],
                                    **kwargs):
 
     ontology_table = kwargs['ontology_table']
+    allowedTerm_dict = kwargs['allowedTerm_dict']
 
     if case == 'outer':
         column_and_csv_names = column_and_csv_names_outer
     elif case == 'inner':
-        column_and_csv_names = column_and_csv_names_inner
+        column_and_csv_names = column_and_csv_names_inner + add_to_cols
         present_keys = MWB_table[['Key', 'Value']].copy()
         present_keys['Value'] = present_keys['Value'].apply(convert_to_numeric_or_original)
         present_keys.drop_duplicates(inplace=True)
     elif case == 'fill':
         column_and_csv_names = [x[0] for x in fill_col_from]
         origin_cols = [x[1] for x in fill_col_from]
-    if False:
-        if os.path.exists('unmatched_values.json'):
-            with open('unmatched_values.json', 'r') as file:
-                existing_unmatched_values = json.load(file)
-        else:
-            existing_unmatched_values = {key: {} for key in column_and_csv_names_outer +  ['inner']}
 
     for index, col_csv_name in enumerate(column_and_csv_names):
 
@@ -698,42 +710,62 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
         df_translations = df_translations.drop_duplicates()
 
         if case == 'outer':
+
+            if col_csv_name == 'NCBITaxonomy' and 'NCBITaxonomy' in MWB_table.columns:
+                continue
+
             MWB_table[col_csv_name] = MWB_table[col_csv_name].str.lower()
             MWB_table = pd.merge(MWB_table, df_translations, left_on=col_csv_name, right_on='MWB', how='left')
-
-            if False:
-                unmatched_cases = MWB_table[(MWB_table['REDU'].isna()) & (MWB_table[col_csv_name].notna()) & (MWB_table[col_csv_name] != 'na')][col_csv_name].unique().tolist()
-                for item in unmatched_cases:
-                    if item in existing_unmatched_values[col_csv_name]:
-                        existing_unmatched_values[col_csv_name][item] += 1
-                    else:
-                        existing_unmatched_values[col_csv_name][item] = 1
-
             MWB_table = MWB_table.drop(columns=['MWB', col_csv_name])
             MWB_table = MWB_table.rename(columns={'REDU': col_csv_name})
-
+               
         if case == 'inner':
-            MWB_table['match'] = MWB_table['Value'].isin(df_translations['MWB'].tolist())
-            MWB_table = MWB_table.merge(df_translations, left_on='Value', right_on='MWB', how='left')
-            
 
-            usedValues_table = MWB_table[(MWB_table['REDU'].notna()) & (MWB_table['Value'].notna()) & (MWB_table['Value'] != '-')][['Key', 'Value']].copy()
-            usedValues_table['Value'] = usedValues_table['Value'].apply(convert_to_numeric_or_original)
-            merged_df = present_keys.merge(usedValues_table, on=['Key', 'Value'], how='outer', indicator=True)
-            present_keys = merged_df[merged_df['_merge'] == 'left_only'].drop(columns=['_merge'])
-            present_keys = present_keys[~present_keys['Value'].str.contains(r'\.', na=False)]
-            present_keys.reset_index(drop=True, inplace=True)
+            if col_csv_name != 'NCBITaxonomy':
+                MWB_table['match'] = MWB_table['Value'].isin(df_translations['MWB'].tolist())
+                MWB_table = MWB_table.merge(df_translations, left_on='Value', right_on='MWB', how='left')
+                MWB_table[col_csv_name] = MWB_table.groupby('filename')['REDU'].transform('first')
+                if col_csv_name == 'UBERONBodyPartName':
+                    MWB_table = pd.merge(MWB_table, ontology_table, left_on='UBERONBodyPartName', right_on='Label', how='left')
+                    MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
+                if col_csv_name == 'DOIDCommonName':
+                    MWB_table['DOIDOntologyIndex'] = MWB_table.groupby('filename')['REDU_DOIDOntologyIndex'].transform('first')
+                    MWB_table = MWB_table.drop(columns=['REDU_DOIDOntologyIndex'])
 
-            MWB_table[col_csv_name] = MWB_table.groupby('filename')['REDU'].transform('first')
+                MWB_table = MWB_table.drop(['MWB', 'match', 'REDU'], axis=1)
 
-            if col_csv_name == 'UBERONBodyPartName':
-                MWB_table = pd.merge(MWB_table, ontology_table, left_on='UBERONBodyPartName', right_on='Label', how='left')
-                MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
-            if col_csv_name == 'DOIDCommonName':
-                MWB_table['DOIDOntologyIndex'] = MWB_table.groupby('filename')['REDU_DOIDOntologyIndex'].transform('first')
-                MWB_table = MWB_table.drop(columns=['REDU_DOIDOntologyIndex'])
+            elif col_csv_name == 'NCBITaxonomy':
 
-            MWB_table = MWB_table.drop(['MWB', 'match', 'REDU'], axis=1)
+
+                processed_species = {}
+                none_count = 0
+                unique_species = set(MWB_table['Value'])
+
+                #processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict) for species in unique_species} 
+                for species in unique_species:
+                    result = get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict)
+                    if result is None:
+                        none_count += 1
+                        if none_count >= 100:
+                            processed_species = {}
+                            break
+                    else:
+                        none_count = 0  # Reset count if a non-None result is found
+                        processed_species[species] = result
+
+                if len(processed_species) > 0:
+
+                    MWB_table['REDU'] = MWB_table['Value'].map(processed_species)
+
+                    def get_longest_value(series):
+                        lengths = series.str.len()  # Calculate length of each string
+                        if lengths.isnull().all():  # Check if all values are None
+                            return None
+                        return series.loc[lengths.idxmax()]
+                    
+                    #MWB_table['NCBITaxonomy'] = MWB_table.groupby('filename')['REDU'].transform('first')
+                    MWB_table['NCBITaxonomy'] = MWB_table.groupby('filename')['REDU'].transform(get_longest_value)
+                    MWB_table = MWB_table.drop(['REDU'], axis=1)
 
         if case == 'fill':
             MWB_table[origin_cols[index]] = MWB_table[origin_cols[index]].str.lower()
@@ -743,27 +775,6 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
             if col_csv_name == 'UBERONBodyPartName':
                 MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
                 MWB_table = MWB_table.drop(columns=['MWB', 'REDU', origin_cols[index]])
-
-    if case == 'inner' and False:
-        for index, row in present_keys.iterrows():
-            key = row['Key']
-            value = row['Value']
-
-            # Check if the key from the 'Key' column is present in the 'inner' key of the dictionary
-            if key in existing_unmatched_values['inner']:
-                # Check if the value from the 'Value' column is present in the sub-dictionary
-                if value in existing_unmatched_values['inner'][key]:
-                    existing_unmatched_values['inner'][key][value] += 1
-                else:
-                    # If the value is not present, add it with a count of 1
-                    existing_unmatched_values['inner'][key][value] = 1
-            else:
-                # If the key is not present, add it and initialize with the value and count of 1
-                existing_unmatched_values['inner'][key] = {value: 1}
-    if False:
-        if len(existing_unmatched_values) > 0:
-            with open('unmatched_values.json', 'w') as file:
-                json.dump(existing_unmatched_values, file, indent = 4)
 
 
     return MWB_table
@@ -966,10 +977,12 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
                 translate_MWB_to_REDU_from_csv(
                     create_dataframe_outer_dict(mwTab_json, raw_file_name_df=raw_file_name_df, path_to_csvs=path_to_csvs, allowedTerm_dict=allowedTerm_dict, ontology_table=ontology_table),
                     path_to_csvs=path_to_csvs,
-                ontology_table=ontology_table),
+                ontology_table=ontology_table,
+                allowedTerm_dict=allowedTerm_dict),
                 case='fill',
                 path_to_csvs=path_to_csvs,
-                ontology_table=ontology_table),
+                ontology_table=ontology_table,
+                allowedTerm_dict=allowedTerm_dict),
             path_to_csvs=path_to_csvs)
 
     except Exception as e:
@@ -977,9 +990,12 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
         print(f"An error occurred in MWB_to_REDU_wrapper: {e}\nTraceback:\n{traceback_info}")
 
         return None
+    
+    
 
-    complete_df['filename'] = complete_df['filename_raw']
+    complete_df['filename'] = complete_df['filename_raw_path']
     complete_df = complete_df[complete_df['filename'] != ''].dropna(subset=['filename'])
+
 
     complete_df['MassiveID'] = Massive_ID
     complete_df['MassiveID'] = complete_df['MassiveID'].apply(lambda x: x.split('|')[0])
@@ -996,7 +1012,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
     complete_df[['SampleCollectionDateandTime',
                  'DepthorAltitudeMeters',
                  'qiita_sample_name']] = 'ML import: not available'
-            
+
     missing_not_imported = ["SampleType",
                             "SampleTypeSub1",
                             "NCBITaxonomy",
@@ -1081,7 +1097,7 @@ if __name__ == '__main__':
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
     parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
 
-    #python3.8 workflows/PublicDataset_ReDU_Metadata_Workflow/bin/MWB_to_REDU.py --study_id ALL --path_to_csvs /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/translation_sheets --path_to_allowed_term_json /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms.json --path_to_uberon_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/uberon-base.owl --path_to_cl_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/cl.owl --path_to_plant_owl /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/po.owl --duplicate_raw_file_handling keep_all
+    #python3.8 workflows/PublicDataset_ReDU_Metadata_Workflow/bin/MWB_to_REDU.py --study_id  ST000107 --path_to_csvs /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/translation_sheets --path_to_allowed_term_json /home/yasin/projects/ReDU-MS2-GNPS2/work/03/59b15db86cef31d8a337537d4cff04/allowed_terms.json --duplicate_raw_file_handling keep_all --path_to_uberon_cl_po_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/ca/535593beabd1e7034883820a96e530/UBERON_CL_PO_ontology.csv --path_to_polarity_info /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/data/MWB_polarity_table.csv 
     print('Starting MWB2REDU script,..')
 
     args = parser.parse_args()

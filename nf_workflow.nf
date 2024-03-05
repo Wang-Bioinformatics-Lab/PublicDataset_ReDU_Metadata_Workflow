@@ -147,7 +147,7 @@ process formatmwb {
     file 'mwb_redu.tsv'
 
     """
-    python $TOOL_FOLDER/MWB_merge.py \
+    python $TOOL_FOLDER/MWB_merge.py  \
     $mwb_metadata \
     $mwb_files \
     mwb_redu.tsv 
