@@ -13,6 +13,8 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_cl_owl', default = 'none')
     parser.add_argument('--path_to_doid_owl', default = 'none')
     parser.add_argument('--path_to_ms_owl', default = 'none')
+    parser.add_argument('--path_to_biome_envs_owl', default = 'none')
+    parser.add_argument('--path_to_material_envs_owl', default = 'none')
     args = parser.parse_args()
 
     #ncbi_dump can be downloaded from https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip 
@@ -33,8 +35,11 @@ if __name__ == "__main__":
     #ms_owl can be downloaded from http://aber-owl.net/ontology/MS/#/Download
     #always take the latest verion!
 
+    #envo_bimoe can be downloaded from https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.owl
+    #always take the latest verion!
 
-
+    #envo_material can be downloaded from https://github.com/EnvironmentOntology/envo/blob/master/subsets/material-hierarchy.owl
+    #always take the latest verion!
 
 
     # Load allowed Terms json
@@ -99,6 +104,27 @@ if __name__ == "__main__":
 
         allowedTerm_dict['UBERONBodyPartName']['allowed_values'] = unique_labels
         allowedTerm_dict['UBERONOntologyIndex']['allowed_values'] = unique_ontology_indexes
+
+
+    #environment ontology
+    if args.path_to_biome_envs_owl != 'none' and args.path_to_material_envs_owl != 'none':
+
+        print('Processing environmental biome ontology,..')
+        envBiome_onto = get_uberon_table(args.path_to_biome_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentBiomeIndex')
+        unique_labels = envBiome_onto['Label'].unique().tolist()
+        unique_indexes = envBiome_onto['ENVOEnvironmentBiomeIndex'].str.replace("_", ":").unique().tolist()
+
+        allowedTerm_dict['ENVOEnvironmentBiome']['allowed_values'] = unique_labels
+        allowedTerm_dict['ENVOEnvironmentBiomeIndex']['allowed_values'] = unique_indexes
+
+
+        print('Processing environmental material ontology,..')
+        envMaterial_onto = get_ontology_table(args.path_to_material_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentMaterialIndex')
+        unique_labels = envMaterial_onto['Label'].unique().tolist()
+        unique_indexes = envMaterial_onto['ENVOEnvironmentMaterialIndex'].str.replace("_", ":").unique().tolist()
+
+        allowedTerm_dict['ENVOEnvironmentMaterial']['allowed_values'] = unique_labels
+        allowedTerm_dict['ENVOEnvironmentMaterialIndex']['allowed_values'] = unique_indexes
 
 
     if args.path_to_doid_owl != 'none':

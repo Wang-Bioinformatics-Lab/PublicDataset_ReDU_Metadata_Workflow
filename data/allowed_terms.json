@@ -619,6 +619,94 @@
         "missing": "missing value",
         "allowed_values": []
     },
+    "NCBIRank": {
+        "generate": "True",
+        "missing": "missing value",
+        "allowed_values": [
+            "no rank",
+            "superkingdom",
+            "genus",
+            "species",
+            "order",
+            "family",
+            "subspecies",
+            "subfamily",
+            "strain",
+            "serogroup",
+            "biotype",
+            "tribe",
+            "phylum",
+            "class",
+            "species group",
+            "forma",
+            "clade",
+            "suborder",
+            "subclass",
+            "varietas",
+            "kingdom",
+            "subphylum",
+            "forma specialis",
+            "isolate",
+            "superfamily",
+            "infraorder",
+            "infraclass",
+            "superorder",
+            "subgenus",
+            "superclass",
+            "parvorder",
+            "serotype",
+            "species subgroup",
+            "subcohort",
+            "cohort",
+            "genotype",
+            "subtribe",
+            "section",
+            "series",
+            "morph",
+            "subkingdom",
+            "superphylum",
+            "subsection",
+            "pathogroup"
+        ]
+    },    
+    "NCBIDivision": {
+        "generate": "True",
+        "missing": "missing value",
+        "allowed_values": [
+            "Unassigned",
+            "Bacteria",
+            "Environmental samples",
+            "Synthetic and Chimeric",
+            "Plants and Fungi",
+            "Invertebrates",
+            "Vertebrates",
+            "Mammals",
+            "Primates",
+            "Rodents",
+            "Viruses",
+            "Phages"
+        ]
+    },
+    "ENVOEnvironmentBiome": {
+        "generate": "False",
+        "missing": "missing value",
+        "allowed_values": []
+    },
+    "ENVOEnvironmentMaterial": {
+        "generate": "False",
+        "missing": "missing value",
+        "allowed_values": []
+    },
+    "ENVOEnvironmentBiomeIndex": {
+        "generate": "True",
+        "missing": "missing value",
+        "allowed_values": []
+    },
+    "ENVOEnvironmentMaterialIndex": {
+        "generate": "True",
+        "missing": "missing value",
+        "allowed_values": []
+    },  
     "USI": {
         "generate": "True",
         "missing": "not allowed",

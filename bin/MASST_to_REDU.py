@@ -15,6 +15,7 @@ if __name__ == '__main__':
     parser.add_argument('output_folder')
     parser.add_argument('--path_microbeMASST')
     parser.add_argument('--path_plantMASST')
+    parser.add_argument('--path_ncbiRanksDivisions')
     parser.add_argument("--AllowedTermJson_path", type=str, help="Path to json with allowed terms")
     args = parser.parse_args()
 
@@ -36,6 +37,10 @@ if __name__ == '__main__':
 
     with open(args.AllowedTermJson_path, 'r') as json_file:
         allowed_terms = json.load(json_file)
+
+
+    NCBIRankDivision_table = pd.read_csv(args.path_ncbiRanksDivisions, index_col = False)
+    NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
 
     
 
@@ -59,7 +64,7 @@ if __name__ == '__main__':
     if len(df_list) > 0:
 
         df_massts = pd.concat(df_list, ignore_index=True)
-        df_massts_filled = complete_and_fill_REDU_table(df_massts, allowedTerm_dict=allowed_terms)
+        df_massts_filled = complete_and_fill_REDU_table(df_massts, allowedTerm_dict=allowed_terms, NCBIRankDivision_table=NCBIRankDivision_table)
 
         #save output to csv
         for massive_id in df_massts_filled['MassiveID'].unique():

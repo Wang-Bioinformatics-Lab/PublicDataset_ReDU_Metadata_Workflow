@@ -8,7 +8,7 @@ from io import StringIO
 from subprocess import PIPE, run
 
 ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
-gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
+gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'NCBIDivision', 'NCBIRank', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
 gnps_column_names_added = ['USI']
 
 def _make_usi_from_filename(s):

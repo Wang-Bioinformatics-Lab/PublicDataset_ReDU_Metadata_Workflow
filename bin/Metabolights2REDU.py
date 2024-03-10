@@ -306,6 +306,7 @@ def Metabolights2REDU(study_id, **kwargs):
             allowedTerm_dict = kwargs['allowedTerm_dict']
             unassigned_term_json = kwargs['unassigned_term_json']
             ontology_table = kwargs['ontology_table']
+            NCBIRankDivision_table  = kwargs['NCBIRankDivision_table']
 
             
             df_study.loc[:, 'YearOfAnalysis'] = submissionYear
@@ -537,7 +538,8 @@ def Metabolights2REDU(study_id, **kwargs):
             df_study['MassiveID'] = study_id
             
             ontology_table = ontology_table.drop_duplicates(subset=['Label'])
-            df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
+            df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, 
+                                                    NCBIRankDivision_table=NCBIRankDivision_table, add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
             df_study = df_study.drop_duplicates() #no idea where the duplicates sometimes come from
 
             #remove files if they are assigned multiple times as we cannot tell which sample they belong to (this is probably because people make mistakes when creating their study)
@@ -557,6 +559,7 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_translation_sheet_csvs", "-csvs", type=str, help="Path to the translation csvs holding translations from MWB to REDU vocabulary", default="none")
     parser.add_argument("--path_to_allowed_term_json", type=str, help="Path to the json with allowed REDU terms")
     parser.add_argument("--path_to_uberon_cl_po_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
+    parser.add_argument("--path_ncbi_rank_division", type=str, help="Path to the path_ncbi_rank_division")
     parser.add_argument("--path_to_unassigned_term_json", type=str, help="If you want to export a json with terms that have not been associated with anything (optional)", default="none")
     
     
@@ -588,11 +591,17 @@ if __name__ == "__main__":
     # Read ontology
     ontology_table = pd.read_csv(args.path_to_uberon_cl_po_csv)
 
+    # Read NCBI rank and division csv
+    NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)
+    NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
+
+
     REDU_dataframes = []
     redu_table_single = pd.DataFrame()
     for study_id in tqdm(public_metabolights_studies):
         try:
-            redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, unassigned_term_json = args.path_to_unassigned_term_json)
+            redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, 
+                                                  NCBIRankDivision_table=NCBIRankDivision_table, unassigned_term_json = args.path_to_unassigned_term_json)
         except Exception as e:
             traceback_info = traceback.format_exc()
             print(f"An error occurred with study_id {study_id}: {e}\nTraceback:\n{traceback_info}")

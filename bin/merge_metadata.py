@@ -12,7 +12,7 @@ def main():
     args = parser.parse_args()
 
     columns_to_use = ["filename", "ATTRIBUTE_DatasetAccession", "SampleType", "SampleTypeSub1", 
-                      "NCBITaxonomy", "YearOfAnalysis", "UBERONBodyPartName", "BiologicalSex", "AgeInYears",  "LifeStage", 
+                      "NCBITaxonomy", "NCBIDivision", "NCBIRank", "YearOfAnalysis", "UBERONBodyPartName", "BiologicalSex", "AgeInYears",  "LifeStage", 
                       "Country", "HealthStatus", "ChromatographyAndPhase", "IonizationSourceAndPolarity",
                       "MassSpectrometer", "SampleExtractionMethod",  "SampleCollectionMethod", "ComorbidityListDOIDIndex", 
                       "DOIDCommonName", "DOIDOntologyIndex", "DepthorAltitudeMeters", "HumanPopulationDensity", "InternalStandardsUsed", 

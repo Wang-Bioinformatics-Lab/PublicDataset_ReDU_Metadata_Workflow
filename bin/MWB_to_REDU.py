@@ -109,7 +109,7 @@ def _get_metabolomicsworkbench_files(dataset_accession):
         dataset_list_url = "https://www.metabolomicsworkbench.org/data/show_archive_contents_json.php?STUDY_ID={}".format(
             dataset_accession)
         mw_file_list = requests.get(dataset_list_url).json()
-        
+
         acceptable_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
 
         mw_file_list = [file_obj for file_obj in mw_file_list if
@@ -133,7 +133,7 @@ def _get_metabolomicsworkbench_files(dataset_accession):
         workbench_df = pd.DataFrame()
 
     merged_df = pd.concat([files_df, workbench_df])
-
+    #print(merged_df)
     return merged_df, msv_accession
 
 
@@ -263,7 +263,7 @@ def extract_years(dates):
             matches = pattern.findall(dates)
         years = max([int(date.split('/')[-1]) if '/' in date else int(date.split('.')[-1]) for date in matches])
         if isinstance(years, int):
-            if years >= 2000 and years <= 2030:
+            if years >= 1998 and years <= 2030:
                 return years
             else:
                 return None
@@ -410,17 +410,28 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
 
     #raw data name might be in the Sample ID, Factors
     expected_raw_file_keys = ["raw_file_name",  "rawfilename", "raw_file",
-                              "datafile name", "raw files"]
+                              "datafile name", "raw files", "raw file name", 
+                              "rawfile name", "rpm_filename", "zhp_filename",
+                              "data file"]
 
 
     if not any(key in df['Key'].values for key in expected_raw_file_keys):
-        #if we have no raw file key try to use the SampleID as raw_file_name
-        df_new_row = df.drop_duplicates(['script_id', 'SubjectIdentifierAsRecorded', 'filename']).copy()
-        df_new_row['Key'] = 'raw_file_name'
-        df_new_row['Value'] = df_new_row['filename']
-        df = pd.concat([df, df_new_row], ignore_index=True)
+        print('no raw file key found.')
+
+        if any("file" in key for key in df['Key'].values):
+            print("Found data files with unknown name")
+            df['Key'] = df['Key'].apply(lambda x: "raw_file_name" if "file" in x else x)
+
+
+        if not any(key in df['Key'].values for key in expected_raw_file_keys):
+            #if we have no raw file key try to use the SampleID as raw_file_name
+            df_new_row = df.drop_duplicates(['script_id', 'SubjectIdentifierAsRecorded', 'filename']).copy()
+            df_new_row['Key'] = 'raw_file_name'
+            df_new_row['Value'] = df_new_row['filename']
+            df = pd.concat([df, df_new_row], ignore_index=True)
 
     if any(key in df['Key'].values for key in expected_raw_file_keys):
+        print('raw file key found.')
         #attempt to get raw files from associated keys
         raw_file_name_df = raw_file_name_df.rename(columns={'filename': 'filename_raw_path'})
         df = get_rawFile_names(df, key_vars=expected_raw_file_keys, new_col="filename_raw")
@@ -609,9 +620,6 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
     df_outer['YearOfAnalysis'] = df_outer['ACQUISITION_DATE'].apply(lambda x: extract_years(x))
     df_outer['YearOfAnalysis'] = df_outer.apply(
         lambda x: extract_years(x['CREATED_ON']) if x['YearOfAnalysis'] is None else x['YearOfAnalysis'], axis=1)
-
-    if df_outer['YearOfAnalysis'][0] is None:
-        raise ValueError("YearOfAnalysis was not collected!")
 
     df_outer['IonizationSourceAndPolarity'] = df_outer['MS_TYPE'] + '|' + df_outer['ION_MODE']
 
@@ -827,6 +835,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
     allowedTerm_dict = kwargs['allowedTerm_dict']
     ontology_table = kwargs['ontology_table']
+    NCBIRankDivision_table = kwargs['NCBIRankDivision_table']
 
     raw_file_name_tupple = _get_metabolomicsworkbench_files(study_id)
 
@@ -939,7 +948,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
 
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
-    redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
+    redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, NCBIRankDivision_table=NCBIRankDivision_table,
+                                                 add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
 
 
     if export_to_tsv == True:
@@ -1093,6 +1103,7 @@ if __name__ == '__main__':
     parser.add_argument("--study_id", "-mwb_id", type=str, help='An MWB study ID such as "ST002050". If "ALL" all study IDs are requested.', required=True)
     parser.add_argument("--path_to_csvs", "-csvs", type=str, help="Path to the translation csvs holding translations from MWB to REDU vocabulary (optional)", default="translation_sheets")
     parser.add_argument("--path_to_allowed_term_json", "-json", type=str, help="Allowed vocabulary json (optional)", default="allowed_terms")
+    parser.add_argument("--path_ncbi_rank_division", type=str, help="Path to the path_ncbi_rank_division")
     parser.add_argument("--path_to_uberon_cl_po_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
     parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
@@ -1117,6 +1128,10 @@ if __name__ == '__main__':
     # Read polarity file
     polarity_table = pd.read_csv(args.path_to_polarity_info)
    
+    # Read NCBI rank and division csv
+    NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)
+    NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
+
     # result
     if study_id == "ALL":
         # Getting all files
@@ -1141,7 +1156,8 @@ if __name__ == '__main__':
                                           export_to_tsv=False,
                                           allowedTerm_dict=allowedTerm_dict,
                                           ontology_table=ontology_table,
-                                          polarity_table=polarity_table)
+                                          polarity_table=polarity_table,
+                                          NCBIRankDivision_table=NCBIRankDivision_table)
                 print('Extracted information for {} samples.'.format(len(result)))
                 if len(result) > 1:
                     all_results_list.append(result)
@@ -1159,6 +1175,7 @@ if __name__ == '__main__':
                                   export_to_tsv=True,
                                   allowedTerm_dict=allowedTerm_dict,
                                   ontology_table=ontology_table,
-                                  polarity_table=polarity_table)
+                                  polarity_table=polarity_table,
+                                  NCBIRankDivision_table=NCBIRankDivision_table)
 
     print("Output files written to working directory")

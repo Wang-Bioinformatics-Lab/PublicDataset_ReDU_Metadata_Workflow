@@ -21,6 +21,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
     if they are not in the allowed terms or are missing/empty, except for specific columns.
     """
 
+    #prepare UberonOntologyIndex
     if 'UBERONOntologyIndex_table' in kwargs.keys():
         uberon_ontology_table = kwargs['UBERONOntologyIndex_table']
     else:
@@ -28,6 +29,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
 
     uberon_ontology_table['Label'] = uberon_ontology_table['Label'].astype(str)
 
+    #prepare DOIDOntologyTable
     if 'DOIDOntologyIndex_table' in kwargs.keys():
         doid_ontology_table = kwargs['DOIDOntologyIndex_table']
         if 'UBERONOntologyIndex' in doid_ontology_table.columns:
@@ -36,6 +38,34 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
         doid_ontology_table = pd.DataFrame(columns=['Label', 'DOIDOntologyIndex'])
     
     doid_ontology_table['Label'] = doid_ontology_table['Label'].astype(str)
+
+    #prepare environment biome table
+    if 'ENVOEnvironmentBiomeIndex_table' in kwargs.keys():
+        envome_biome_ontology_table = kwargs['ENVOEnvironmentBiomeIndex_table']
+    else:
+        envome_biome_ontology_table = pd.DataFrame(columns=['Label', 'ENVOEnvironmentBiomeIndex'])
+
+    envome_biome_ontology_table['Label'] = envome_biome_ontology_table['Label'].astype(str)
+
+    #prepare environment material table
+    if 'ENVOEnvironmentMaterialIndex_table' in kwargs.keys():
+        envome_material_ontology_table = kwargs['ENVOEnvironmentMaterialIndex_table']
+    else:
+        envome_material_ontology_table = pd.DataFrame(columns=['Label', 'ENVOEnvironmentMaterialIndex_table'])
+
+    envome_material_ontology_table['Label'] = envome_material_ontology_table['Label'].astype(str)
+
+
+
+    #prepare NCBI table
+    if 'NCBIRankDivision_table' in kwargs.keys():
+        NCBIRankDivision_table = kwargs['NCBIRankDivision_table']
+    else:
+        NCBIRankDivision_table = pd.DataFrame(columns=['TaxonID', 'NCBIRank', 'NCBIDivision'])
+
+    NCBIRankDivision_table['TaxonID'] = NCBIRankDivision_table['TaxonID'].astype(str)
+    NCBIRankDivision_table['NCBIRank'] = NCBIRankDivision_table['NCBIRank'].astype(str)
+    NCBIRankDivision_table['NCBIDivision'] = NCBIRankDivision_table['NCBIDivision'].astype(str)
 
     # Convert all columns to String
     df = df.astype(str)
@@ -65,25 +95,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
                     return pd.DataFrame()
                 else:
                     df[key] = value['missing']
-            elif value['generate'] == 'True':
-                if key == 'LifeStage':
-                    df[key] = df.apply(lambda x: age_category(x['AgeInYears']) if x['NCBITaxonomy'] == "9606|Homo sapiens" else value['missing'], axis=1)
-                if key == 'UniqueSubjectID':
-                    df[key] = df.apply(lambda x: str(x['MassiveID']) + '_' + str(x['SubjectIdentifierAsRecorded']) 
-                                    if x['SubjectIdentifierAsRecorded'] != allowedTerm_dict['SubjectIdentifierAsRecorded']['missing'] 
-                                    and x['SubjectIdentifierAsRecorded'] != ''
-                                    and x['SubjectIdentifierAsRecorded'] != 'not applicable' 
-                                    and not pd.isna(x['SubjectIdentifierAsRecorded']) 
-                                    else value['missing'], axis=1)
-                if key == 'UBERONOntologyIndex':
-                    df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex']], left_on='UBERONBodyPartName', right_on='Label', how='left')
-                    df.drop(columns=['Label'], inplace=True)
-                if key == 'DOIDOntologyIndex':
-                    df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']], left_on='DOIDCommonName', right_on='Label', how='left')
-                    df.drop(columns=['Label'], inplace=True)
-                if key == 'USI' and add_usi == True:
-                    df['USI'] = 'mzspec:' + df['MassiveID'] + ':' + df['filename']
-                print(f'{key}: ADDED!')
+                    print(f'{key}: ADDED!')
 
 
     for key, value in allowedTerm_dict.items():
@@ -146,6 +158,43 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
 
 
 
+    for key, value in allowedTerm_dict.items():
+        if value['generate'] == 'True':
+            missing_value = value['missing']
+            if key == 'LifeStage':
+                df[key] = df.apply(lambda x: age_category(x['AgeInYears']) if x['NCBITaxonomy'] == "9606|Homo sapiens" else value['missing'], axis=1)
+            if key == 'UniqueSubjectID':
+                df[key] = df.apply(lambda x: str(x['MassiveID']) + '_' + str(x['SubjectIdentifierAsRecorded']) 
+                                if x['SubjectIdentifierAsRecorded'] != allowedTerm_dict['SubjectIdentifierAsRecorded']['missing'] 
+                                and x['SubjectIdentifierAsRecorded'] != ''
+                                and x['SubjectIdentifierAsRecorded'] != 'not applicable' 
+                                and not pd.isna(x['SubjectIdentifierAsRecorded']) 
+                                else value['missing'], axis=1)
+            if key == 'UBERONOntologyIndex':
+                df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex']], left_on='UBERONBodyPartName', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'DOIDOntologyIndex':
+                df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']], left_on='DOIDCommonName', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'ENVOEnvironmentBiomeIndex':
+                df = df.merge(envome_biome_ontology_table[['Label', 'ENVOEnvironmentBiomeIndex']], left_on='ENVOEnvironmentBiome', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'ENVOEnvironmentMaterialIndex':
+                df = df.merge(envome_material_ontology_table[['Label', 'ENVOEnvironmentMaterialIndex']], left_on='ENVOEnvironmentMaterial', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'USI' and add_usi == True:
+                df['USI'] = 'mzspec:' + df['MassiveID'] + ':' + df['filename']
+            if key == 'NCBIRank':
+                df['TaxonID'] = df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if '|' in x else 'missing value')
+                df['TaxonID'] = df['TaxonID'].astype(str)
+                df = pd.merge(df, NCBIRankDivision_table, on='TaxonID', how='left')
+                df.drop(columns=['TaxonID'], inplace=True)
+                df['NCBIRank'].fillna(missing_value, inplace=True)
+                df['NCBIDivision'].fillna(missing_value, inplace=True)
+
+
+
+
     # Ensure the dataframe contains only the columns specified in the dictionary
     keys_to_include = [key for key in allowedTerm_dict.keys() if key != 'USI' or add_usi]
 
@@ -154,6 +203,21 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
     for column in ignored_columns:
         print(f"IGNORED:  {column}")
 
+    #remove rows if not enough metadata are present
+    def count_non_missing_specific(row, cols):
+        return (row[cols] != "missing value").sum()
+    
+    columns_to_consider = ["SampleType", "SampleTypeSub1", "NCBITaxonomy", "UBERONBodyPartName", "BiologicalSex", 
+                           "AgeInYears", "LifeStage", "Country", "HealthStatus", "SampleExtractionMethod", 
+                           "SampleCollectionMethod", "ComorbidityListDOIDIndex", "DOIDCommonName", 
+                           "DepthorAltitudeMeters", "HumanPopulationDensity", "LatitudeandLongitude",
+                           "ENVOEnvironmentBiome", "ENVOEnvironmentMaterial"]
+    
+    original_row_count = df.shape[0]
+    columns_to_check = [col for col in columns_to_consider if col in df.columns]
+    df = df[(df.apply(count_non_missing_specific, cols=columns_to_check, axis=1) >= 1)]
+
+    print(f"Number of rows removed due to not enough metadata: {original_row_count - df.shape[0]}")
     print(f"Returning {len(df)} rows!")
 
     return df[keys_to_include]
@@ -182,6 +246,9 @@ if __name__ == '__main__':
     parser.add_argument('output_metadata_folder')
     parser.add_argument("--AllowedTermJson_path", type=str, help="Path to json with allowed terms")
     parser.add_argument('--path_to_uberon_cl_po_csv')
+    parser.add_argument('--path_to_envo_biome_csv')
+    parser.add_argument('--path_to_envo_material_csv')
+    parser.add_argument('--path_ncbi_rank_division')
     parser.add_argument('--path_to_doid_csv')
     args = parser.parse_args()
 
@@ -193,6 +260,15 @@ if __name__ == '__main__':
 
     doid_ontology_table = pd.read_csv(args.path_to_doid_csv, index_col=False)
     doid_ontology_table = doid_ontology_table.drop_duplicates(subset=['Label'])
+
+    ENVOEnvironmentBiomeIndex_table = pd.read_csv(args.path_to_envo_biome_csv, index_col=False)
+    ENVOEnvironmentBiomeIndex_table = ENVOEnvironmentBiomeIndex_table.drop_duplicates(subset=['Label'])
+
+    ENVOEnvironmentMaterialIndex_table = pd.read_csv(args.path_to_envo_material_csv, index_col=False)
+    ENVOEnvironmentMaterialIndex_table = ENVOEnvironmentMaterialIndex_table.drop_duplicates(subset=['Label'])
+
+    NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)
+    NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
 
 
     print('Starting tsv processing.')
@@ -213,7 +289,14 @@ if __name__ == '__main__':
                 df.rename(columns={'ATTRIBUTE_DatasetAccession': 'MassiveID'}, inplace=True)
 
             #generate extra columns, add missing columns and remove values which are not in allowed terms
-            df = complete_and_fill_REDU_table(df, allowed_terms, UBERONOntologyIndex_table=uberon_ontology_table, DOIDOntologyIndex_table=doid_ontology_table, attempt_adding_file_extensions=True)
+            df = complete_and_fill_REDU_table(df, 
+                                              allowed_terms, 
+                                              UBERONOntologyIndex_table=uberon_ontology_table, 
+                                              DOIDOntologyIndex_table=doid_ontology_table, 
+                                              NCBIRankDivision_table=NCBIRankDivision_table,
+                                              ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
+                                              ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
+                                              attempt_adding_file_extensions=True)
             
             if len(df) > 0:
             
