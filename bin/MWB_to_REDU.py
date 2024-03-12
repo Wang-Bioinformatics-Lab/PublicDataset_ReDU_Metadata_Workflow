@@ -835,6 +835,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
     allowedTerm_dict = kwargs['allowedTerm_dict']
     ontology_table = kwargs['ontology_table']
+    ENVOEnvironmentBiomeIndex_table = kwargs['ENVOEnvironmentBiomeIndex_table']
+    ENVOEnvironmentMaterialIndex_table = kwargs['ENVOEnvironmentMaterialIndex_table']
     NCBIRankDivision_table = kwargs['NCBIRankDivision_table']
 
     raw_file_name_tupple = _get_metabolomicsworkbench_files(study_id)
@@ -874,7 +876,9 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
                                       path_to_csvs=path_to_csvs,
                                       Massive_ID=study_id + '|' + str(analysis_details["analysis_id"]),
                                       allowedTerm_dict=allowedTerm_dict,
-                                      ontology_table=ontology_table)
+                                      ontology_table=ontology_table,
+                                      ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
+                                      ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table)
         
         if isinstance(redu_df, pd.DataFrame):
             redu_dfs.append(redu_df)
@@ -948,7 +952,10 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
 
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
-    redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, NCBIRankDivision_table=NCBIRankDivision_table,
+    redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, 
+                                                 ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
+                                                 ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
+                                                 NCBIRankDivision_table=NCBIRankDivision_table,
                                                  add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
 
 
@@ -1105,6 +1112,8 @@ if __name__ == '__main__':
     parser.add_argument("--path_to_allowed_term_json", "-json", type=str, help="Allowed vocabulary json (optional)", default="allowed_terms")
     parser.add_argument("--path_ncbi_rank_division", type=str, help="Path to the path_ncbi_rank_division")
     parser.add_argument("--path_to_uberon_cl_po_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
+    parser.add_argument("--path_to_envo_biome_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
+    parser.add_argument("--path_to_envo_material_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
     parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
 
@@ -1124,6 +1133,8 @@ if __name__ == '__main__':
 
     # Read ontology
     ontology_table = pd.read_csv(args.path_to_uberon_cl_po_csv)
+    ENVOEnvironmentBiomeIndex_table = pd.read_csv(args.path_to_envo_biome_csv)
+    ENVOEnvironmentMaterialIndex_table = pd.read_csv(args.path_to_envo_material_csv)
 
     # Read polarity file
     polarity_table = pd.read_csv(args.path_to_polarity_info)
@@ -1156,6 +1167,8 @@ if __name__ == '__main__':
                                           export_to_tsv=False,
                                           allowedTerm_dict=allowedTerm_dict,
                                           ontology_table=ontology_table,
+                                          ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
+                                          ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
                                           polarity_table=polarity_table,
                                           NCBIRankDivision_table=NCBIRankDivision_table)
                 print('Extracted information for {} samples.'.format(len(result)))
@@ -1175,6 +1188,8 @@ if __name__ == '__main__':
                                   export_to_tsv=True,
                                   allowedTerm_dict=allowedTerm_dict,
                                   ontology_table=ontology_table,
+                                  ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
+                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
                                   polarity_table=polarity_table,
                                   NCBIRankDivision_table=NCBIRankDivision_table)
 

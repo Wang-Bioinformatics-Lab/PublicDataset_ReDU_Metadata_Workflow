@@ -11,7 +11,7 @@ process updateAllowedTerms {
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
-    val done
+    val x
 
     output:
     file 'allowed_terms.json'
@@ -24,7 +24,9 @@ process updateAllowedTerms {
     --path_to_po_owl $DATA_FOLDER/po.owl \
     --path_to_cl_owl $DATA_FOLDER/cl.owl \
     --path_to_doid_owl $DATA_FOLDER/doid.owl \
-    --path_to_ms_owl $DATA_FOLDER/ms.owl
+    --path_to_ms_owl $DATA_FOLDER/ms.owl \
+    --path_to_material_envs_owl $DATA_FOLDER/material-hierarchy.owl \
+    --path_to_biome_envs_owl $DATA_FOLDER/biome-hierarchy.owl
     """
 }
 
@@ -99,6 +101,8 @@ process mwbRun {
 
     input:
     path uberon_po_cl_csv_path
+    path ENVO_bio_csv
+    path ENVO_material_csv
     path ncbi_rank_division
     path allowed_terms
 
@@ -112,6 +116,8 @@ process mwbRun {
     --path_to_allowed_term_json ${allowed_terms} \
     --duplicate_raw_file_handling keep_all \
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
+    --path_to_envo_biome_csv ${ENVO_bio_csv} \
+    --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
     --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv
     """
@@ -165,6 +171,8 @@ process mlRun {
 
     input:
     path uberon_po_cl_csv_path
+    path ENVO_bio_csv
+    path ENVO_material_csv
     path ncbi_rank_division
     path allowed_terms
 
@@ -178,6 +186,8 @@ process mlRun {
     --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
     --path_to_allowed_term_json ${allowed_terms} \
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
+    --path_to_envo_biome_csv ${ENVO_bio_csv} \
+    --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division}
     """
 }
@@ -255,8 +265,9 @@ process prepare_ontologies {
     output:
     path 'UBERON_CL_PO_ontology.csv'
     path 'DOID_ontology.csv'
+    path 'ENVO_biome_ontology.csv'
+    path 'ENVO_material_ontology.csv'
     path 'NCBI_Rank_Division.csv'
-    val 'done'
 
     """
     python $TOOL_FOLDER/prepare_ontologies.py \
@@ -329,6 +340,8 @@ process read_and_clean_before_github_redu_metadata {
     path metadata_ch
     path UBERON_CL_PO_ontology_csv
     path DOID_ontology_csv
+    path ENVO_bio_csv
+    path ENVO_material_csv
     path ncbi_rank_division
     path allowed_terms
 
@@ -343,7 +356,9 @@ process read_and_clean_before_github_redu_metadata {
     --AllowedTermJson_path ${allowed_terms} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
     --path_to_uberon_cl_po_csv ${UBERON_CL_PO_ontology_csv} \
-    --path_to_doid_csv ${DOID_ontology_csv}
+    --path_to_doid_csv ${DOID_ontology_csv} \
+    --path_to_envo_biome_csv ${ENVO_bio_csv} \
+    --path_to_envo_material_csv ${ENVO_material_csv}
     """
 }
 
@@ -440,8 +455,8 @@ process gnpsmatchName_masst {
 workflow {
 
     //  Prepare ontologies
-    (uberon_cl_co_onto, doid_onto, ncbi_rank_division, done) = prepare_ontologies(1)
-    allowed_terms = updateAllowedTerms(done)
+    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division) = prepare_ontologies(1)
+    allowed_terms = updateAllowedTerms(1)
 
     // Github REDU data
     // prepared_files_folder = read_and_clean_github_redu_metadata(uberon_cl_co_onto, doid_onto, allowed_terms)
@@ -450,7 +465,7 @@ workflow {
 
     // Massive REDU data
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
-    msv_metadata_ch = read_and_clean_before_github_redu_metadata(metadata_ch, uberon_cl_co_onto, doid_onto, ncbi_rank_division, allowed_terms)
+    msv_metadata_ch = read_and_clean_before_github_redu_metadata(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
     gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch)
 
     // MicrobeMASST and PlantMASST
@@ -459,12 +474,12 @@ workflow {
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch)
 
     // Metabolomics Workbench
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, ncbi_rank_division, allowed_terms)
+    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
     mwb_files_ch = mwbFiles(1)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, ncbi_rank_division, allowed_terms)
+    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
     ml_files_ch = mlFiles(1)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 

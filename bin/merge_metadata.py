@@ -15,9 +15,9 @@ def main():
                       "NCBITaxonomy", "NCBIDivision", "NCBIRank", "YearOfAnalysis", "UBERONBodyPartName", "BiologicalSex", "AgeInYears",  "LifeStage", 
                       "Country", "HealthStatus", "ChromatographyAndPhase", "IonizationSourceAndPolarity",
                       "MassSpectrometer", "SampleExtractionMethod",  "SampleCollectionMethod", "ComorbidityListDOIDIndex", 
-                      "DOIDCommonName", "DOIDOntologyIndex", "DepthorAltitudeMeters", "HumanPopulationDensity", "InternalStandardsUsed", 
-                      "LatitudeandLongitude", "SampleCollectionDateandTime", "SubjectIdentifierAsRecorded", "TermsofPosition", 
-                      "UBERONOntologyIndex", "UniqueSubjectID", "USI", "DataSource"]
+                      "DOIDCommonName", "DOIDOntologyIndex", "ENVOEnvironmentBiome", "DepthorAltitudeMeters", "HumanPopulationDensity", "InternalStandardsUsed", 
+                      "LatitudeandLongitude", "SampleCollectionDateandTime", "ENVOEnvironmentMaterial", "ENVOEnvironmentBiomeIndex", "ENVOEnvironmentMaterialIndex",
+                      "SubjectIdentifierAsRecorded", "TermsofPosition", "UBERONOntologyIndex", "UniqueSubjectID", "USI", "DataSource"]
 
     # read GNPS metadata
     gnps_df = pd.read_csv(args.gnps_metadata, sep='\t')

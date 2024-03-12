@@ -110,7 +110,7 @@ if __name__ == "__main__":
     if args.path_to_biome_envs_owl != 'none' and args.path_to_material_envs_owl != 'none':
 
         print('Processing environmental biome ontology,..')
-        envBiome_onto = get_uberon_table(args.path_to_biome_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentBiomeIndex')
+        envBiome_onto = get_ontology_table(args.path_to_biome_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentBiomeIndex')
         unique_labels = envBiome_onto['Label'].unique().tolist()
         unique_indexes = envBiome_onto['ENVOEnvironmentBiomeIndex'].str.replace("_", ":").unique().tolist()
 

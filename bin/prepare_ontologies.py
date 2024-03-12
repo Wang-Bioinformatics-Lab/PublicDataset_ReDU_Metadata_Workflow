@@ -51,7 +51,6 @@ def get_uberon_table(owl_path):
 
 def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex'):
     onto = get_ontology(owl_path).load()
-
     filter_class = None
     descendants = set()
     if descendant_node:
@@ -62,7 +61,7 @@ def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_n
             descendants = set(filter_class.descendants())
             # Optionally remove the filter_class itself from the set of descendants to exclude it
             descendants.discard(filter_class)
-
+    
     data = []
     for cls in tqdm.tqdm(onto.classes(), desc="Processing classes"):
         # Skip the class if it is the filter_class itself and descendant_node is provided
@@ -71,7 +70,7 @@ def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_n
 
         label = cls.label.first() if cls.label else None
         synonyms = [synonym for synonym in cls.hasExactSynonym] if hasattr(cls, 'hasExactSynonym') else []
-
+        
         if not synonyms:
             synonyms = [label] if label else []
 
@@ -129,14 +128,10 @@ if __name__ == '__main__':
     uberon_ontology_table = pd.concat([uberon_onto, cl_onto, po_onto], ignore_index=True, sort=False)
     uberon_ontology_table['UBERONOntologyIndex'] = uberon_ontology_table['UBERONOntologyIndex'].str.replace('_', ':')
 
-
-
-
     #environment ontology
     print('Processing environmental biome ontology,..')
-    envBiome_onto = get_uberon_table(args.path_to_biome_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentBiomeIndex')
+    envBiome_onto = get_ontology_table(args.path_to_biome_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentBiomeIndex')
     envBiome_onto['ENVOEnvironmentBiomeIndex'] = envBiome_onto['ENVOEnvironmentBiomeIndex'].str.replace('_', ':')
-
 
 
     print('Processing environmental material ontology,..')
