@@ -133,7 +133,7 @@ def _get_metabolomicsworkbench_files(dataset_accession):
         workbench_df = pd.DataFrame()
 
     merged_df = pd.concat([files_df, workbench_df])
-    #print(merged_df)
+
     return merged_df, msv_accession
 
 
@@ -391,6 +391,49 @@ def filter_unresolved_contradictions(potential_matches, contradictions):
 
     return potential_matches
 
+from collections import Counter
+def filter_unresolved_contradictions(potential_matches):
+    
+    # Step 1: Flatten all values into a single list and count occurrences
+    all_values = [value for values in potential_matches.values() for value in values]
+    
+    value_counts = Counter(all_values)
+    
+    # Step 2: Identify values that occur more than once
+    values_to_filter = {value for value, count in value_counts.items() if count > 1}
+    
+    # Step 3: Set the value of keys to an empty set if they contain any value to be filtered
+    for key in potential_matches:
+        if any(value in values_to_filter for value in potential_matches[key]):
+            potential_matches[key] = set()
+    
+    return potential_matches
+
+def resolve_contradictions(contradictions, potential_matches):
+    for raw_value, conflicting_values in contradictions.items():
+        better_match = None
+        highest_percentage = 0
+        
+        raw_value_length = len(raw_value)
+        
+        for df_value in conflicting_values:
+            # Find the percentage of the raw_value that matches the df_value
+            # Assuming df_value represents the key in potential_matches that relates to raw_value
+            percentage = len(df_value) / raw_value_length
+            
+            if percentage > highest_percentage:
+                highest_percentage = percentage
+                better_match = df_value
+        
+        # Now, keep only the better match in potential_matches for the conflicting raw_value
+        if better_match:
+            for key in list(potential_matches):  # Convert to list to avoid runtime error during iteration
+                match_set = potential_matches[key]
+                if raw_value in match_set and key != better_match:
+                    match_set.remove(raw_value)
+
+    return potential_matches
+
 def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
     data_list = []
     for id, item in enumerate(data):
@@ -441,9 +484,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
         else:
             split_by_this = '[; ,]+'
 
-        #df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this)).explode('filename_raw')
         df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this).apply(lambda x: list(set(x)))).explode('filename_raw')
-
 
         df.reset_index(drop=True, inplace=True)
 
@@ -464,7 +505,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
             raw_file_name_df['filename_raw'] = raw_file_name_df['filename_raw_path'].str.lower()
             raw_file_name_df['filename_raw_lower'] = raw_file_name_df['filename_raw'].str.lower()
 
-            
             match_df = 'filename_raw_lower'
             match_raw_file_name_df = 'filename_base_wo_extension'
             potential_matches = set(df[match_df]).intersection(set(raw_file_name_df[match_raw_file_name_df]))
@@ -484,25 +524,34 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
                 df = df.merge(raw_file_name_df, left_on=match_df, right_on=match_raw_file_name_df, how='left')
             else:
 
-                print('getting substring matches:')
+                print(f"use from match_df: {match_df}")
+                print(f"use from raw_file_name_df: {match_raw_file_name_df}")
+
+                print('getting substring matches,..')
                 potential_matches = map_potential_matches(df, raw_file_name_df, target_column='filename_base_wo_extension', source_columns = ['filename_base_wo_extension', ''])
-                print('analyzing contradictions:')
+                print('analyzing contradictions,..')
                 contradictions = analyze_for_contradictions(potential_matches)
-                print('resolving contradictions:')
+                print('resolving contradictions,..')
                 potential_matches = resolve_contradictions(contradictions, potential_matches)
-                print('filtering contradictions:')
-                potential_matches = filter_unresolved_contradictions(potential_matches, contradictions)
+                print('filtering contradictions,..')
+                potential_matches = filter_unresolved_contradictions(potential_matches)
+                
+
+                #create dict to assign matches
+                match_indices = {}
+
+                for df_value, matches in potential_matches.items():
+                    if matches:
+                        for match_value in matches:  
+                            match_index = raw_file_name_df.index[raw_file_name_df['filename_base_wo_extension'] == match_value].tolist()[0] 
+                            if df_value not in match_indices:
+                                match_indices[df_value] = [match_index]
+                            else:
+                                match_indices[df_value].append(match_index)
 
                 
-                match_indices = {}
-                for df_value, matches in potential_matches.items():
-                    if matches:  
-                        
-                        match_value = matches.pop()  # Get the match value
-                        match_index = raw_file_name_df.index[raw_file_name_df['filename_base_wo_extension'] == match_value].tolist()[0]  # Assuming this finds the index
-                        match_indices[df_value] = match_index
-
                 df['match_index'] = df['filename_base_wo_extension'].map(match_indices)
+                df = df.explode('match_index')
                 
                 df = pd.merge(df, raw_file_name_df, left_on='match_index', right_index=True, how='left', suffixes=('', '_matched'))
 
@@ -513,6 +562,11 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
             df['filename_raw_lower'] = df['filename_base']
             df = df.drop(columns=['filename_base'])
 
+    
+    df = df.drop_duplicates(subset=['filename', 'Key' , 'Value'], keep=False).reset_index(drop=True)
+    if len(df) == 0:
+        raise ValueError("No raw data could be associated with metadata. Stopping!")
+    
     df['Value'] = df['Value'].str.lower()
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
     df = get_key_info_into_outer(df, key_vars=["gender", "sex", "gender (f/m)", "biological_sex"], new_col="MWB_sex")
@@ -533,7 +587,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
     df = df.drop_duplicates().reset_index(drop=True)
 
     df['filename'] = df['filename_raw_path']
-
     return df
 
 
@@ -584,9 +637,9 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
     #add NCBITaxonomy
     #######
     unique_species = set(df_outer['SUBJECT_SPECIES'])
-    processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict) for species in unique_species}
+    unique_species_ncbiIDs = set(df_outer['TAXONOMY_ID'])
+    processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, ncbi_id=unique_species_ncbiIDs, allowedTerm_dict=allowedTerm_dict) for species in unique_species}
     df_outer['NCBITaxonomy'] = df_outer['SUBJECT_SPECIES'].map(processed_species)
-
     attempt_taxa_extraction_from_inner = False
     if all(value is None for value in processed_species.values()):
         attempt_taxa_extraction_from_inner = True
@@ -747,7 +800,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
 
                 processed_species = {}
                 none_count = 0
-                unique_species = set(MWB_table['Value'])
+                unique_species = set(MWB_table[MWB_table['Key'] != 'raw_file_name']['Value'])
+                
 
                 #processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict) for species in unique_species} 
                 for species in unique_species:
@@ -950,7 +1004,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
 
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
-
+    redu_df_final.to_csv('check_taht.csv', index = False)
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
     redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, 
                                                  ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
@@ -1117,7 +1171,7 @@ if __name__ == '__main__':
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
     parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
 
-    #python3.8 workflows/PublicDataset_ReDU_Metadata_Workflow/bin/MWB_to_REDU.py --study_id  ST000107 --path_to_csvs /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/translation_sheets --path_to_allowed_term_json /home/yasin/projects/ReDU-MS2-GNPS2/work/03/59b15db86cef31d8a337537d4cff04/allowed_terms.json --duplicate_raw_file_handling keep_all --path_to_uberon_cl_po_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/ca/535593beabd1e7034883820a96e530/UBERON_CL_PO_ontology.csv --path_to_polarity_info /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/data/MWB_polarity_table.csv 
+    #python3.8 workflows/PublicDataset_ReDU_Metadata_Workflow/bin/MWB_to_REDU.py --study_id  ST000107 --path_ncbi_rank_division /home/yasin/projects/ReDU-MS2-GNPS2/work/e6/38262664f20d60872789d747698ac2/NCBI_Rank_Division.csv --path_to_envo_material_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/e6/38262664f20d60872789d747698ac2/ENVO_material_ontology.csv --path_to_envo_biome_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/e6/38262664f20d60872789d747698ac2/ENVO_biome_ontology.csv --path_to_csvs /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/translation_sheets --path_to_allowed_term_json /home/yasin/projects/ReDU-MS2-GNPS2/work/03/59b15db86cef31d8a337537d4cff04/allowed_terms.json --duplicate_raw_file_handling keep_all --path_to_uberon_cl_po_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/ca/535593beabd1e7034883820a96e530/UBERON_CL_PO_ontology.csv --path_to_polarity_info /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/data/MWB_polarity_table.csv 
     print('Starting MWB2REDU script,..')
 
     args = parser.parse_args()

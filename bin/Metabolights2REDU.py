@@ -10,13 +10,8 @@ from tqdm import tqdm
 from extend_allowed_terms import adapt_allowed_terms 
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
-from REDU_conversion_functions import update_unassigned_terms
-from REDU_conversion_functions import get_taxonomy_id_from_name
-from REDU_conversion_functions import get_uberon_table
-from REDU_conversion_functions import get_ontology_table
 from REDU_conversion_functions import get_taxonomy_info
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
-#from REDU_conversion_functions import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 import traceback
 from owlready2 import get_ontology
@@ -194,7 +189,7 @@ def Metabolights2REDU(study_id, **kwargs):
 
     #get study assays if they are MS. There can be multiple assay tables in the same study
     for index, assay_json in enumerate(study_assays):
-        if assay_json['technology'] == 'mass spectrometry':          
+        if assay_json['technology'] == 'mass spectrometry':        
 
             # Extract headers in the correct order
             headers = [None] * len(assay_json['assayTable']['fields'])
@@ -225,7 +220,7 @@ def Metabolights2REDU(study_id, **kwargs):
 
         # Concatenate all dataframes into a single dataframe
         df_assays = pd.concat(aligned_dfs, ignore_index=True)
-        
+
         #get info on samples (there is only one sample table per study)
         headers = [None] * len(study_details['content']['sampleTable']['fields'])
         for key, value in study_details['content']['sampleTable']['fields'].items():
@@ -242,7 +237,6 @@ def Metabolights2REDU(study_id, **kwargs):
         df_study_raw = pd.DataFrame()
         
         if 'Assay_Raw Spectral Data File' in df_study.columns:
-            #df_study_raw = df_study[df_study['Assay_Raw Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
             df_study_raw = df_study[df_study['Assay_Raw Spectral Data File'].str.contains(r'\.', regex=True, na=False)].copy()
 
             df_study_raw['filepath'] = df_study_raw['Assay_Raw Spectral Data File']
@@ -254,7 +248,6 @@ def Metabolights2REDU(study_id, **kwargs):
 
         df_study_mzml = pd.DataFrame()
         if 'Assay_Derived Spectral Data File' in df_study.columns:
-            #df_study_mzml = df_study[df_study['Assay_Derived Spectral Data File'].str.contains('\.', regex=True, na=False)].copy()
             df_study_mzml = df_study[df_study['Assay_Derived Spectral Data File'].str.contains(r'\.', regex=True, na=False)].copy()
             df_study_mzml['filepath'] = df_study_mzml['Assay_Derived Spectral Data File']
             # Check if the column exists before dropping
@@ -272,7 +265,7 @@ def Metabolights2REDU(study_id, **kwargs):
         elif len(df_study_raw) == 0 and len(df_study_mzml) == 0:
             return pd.DataFrame()
         
-
+        
         df_study = rename_duplicated_column_names(df_study)
         df_study['filename'] = df_study['filepath']#.apply(lambda x: os.path.basename(x))
 
@@ -285,6 +278,7 @@ def Metabolights2REDU(study_id, **kwargs):
         # List of allowed extensions
         allowed_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
         df_study = df_study[df_study['filename_lower'].apply(lambda x: any(x.endswith(ext) for ext in allowed_extensions))]
+
 
         if len(df_study) == 0:
             return None
@@ -306,6 +300,8 @@ def Metabolights2REDU(study_id, **kwargs):
             allowedTerm_dict = kwargs['allowedTerm_dict']
             unassigned_term_json = kwargs['unassigned_term_json']
             ontology_table = kwargs['ontology_table']
+            ENVOEnvironmentMaterialIndex_table = kwargs['ENVOEnvironmentMaterialIndex_table']
+            ENVOEnvironmentBiomeIndex_table = kwargs['ENVOEnvironmentBiomeIndex_table']
             NCBIRankDivision_table  = kwargs['NCBIRankDivision_table']
 
             
@@ -357,6 +353,21 @@ def Metabolights2REDU(study_id, **kwargs):
                         matching_row = df_biofluid_vs_tissue[df_biofluid_vs_tissue['ML'] == org_part]
                         if not matching_row.empty:
                             df_study.at[index, 'SampleTypeSub1'] = matching_row.iloc[0]['tissueVSbiofluid']
+
+
+                #add ENV material column
+                #######
+                updated_species_dict = {}
+
+                for key, value in processed_organisms.items():
+                    if value == 'None':
+                        match = ENVOEnvironmentMaterialIndex_table[(ENVOEnvironmentMaterialIndex_table['Label'] == key) | (ENVOEnvironmentMaterialIndex_table['Synonym'] == key)]['Label'].values
+                        if match.size > 0:
+                            updated_species_dict[key] = match[0]
+                        else:
+                            updated_species_dict[key] = 'missing value'
+
+                df_study.loc[:, 'ENVOEnvironmentMaterial'] = df_study['Samples_Organism'].map(updated_species_dict)
 
                 #add UBERON bodypart column
                 #######
@@ -542,7 +553,7 @@ def Metabolights2REDU(study_id, **kwargs):
                                                     ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,NCBIRankDivision_table=NCBIRankDivision_table, add_usi = True, 
                                                     other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
             
-            df_study = df_study.drop_duplicates() #no idea where the duplicates sometimes come from
+            df_study = df_study.drop_duplicates() 
 
             #remove files if they are assigned multiple times as we cannot tell which sample they belong to (this is probably because people make mistakes when creating their study)
             df_study['count'] = df_study.groupby('USI')['USI'].transform('size')
