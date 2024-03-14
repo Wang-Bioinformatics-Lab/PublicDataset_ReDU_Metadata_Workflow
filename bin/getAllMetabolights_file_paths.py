@@ -64,8 +64,8 @@ def get_files_recursive(study_id, directory, headers, files_list, depth=0, max_d
 if __name__ == "__main__":
             
     parser = argparse.ArgumentParser(description='Get all Metabolights file paths')
-    parser.add_argument("--output_filename", "-csvs", type=str, help="csv file name for output", default="none")
-    parser.add_argument("--user_token", "-csvs", type=str, help="user token you can get from metabolights account", default="none")
+    parser.add_argument("--output_filename", type=str, help="csv file name for output", default="none")
+    parser.add_argument("--user_token", type=str, help="user token you can get from metabolights account", default="none")
     
     
     args = parser.parse_args()
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     files_list = []
 
     # Assuming public_metabolights_studies is a list of study IDs
-    for study in tqdm(public_metabolights_studies[1:5], desc="Processing studies"):
+    for study in tqdm(public_metabolights_studies, desc="Processing studies"):
         study_id = study['accession']
         get_files_recursive(study_id, 'FILES', headers, files_list)
 
