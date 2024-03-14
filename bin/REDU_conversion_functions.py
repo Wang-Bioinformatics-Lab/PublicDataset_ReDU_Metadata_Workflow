@@ -189,6 +189,31 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
 
     allowedTerm_dict = kwargs['allowedTerm_dict']
     taxonomy_data = allowedTerm_dict["NCBITaxonomy"]["allowed_values"]
+    
+    ncbi_id_input = ''
+    if 'ncbi_id' in kwargs.keys():
+        ncbi_id_input = str(kwargs['ncbi_id'].pop())
+
+    try:
+        ncbi_id_numeric = int(ncbi_id_input)
+    except ValueError:
+        # ncbi_id_input cannot be made numeric, return None or an appropriate error message
+        ncbi_id_input = ''
+
+    
+    if ncbi_id_input != '':
+        ncbi_id_input = str(ncbi_id_input)
+        for entry in taxonomy_data:
+            parts = entry.split('|')
+            if len(parts) == 2:
+                ncbi_id, name = parts
+                if str(ncbi_id) == ncbi_id_input:
+                    return ncbi_id + '|' + str(name)
+            else:
+                continue
+
+
+    organism_name = str(organism_name)
     for entry in taxonomy_data:
         parts = entry.split('|')
         if len(parts) == 2:
@@ -198,6 +223,7 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
         else:
             continue
 
+    return None
     req_ncbi_name = get_taxonomy_id_from_name(organism_name)
 
     if req_ncbi_name is not None:

@@ -22,9 +22,11 @@ def main():
     metadata_df["MassiveID"] = metadata_df["MassiveID"].apply(lambda x: x.split('|')[0])
 
     files_df["short_filename"] = files_df["FILENAME"].apply(lambda x: os.path.basename(x))
-    files_df["key"] = files_df["STUDY_ID"] + ":" + files_df["short_filename"]
+    files_df["key"] = files_df["STUDY_ID"] + ":" + files_df["FILENAME"]
 
     metadata_df["key"] = metadata_df["MassiveID"] + ":" + metadata_df["filename"]
+
+
 
     # merging from both dataframes
     merged_df = pd.merge(metadata_df, files_df, on="key", how="inner")
@@ -35,6 +37,9 @@ def main():
     merged_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'}, inplace=True)
     merged_df.drop('key', axis=1, inplace=True)
    
+
+    #adding f. to each filename
+    merged_df['filename'] = 'f.' + merged_df['filename']
 
     # Saving file
     merged_df.to_csv(args.output_merged_file, sep='\t', index=False)

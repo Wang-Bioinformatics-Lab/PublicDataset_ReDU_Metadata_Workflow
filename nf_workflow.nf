@@ -24,7 +24,9 @@ process updateAllowedTerms {
     --path_to_po_owl $DATA_FOLDER/po.owl \
     --path_to_cl_owl $DATA_FOLDER/cl.owl \
     --path_to_doid_owl $DATA_FOLDER/doid.owl \
-    --path_to_ms_owl $DATA_FOLDER/ms.owl
+    --path_to_ms_owl $DATA_FOLDER/ms.owl \
+    --path_to_material_envs_owl $DATA_FOLDER/material-hierarchy.owl \
+    --path_to_biome_envs_owl $DATA_FOLDER/biome-hierarchy.owl
     """
 }
 
@@ -87,7 +89,8 @@ process gnpsmatchName {
     """
     python $TOOL_FOLDER/gnps_name_matcher.py \
     ${passed_file_names} \
-    metadata_folder
+    metadata_folder \
+    gnps_metadata_all.tsv
     """
 }
 
@@ -98,6 +101,9 @@ process mwbRun {
 
     input:
     path uberon_po_cl_csv_path
+    path ENVO_bio_csv
+    path ENVO_material_csv
+    path ncbi_rank_division
     path allowed_terms
 
     output:
@@ -110,6 +116,9 @@ process mwbRun {
     --path_to_allowed_term_json ${allowed_terms} \
     --duplicate_raw_file_handling keep_all \
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
+    --path_to_envo_biome_csv ${ENVO_bio_csv} \
+    --path_to_envo_material_csv ${ENVO_material_csv} \
+    --path_ncbi_rank_division ${ncbi_rank_division} \
     --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv
     """
 }
@@ -146,7 +155,7 @@ process formatmwb {
     file 'mwb_redu.tsv'
 
     """
-    python $TOOL_FOLDER/MWB_merge.py \
+    python $TOOL_FOLDER/MWB_merge.py  \
     $mwb_metadata \
     $mwb_files \
     mwb_redu.tsv 
@@ -162,6 +171,9 @@ process mlRun {
 
     input:
     path uberon_po_cl_csv_path
+    path ENVO_bio_csv
+    path ENVO_material_csv
+    path ncbi_rank_division
     path allowed_terms
 
     output:
@@ -173,7 +185,10 @@ process mlRun {
     --study_id ALL  \
     --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
     --path_to_allowed_term_json ${allowed_terms} \
-    --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path}
+    --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
+    --path_to_envo_biome_csv ${ENVO_bio_csv} \
+    --path_to_envo_material_csv ${ENVO_material_csv} \
+    --path_ncbi_rank_division ${ncbi_rank_division}
     """
 }
 
@@ -220,12 +235,11 @@ process mergeAllMetadata {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
-    cache false
-
     input:
     file gnps_metadata
     file mwb_redu
     file metabolights_redu
+    file masst_metadata
 
     output:
     file 'merged_metadata.tsv'
@@ -235,6 +249,7 @@ process mergeAllMetadata {
     $gnps_metadata \
     $mwb_redu \
     $metabolights_redu \
+    $masst_metadata \
     merged_metadata.tsv
     """
 }
@@ -250,13 +265,20 @@ process prepare_ontologies {
     output:
     path 'UBERON_CL_PO_ontology.csv'
     path 'DOID_ontology.csv'
+    path 'ENVO_biome_ontology.csv'
+    path 'ENVO_material_ontology.csv'
+    path 'NCBI_Rank_Division.csv'
 
     """
     python $TOOL_FOLDER/prepare_ontologies.py \
     --path_to_uberon_owl $DATA_FOLDER/uberon.owl \
     --path_to_cl_owl $DATA_FOLDER/cl.owl \
     --path_to_po_owl $DATA_FOLDER/po.owl \
-    --path_to_doid_owl $DATA_FOLDER/doid.owl
+    --path_to_doid_owl $DATA_FOLDER/doid.owl \
+    --path_to_biome_envs_owl $DATA_FOLDER/biome-hierarchy.owl \
+    --path_to_material_envs_owl $DATA_FOLDER/material-hierarchy.owl \
+    --path_to_ncbi_nodes_dmp $DATA_FOLDER/nodes.dmp \
+    --path_to_ncbi_division_dmp $DATA_FOLDER/division.dmp
     """
 }
 
@@ -279,7 +301,7 @@ process read_and_clean_github_redu_metadata {
     python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
     /home/yasin/projects/ReDU_metadata/metadata \
     metadata_folder \
-    --AllowedTermJson_path $TOOL_FOLDER/allowed_terms/allowed_terms.json \
+    --AllowedTermJson_path ${allowed_terms} \
     --path_to_uberon_cl_po_csv ${UBERON_CL_PO_ontology_csv} \
     --path_to_doid_csv ${DOID_ontology_csv}
     """
@@ -303,7 +325,128 @@ process gnpsmatchName_github {
     """
     python $TOOL_FOLDER/gnps_name_matcher.py \
     ${passed_file_names} \
-    metadata_folder
+    metadata_folder \
+    gnps_metadata_all.tsv
+    """
+}
+
+
+process read_and_clean_before_github_redu_metadata {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    path metadata_ch
+    path UBERON_CL_PO_ontology_csv
+    path DOID_ontology_csv
+    path ENVO_bio_csv
+    path ENVO_material_csv
+    path ncbi_rank_division
+    path allowed_terms
+
+    output:
+    file 'adjusted_metadata_folder'
+
+    """
+    mkdir adjusted_metadata_folder
+    python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
+    ${metadata_ch} \
+    adjusted_metadata_folder \
+    --AllowedTermJson_path ${allowed_terms} \
+    --path_ncbi_rank_division ${ncbi_rank_division} \
+    --path_to_uberon_cl_po_csv ${UBERON_CL_PO_ontology_csv} \
+    --path_to_doid_csv ${DOID_ontology_csv} \
+    --path_to_envo_biome_csv ${ENVO_bio_csv} \
+    --path_to_envo_material_csv ${ENVO_material_csv}
+    """
+}
+
+
+process gnpsmatchName_before_github {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    cache false
+
+    input:
+    // file 'passed_file_names.tsv'
+    file 'adjusted_metadata_folder' 
+
+    output:
+    file 'gnps_metadata_all.tsv'
+
+    """
+    python $TOOL_FOLDER/gnps_name_matcher.py \
+    all \
+    adjusted_metadata_folder \
+    gnps_metadata_all.tsv
+    """
+}
+
+process downloadMicrobePlantMASST {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    file x
+
+    output:
+    file 'microbe_masst_table.csv'
+    file 'plant_masst_table.csv'
+
+    """
+    curl -LJO https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv
+    curl -LJO https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/plant_masst_table.csv
+    """
+}
+
+process MASST_to_REDU {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    path redu_table
+    path ncbi_rank_division
+    path allowed_terms
+
+    output:
+    file 'adjusted_metadata_folder'
+
+    """
+    mkdir adjusted_metadata_folder
+    python $TOOL_FOLDER/MASST_to_REDU.py \
+    ${redu_table} \
+    adjusted_metadata_folder \
+    --path_microbeMASST $DATA_FOLDER/microbe_masst_table.csv \
+    --path_plantMASST $DATA_FOLDER/plant_masst_table.csv \
+    --path_ncbiRanksDivisions ${ncbi_rank_division} \
+    --AllowedTermJson_path ${allowed_terms}
+    """
+}
+
+
+process gnpsmatchName_masst {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    cache false
+
+    input:
+    file 'adjusted_metadata_folder' 
+
+    output:
+    file 'masst_metadata_all.tsv'
+
+    """
+    python $TOOL_FOLDER/gnps_name_matcher.py \
+    all \
+    adjusted_metadata_folder \
+    masst_metadata_all.tsv
     """
 }
 
@@ -312,7 +455,7 @@ process gnpsmatchName_github {
 workflow {
 
     //  Prepare ontologies
-    (uberon_cl_co_onto, doid_onto) = prepare_ontologies(1)
+    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division) = prepare_ontologies(1)
     allowed_terms = updateAllowedTerms(1)
 
     // Github REDU data
@@ -322,19 +465,24 @@ workflow {
 
     // Massive REDU data
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
-    (passed_paths_ch) = validateMetadata(file_paths_ch, metadata_ch, allowed_terms)
-    gnps_metadata_ch = gnpsmatchName(passed_paths_ch, metadata_ch)
-    
+    msv_metadata_ch = read_and_clean_before_github_redu_metadata(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
+    gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch)
+
+    // MicrobeMASST and PlantMASST
+    // (microbeMASST_table, plantMASST_table) = downloadMicrobePlantMASST(1)
+    masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms)
+    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch)
+
     // Metabolomics Workbench
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, allowed_terms)
+    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
     mwb_files_ch = mwbFiles(1)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, allowed_terms)
+    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
     ml_files_ch = mlFiles(1)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
-    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch)
+    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, masst_metadata_wFiles_ch)
 
 }

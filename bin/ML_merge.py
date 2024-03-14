@@ -40,6 +40,7 @@ def main():
     metadata_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'}, inplace=True)
     metadata_df.drop('key', axis=1, inplace=True)
 
+    metadata_df['filename'] = 'f.' + metadata_df['filename']
 
     # Saving file
     metadata_df.to_csv(args.output_merged_file, sep='\t', index=False)

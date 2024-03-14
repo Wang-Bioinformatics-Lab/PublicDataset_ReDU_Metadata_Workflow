@@ -55,6 +55,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
+
     if args.study_id == "ALL":
         # Getting all files
         url = "https://www.metabolomicsworkbench.org/rest/study/study_id/ST/available"
@@ -83,6 +85,8 @@ if __name__ == '__main__':
 
     else:
         result_df = _get_metabolomicsworkbench_filepaths(study_id=args.study_id)
+
+    result_df = result_df[result_df['FILENAME'].str.lower().str.endswith(tuple(extensions))]
 
     result_df.to_csv(args.output_path, sep='\t', index=False, header=True)
 
