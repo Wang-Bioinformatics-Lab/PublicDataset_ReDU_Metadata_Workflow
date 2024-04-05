@@ -29,9 +29,16 @@ def _get_metabolomicsworkbench_filepaths(study_id):
 
         workbench_df['raw_sample_name'] = workbench_df['URL'].apply(extract_first_folder_with_extension)
 
+        # workbench_df["USI_file"] = workbench_df["URL"].apply(
+        #     lambda url: f"mzspec:{study_id}:{parse_qs(urlparse(url).query).get('A', [None])[0]}-{parse_qs(urlparse(url).query).get('F', [None])[0]}"
+        # )
         workbench_df["USI_file"] = workbench_df["URL"].apply(
-            lambda url: f"mzspec:{study_id}:{parse_qs(urlparse(url).query).get('A', [None])[0]}-{parse_qs(urlparse(url).query).get('F', [None])[0]}"
+            lambda url: f"mzspec:{study_id}:{parse_qs(urlparse(url).query).get('F', [None])[0]}"
         )
+
+
+
+
 
         workbench_df["USI_sample"] = workbench_df.apply(
             lambda

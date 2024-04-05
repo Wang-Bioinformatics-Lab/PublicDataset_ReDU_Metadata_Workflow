@@ -4,6 +4,7 @@ from tqdm import tqdm
 import requests
 import pandas as pd
 import argparse 
+import time
 
 def safe_api_request(url, retries=3, expected_codes={200}):
 
@@ -64,7 +65,7 @@ def get_files_recursive(study_id, directory, headers, files_list, depth=0, max_d
 if __name__ == "__main__":
             
     parser = argparse.ArgumentParser(description='Get all Metabolights file paths')
-    parser.add_argument("--output_filename", type=str, help="csv file name for output", default="none")
+    parser.add_argument("--output_filename", type=str, help="tsv file name for output", default="none")
     parser.add_argument("--user_token", type=str, help="user token you can get from metabolights account", default="none")
     
     
@@ -83,7 +84,7 @@ if __name__ == "__main__":
     files_df = pd.DataFrame(files_list)
 
 
-    files_df.to_csv(args.output_filename, index = False)
+    files_df.to_csv(args.output_filename, index = False, sep = "\t")
 
 
 
