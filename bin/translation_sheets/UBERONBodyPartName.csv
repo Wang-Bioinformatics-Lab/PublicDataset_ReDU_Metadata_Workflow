@@ -1,212 +1,389 @@
 MWB,REDU,REDU_UBERONOntologyIndex
+Adipocytes,adipocyte,
+adipose tissue,adipose tissue,
 adrenal gland,adrenal gland,UBERON:0002369
 amniotic fluid,amniotic fluid,UBERON:0000173
 anal region,anal region,UBERON:0001353
+aortic valve,aortic valve,
 arm skin,arm skin,UBERON:0002427
+Astrocyte cells,astrocyte,
 axilla skin,axilla skin,UBERON:0015474
+B-cells,B cell,
 bile,bile,UBERON:0001970
+Bladder,bladder organ,
 bladder organ,bladder organ,UBERON:0018707
+Blastocysts,blastocyst,
 blood,blood,UBERON:0000178
+Blood (whole),blood,UBERON:0000178
 cord blood,blood,UBERON:0000178
+baboon plasma,blood plasma,UBERON:0001969
+Baseline plasma,blood plasma,UBERON:0001969
+Blood (plasma),blood plasma,UBERON:0001969
 blood plasma,blood plasma,UBERON:0001969
+Blood. Plasma was isolated for MS analysis.,blood plasma,UBERON:0001969
+CHEAR Plasma,blood plasma,UBERON:0001969
+Delivery maternal plasma,blood plasma,UBERON:0001969
+First trimester maternal plasma,blood plasma,UBERON:0001969
+Maternal plasma,blood plasma,UBERON:0001969
+Mouse plasma,blood plasma,UBERON:0001969
+NIST PLASMA,blood plasma,UBERON:0001969
+Nistplasma,blood plasma,UBERON:0001969
 plasma,blood plasma,UBERON:0001969
 pooled plasma,blood plasma,UBERON:0001969
-Nistplasma,blood plasma,UBERON:0001969
-baboon plasma,blood plasma,UBERON:0001969
 Pure Plasma,blood plasma,UBERON:0001969
-Baseline plasma,blood plasma,UBERON:0001969
-Maternal plasma,blood plasma,UBERON:0001969
-First trimester maternal plasma,blood plasma,UBERON:0001969
-Delivery maternal plasma,blood plasma,UBERON:0001969
 red cross plasma,blood plasma,UBERON:0001969
-NIST PLASMA,blood plasma,UBERON:0001969
-CHEAR Plasma,blood plasma,UBERON:0001969
-Mouse plasma,blood plasma,UBERON:0001969
-blood serum,blood serum,UBERON:0001977
-serum,blood serum,UBERON:0001977
-pooled serum,blood serum,UBERON:0001977
-Tail Vein Serum,blood serum,UBERON:0001977
-Systemic Serum,blood serum,UBERON:0001977
-Portal Vein Serum,blood serum,UBERON:0001977
 Blood (serum),blood serum,UBERON:0001977
-Blood (plasma),blood plasma,UBERON:0001969
-Blood (whole),blood,UBERON:0000178
-Blood. Plasma was isolated for MS analysis.,blood plasma,UBERON:0001969
+blood serum,blood serum,UBERON:0001977
+pooled serum,blood serum,UBERON:0001977
+Portal Vein Serum,blood serum,UBERON:0001977
+serum,blood serum,UBERON:0001977
+Systemic Serum,blood serum,UBERON:0001977
+Tail Vein Serum,blood serum,UBERON:0001977
+Blubber,blubber,
+bone marrow,bone marrow,
+Bone,bone tissue,
+Basal ganglia,brain,UBERON:0000955
 brain,brain,UBERON:0000955
-Fetal Male brain,brain,UBERON:0000955
+brain homogenate,brain,UBERON:0000955
+Cerebellum,brain,UBERON:0000955
+Cerebral Nuclei,brain,UBERON:0000955
+Cortical Subplate,brain,UBERON:0000955
 Fetal Female brain,brain,UBERON:0000955
+Fetal Male brain,brain,UBERON:0000955
+Fiber Tracts,brain,UBERON:0000955
+forebrain,brain,UBERON:0000955
 hindbrain,brain,UBERON:0000955
 "hindbrain (pons, medulla, brainstem, cerebellum)",brain,UBERON:0000955
-hippocampus,brain,UBERON:0000955
-forebrain,brain,UBERON:0000955
-WT Brain,brain,UBERON:0000955
 HIP Brain,brain,UBERON:0000955
+hippocampus,brain,UBERON:0000955
+Hypothalamus,brain,UBERON:0000955
+Iso Cortex,brain,UBERON:0000955
 Medulla,brain,UBERON:0000955
-Thalamus,brain,UBERON:0000955
-Pons,brain,UBERON:0000955
-Olfactory bulb,brain,UBERON:0000955
+Midbrain,brain,UBERON:0000955
 Olfact. Area,brain,UBERON:0000955
 Olfactory area,brain,UBERON:0000955
-Midbrain,brain,UBERON:0000955
-Iso Cortex,brain,UBERON:0000955
-Hypothalamus,brain,UBERON:0000955
-Fiber Tracts,brain,UBERON:0000955
-Cortical Subplate,brain,UBERON:0000955
-brain homogenate,brain,UBERON:0000955
-Cerebral Nuclei,brain,UBERON:0000955
-Cerebellum,brain,UBERON:0000955
-brain - cerebral hemisphere,cerebral cortex,UBERON:0000956
-Basal ganglia,brain,UBERON:0000955
+Olfactory bulb,brain,UBERON:0000955
+Pons,brain,UBERON:0000955
+Thalamus,brain,UBERON:0000955
+WT Brain,brain,UBERON:0000955
+Brainstem,brainstem,
+breast,breast,
+Breast tissue,breast,
+bronchial mucosa,bronchial mucosa,
+Brown adipose,brown adipose tissue,
+caecal,caecum,UBERON:0001153
 caecum,caecum,UBERON:0001153
 Cecum,caecum,UBERON:0001153
-caecal,caecum,UBERON:0001153
 calcareous tooth,calcareous tooth,UBERON:0001091
 cardiac vein,cardiac vein,UBERON:0004148
+Maize starchy endosperm,caryopsis fruit,
+brain - cerebral hemisphere,cerebral cortex,UBERON:0000956
 cerebral cortex,cerebral cortex,UBERON:0000956
 cerebrospinal fluid,cerebrospinal fluid,UBERON:0001359
 csf,cerebrospinal fluid,UBERON:0001359
+cervical mucus,cervical mucus,
+chyme,chyme,
 colon,colon,UBERON:0001155
 Colon Mucosal Tissue,colon,UBERON:0001155
 intestine,colon,UBERON:0001155
-small intestine tissue,colon,UBERON:0001155
+Colonic mucosa,colonic mucosa,
+Colorectal Tissue,colorectum,
 compound eye,compound eye,UBERON:0000018
+cornea,cornea,
+corneal epithelium,corneal epithelium,
 coronary artery,coronary artery,UBERON:0001621
+Corpus Luteum,corpus luteum,
+corpus striatum,corpus striatum,
+Brain cortex,cortex,
+Cortex,cortex,
+Kidney cortex,cortex of kidney,
+decidua,decidua,
+Plaque samples,dental plaque,
+diaphragm,diaphragm,
 digestive tract,digestive tract,UBERON:0001555
-duodenum,duodenum,UBERON:0002114
+dorsal fin,dorsal fin,
 duod,duodenum,UBERON:0002114
+duodenum,duodenum,UBERON:0002114
 ear,ear,UBERON:0001690
+egg cell,egg cell,
+Eggs,egg cell,
+egg yolk,egg yolk,
+embryo,embryo,
+Embryonic cells,embryonic cell (metazoa),
+Endothelial cells,endothelial cell,
+Epididymal fat,epididymal fat pad,
+epididymis,epididymis,
+Epithelial cells,epithelial cell,
+Epithelial lining fluid,epithelial lining fluid,
+erythrocyte,erythrocyte,
+Erythrocytes,erythrocyte,
+Infected Red Blood Cells,erythrocyte,
 esophagus,esophagus,UBERON:0001043
-feces,feces,UBERON:0001988
+exudate,exudate,
+Eye tissue,eye,
 fecal,feces,UBERON:0001988
+feces,feces,UBERON:0001988
 Stool,feces,UBERON:0001988
+follicular fluid,follicular fluid,
+forelimb,forelimb,
+Fungal cells,fungal cell,
 gall bladder,gall bladder,UBERON:0002110
+gastrocnemius,gastrocnemius,
+gill,gill,
 gill filament,gill filament,UBERON:0009120
+gingiva,gingiva,
+gland of digestive tract,gland of digestive tract,
+Bee heads,head,
+head,head,
+Head tissue,head,
+head kidney,head kidney,
 head or neck skin,head or neck skin,UBERON:0012180
 heart,heart,UBERON:0000948
+hemolymph,hemolymph,
+hepatopancreas,hepatopancreas,
+hindgut,hindgut,
 ileum,ileum,UBERON:0002116
 mouse ileum,ileum,UBERON:0002116
+Interstitial fluid,interstitial fluid,
+islet of langerhans,islet of langerhans,
 jejunal epithelium,jejunal epithelium,UBERON:0000400
 jejunum,jejunum,UBERON:0002115
+Keratinocytes,keratinocyte,
 kidney,kidney,UBERON:0002113
 kidney tissue,kidney,UBERON:0002113
 lamina,lamina,UBERON:0000957
+larva,larva,
+Larvae,larva,
 larval thorax,larval thorax,UBERON:6001741
-liver,liver,UBERON:0002107
+leg,leg,
 baboon liver,liver,UBERON:0002107
-Maternal Liver,liver,UBERON:0002107
-Fetal Male Liver,liver,UBERON:0002107
-liver tissue,liver,UBERON:0002107
 Fetal Female Liver,liver,UBERON:0002107
-tissue (liver),liver,UBERON:0002107
-Mouse liver,liver,UBERON:0002107
+Fetal Male Liver,liver,UBERON:0002107
 Healthy Control Liver Tissue,liver,UBERON:0002107
+liver,liver,UBERON:0002107
+liver tissue,liver,UBERON:0002107
+Maternal Liver,liver,UBERON:0002107
+Mouse liver,liver,UBERON:0002107
+tissue (liver),liver,UBERON:0002107
 lower digestive tract,lower digestive tract,UBERON:0004907
+bronchoalveolar lavage,lung,UBERON:0002048
 lung,lung,UBERON:0002048
 lung airways,lung,UBERON:0002048
-bronchoalveolar lavage,lung,UBERON:0002048
 lymph,lymph,UBERON:0002391
+Lymph fluid,lymph,
+Mesenteric lymph,lymph,
+Macrophages,macrophage,
+mantle,mantle,
 midgut,midgut,UBERON:0001045
+Breast milk,milk,
 milk,milk,UBERON:0001913
 ML import: not available,ML import: not available,ML import: not available
+Mononuclear cells,mononuclear cell,
 multicellular organism,multicellular organism,UBERON:0000468
 muscle of Aristotle's lantern,muscle of Aristotle's lantern,UBERON:0012621
+Fibroblast cells,myofibroblast cell,
+Myotubes,myotube,
 nasal cavity,nasal cavity,UBERON:0001707
+Neurons,neuron,
+Neutrophils,neutrophil,
 not applicable,not applicable,not applicable
 not specified,not specified,not applicable
+Nucleus accumbens,nucleus accumbens,
 nuptial pad,nuptial pad,UBERON:0012243
 ocular surface region,ocular surface region,UBERON:0010409
 olfactory rosette,olfactory rosette,UBERON:2001428
 oral cavity,oral cavity,UBERON:0000167
+Shrimp organs,organ,
 organism substance,organism substance,UBERON:0000463
+Kidney outer medulla,outer medullary collecting duct,
+CHO cells,ovary,
+Ovaries,ovary,
 ovary,ovary,UBERON:0000992
 pancreas,pancreas,UBERON:0001264
+Peritoneal fluid,peritoneal fluid,
 pes,pes,UBERON:0002387
+photoreceptor outer segment layer,photoreceptor outer segment layer,
+Pituitary gland,pituitary gland,
+placenta,placenta,
+Plant pollen,pollen,
 post-embryonic organism,post-embryonic organism,UBERON:0009953
+Prostate,prostate gland,
+prostate gland ventral lobe,prostate gland ventral lobe,
 pulmonary artery,pulmonary artery,UBERON:0002012
 pulmonary vein,pulmonary vein,UBERON:0002016
+Quadriceps,quadriceps femoris,
 renal cortex artery,renal cortex artery,UBERON:0005268
 renal medulla,renal medulla,UBERON:0000362
+renal tubule,renal tubule,
 retina,retina,UBERON:0000966
+Rhizome,rhizome,
+Plant roots,root,
+Roots,root,
+Optic nerve,root of optic nerve,
+rotator cuff,rotator cuff,
+rumen,rumen,
+Rumen fluid,ruminal fluid,
+ruminal fluid,ruminal fluid,
 saliva,saliva,UBERON:0001836
-skeletal muscle organ,skeletal muscle organ,UBERON:0014892
+Scalp,scalp,
+sebum,sebum,
+Seeds,seed,
+Seedlings,seedling,
+Seminal plasma,seminal fluid,
 Muscle,skeletal muscle organ,UBERON:0014892
-muscles,skeletal muscle organ,UBERON:0014892
-"muscle, skeletal",skeletal muscle organ,UBERON:0014892
 muscle tissue,skeletal muscle organ,UBERON:0014892
+"muscle, skeletal",skeletal muscle organ,UBERON:0014892
+muscles,skeletal muscle organ,UBERON:0014892
+skeletal muscle organ,skeletal muscle organ,UBERON:0014892
+Skeleton,skeleton,
 skin of back,skin of back,UBERON:0001068
 skin of body,skin of body,UBERON:0002097
 skin of leg,skin of leg,UBERON:0001511
 skin of manus,skin of manus,UBERON:0001519
 skin of pes,skin of pes,UBERON:0001513
-skin of prepuce of penis,skin of prepuce of penis,UBERON:0001471
 Foreskin,skin of prepuce of penis,UBERON:0001471
+skin of prepuce of penis,skin of prepuce of penis,UBERON:0001471
 skin of trunk,skin of trunk,UBERON:0001085
+Small intestine,small intestine,
+small intestine tissue,small intestine,UBERON:0001155
+Smooth muscle,smooth muscle tissue,
+Soleus muscle,soleus muscle,
+Spinal cord,spinal cord,
 spleen,spleen,UBERON:0002106
+Splenocytes,splenocyte,
 sputum,sputum,UBERON:0007311
+Stem cells,stem cell,
 stem of Y-shaped fibrocartilage skeleton of ventral pouch,stem of Y-shaped fibrocartilage skeleton of ventral pouch,UBERON:0016628
 stomach,stomach,UBERON:0000945
+Subcutaneous fat,subcutaneous adipose tissue,
+supragingival dental plaque,supragingival dental plaque,
 sweat,sweat,UBERON:0001089
+synovial biopsy,synovial biopsy,
+synovial fluid,synovial fluid,
+T-cells,T cell,
+Tail,tail,
+telencephalon,telencephalon,
+testis,testis,
 thymus,thymus,UBERON:0002370
+Thyroid,thyroid gland,
+Tissue,tissue,
+Tissue pool,tissue,
+Tongue tissue,tongue,
 trachea,trachea,UBERON:0003126
+Umbilical cord plasma,umbilical cord blood,
 upper digestive tract,upper digestive tract,UBERON:0004908
-urine,urine,UBERON:0001088
-Patient urine,urine,UBERON:0001088
-NIST Smoker's Urine,urine,UBERON:0001088
 CHEAR Pooled Urine,urine,UBERON:0001088
+NIST Smoker's Urine,urine,UBERON:0001088
+Patient urine,urine,UBERON:0001088
+urine,urine,UBERON:0001088
 uterine cervix,uterine cervix,UBERON:0000002
 uterus,uterus,UBERON:0000995
 vagina,vagina,UBERON:0000996
 vaginal epithelium,vagina,UBERON:0000996
+Vastus lateralis,vastus lateralis,
+Vena cava,vena cava,
+venom,venom,
+Vitreous,vitreous humor,
 vitreous humor,vitreous humor,UBERON:0001797
 water vascular system,water vascular system,UBERON:0008251
+White adipose,white adipose tissue,
+Skin,zone of skin,
 zygote stage,zygote stage,UBERON:0000106
-islet of langerhans,islet of langerhans,
-chyme,chyme,
-hindgut,hindgut,
-hemolymph,hemolymph,
-head kidney,head kidney,
-head,head,
-gingiva,gingiva,
-forelimb,forelimb,
-erythrocyte,erythrocyte,
-epididymis,epididymis,
-egg yolk,egg yolk,
-egg cell,egg cell,
-dorsal fin,dorsal fin,
-gland of digestive tract,gland of digestive tract,
-diaphragm,diaphragm,
-decidua,decidua,
-corpus striatum,corpus striatum,
-corneal epithelium,corneal epithelium,
-cornea,cornea,
-cerebellum,cerebellum,
-bronchial mucosa,bronchial mucosa,
-breast,breast,
-bone marrow,bone marrow,
-aortic valve,aortic valve,
-cervical mucus,cervical mucus,
-adipose tissue,adipose tissue,
-synovial biopsy,synovial biopsy,
-placenta,placenta,
-embryo,embryo,
-synovial fluid,synovial fluid,
-prostate gland ventral lobe,prostate gland ventral lobe,
-testis,testis,
-gastrocnemius,gastrocnemius,
-follicular fluid,follicular fluid,
-rotator cuff,rotator cuff,
-ruminal fluid,ruminal fluid,
-leg,leg,
-supragingival dental plaque,supragingival dental plaque,
-sebum,sebum,
-renal tubule,renal tubule,
-mantle,mantle,
-gill,gill,
-rumen,rumen,
-photoreceptor outer segment layer,photoreceptor outer segment layer,
-larva,larva,
-hepatopancreas,hepatopancreas,
-exudate,exudate,
-telencephalon,telencephalon,
-tail,tail,
-venom,venom,
+Acorns,,
+Adipocyte media,,
+Algae,,
+AML cells,,
+Arteries,artery,
+Atria,cardiac atrium,
+Bacterial cells,,
+Bacterial culture supernatant,,
+Bacterial media,,
+BAT,,
+Biofilm,,
+Brain organoids,,
+Breast cancer cells,,
+Breath,,
+Caco-2 cells,,
+Cardiomyocyte cells,,
+Cells,,
+Colorectal Cancer Cells,,
+Coral nubbins,,
+Culture Media,,
+Cultured cells,,
+Cyst fluid,,
+Date palm fruit,fruit,
+Diatom cells,,
+Diet,,
+Digestive fluid,,
+Dorsal Root Ganglia,,
+Exhaled Breath condensate,,
+Extracellular fluid,,
+Fibrous root,,
+Fish larvae,larva,
+Flushing,,
+Fly,,
+Food,,
+Fruit juice,,
+Fungal/bacterial volatiles,,
+Glioma cells,,
+gWAT,,
+HEK cells,,
+HeLa cells,,
+Hep G2 cells,,
+Human iPSC,,
+Insect tissue,,
+iPSC cells,,
+Kidney perfusate,,
+Leaves,,
+Leukemia cells,,
+LNCaP cells,,
+Lung Tumors,,
+Lymphoma cells,,
+Maize kernel,,
+Marine particulate matter,,
+Media,,
+Merozoites,,
+Mesenchymal stromal cells,,
+Microbial Film,,
+Mitochondria,,
+Multiple tissues,,
+Mycelia in media,,
+Nasal Polyp tissue,,
+Neurospheres,,
+Ovarian cancer cells,,
+Parasite,,
+Photosynthetic organism,,
+Plankton,,
+Plant,,
+Plant Leaves and Roots,,
+Plasmodium cells,,
+Prostate cancer cells,,
+Proximal tubular cells,,
+Rectum,rectal lumen,
+Renal cancer cells,,
+Sarcoma,,
+Seaweed,,
+Sewage,,
+SI,,
+SIHUMIx,,
+Sorted cells,,
+Standard phosphatidylcholines,,
+Strawberry leaves,,
+Suspended Marine Particulate Matter,,
+Synthetic,,
+Testes,,
+Tumor cells,,
+Tumor interstitial fluid,,
+Tumor tissue,,
+Ulcer biopsies,,
+Uterine fluid,,
+Ventricles,,
+Wastewater,,
+Water,,
+Whole animals,,
+Whole insect,,
+Whole Tissue,,
+Whole worm lysate,,
+Wine,,
+Worms,,
+Yeast cells,,

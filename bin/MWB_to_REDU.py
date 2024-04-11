@@ -434,7 +434,7 @@ def resolve_contradictions(contradictions, potential_matches):
 
     return potential_matches
 
-def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
+def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
     data_list = []
     for id, item in enumerate(data):
         subject_id = item.get('Subject ID', 'NA')
@@ -449,13 +449,84 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
     df = pd.DataFrame(data_list, columns=['script_id', 'SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value'])
     df['Key'] = df['Key'].str.lower()
 
+    print(f"Rest length is {len(rest_response)}")
+    if len(rest_response) > 0:
+        data_list = []
+        for id, item in rest_response.items():
+            study_id = item.get('study_id', 'NA')
+            local_sample_id = item.get('local_sample_id', 'NA')
+            mb_sample_id = item.get('mb_sample_id', 'NA')
+            sample_source = item.get('sample_source', 'NA')  # Corrected to sample_source
+            factors = item.get('factors', "")
+            raw_data = item.get('raw_data', "")
+
+            # Adding sample source
+            data_list.append([id, study_id, mb_sample_id, local_sample_id, "Sample Source", sample_source])
+
+            # Splitting factors string into key-value pairs
+            for factor in factors.split(' | '):
+                key_value = factor.split(':')
+                if len(key_value) == 2:
+                    data_list.append([id, study_id, mb_sample_id, local_sample_id,  key_value[0], key_value[1]])
+            
+            # Adding raw_data if present
+            if raw_data:
+                data_list.append([id, study_id, mb_sample_id, local_sample_id, "raw_data", raw_data])
+            
+        df_rest = pd.DataFrame(data_list, columns=['ID', 'Study ID', 'MB Sample ID', 'Local Sample ID', 'Factor Name', 'Factor Value'])
+        df_rest['raw_data_source'] = "Rest"
+
+
+
     ontology_table = kwargs['ontology_table']
 
     #raw data name might be in the Sample ID, Factors
     expected_raw_file_keys = ["raw_file_name",  "rawfilename", "raw_file",
                               "datafile name", "raw files", "raw file name", 
                               "rawfile name", "rpm_filename", "zhp_filename",
-                              "data file"]
+                              "data file", "raw_data"]
+
+    ###new REST implementtation
+
+    # Filtering `df` for relevant keys
+    relevant_keys = ["raw_file_name",  "rawfilename", "raw_file",
+                    "datafile name", "raw files", "raw file name", 
+                    "rawfile name", "rpm_filename", "zhp_filename",
+                    "data file", "raw_data"]
+
+    df_filtered = df[df['Key'].isin(relevant_keys)]
+
+    # Assigning unique script_id based on Local Sample ID
+    df_rest['script_id'] = df_rest.groupby('Local Sample ID').ngroup()
+
+    # Appending rows from `df` to `df_rest` where raw_data is missing
+    for _, row in df_filtered.iterrows():
+        if not df_rest[(df_rest['Local Sample ID'] == row['filename']) & (df_rest['Factor Name'] == 'raw_data')]['Factor Value'].any():
+            
+            print(f"Adding raw data not present in REST for sample {row['filename']} named {row['Value']}")
+            if len(row['Value']) > 1:
+                new_row = {
+                    'ID': None,  # Assuming ID needs to be set or left as None
+                    'Study ID': None,  # Assuming Study ID needs to be set or left as None
+                    'MB Sample ID': None,  # Assuming MB Sample ID needs to be set or left as None
+                    'Local Sample ID': row['filename'],
+                    'Factor Name': row['Key'],
+                    'Factor Value': row['Value'],
+                    'script_id': row['script_id'],
+                    'raw_data_source': 'mwTab'
+                }
+                df_rest = df_rest.append(new_row, ignore_index=True)
+
+    df_rest['SubjectIdentifierAsRecorded'] = ""
+
+    # Renaming columns to match the df DataFrame's column names
+    df = df_rest.rename(columns={
+        'Local Sample ID': 'filename',
+        'Factor Name': 'Key',
+        'Factor Value': 'Value'
+    })
+    ######
+
 
 
     if not any(key in df['Key'].values for key in expected_raw_file_keys):
@@ -478,11 +549,12 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
         #attempt to get raw files from associated keys
         raw_file_name_df = raw_file_name_df.rename(columns={'filename': 'filename_raw_path'})
         df = get_rawFile_names(df, key_vars=expected_raw_file_keys, new_col="filename_raw")
+
         #explode cases where we have multiple files by separators
         if raw_file_name_df['filename_base'].str.contains(" ").any():
-            split_by_this = '[;,]+'
+            split_by_this = r'; ?|,'
         else:
-            split_by_this = '[; ,]+'
+            split_by_this = r'; ?|,| '
 
         df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this).apply(lambda x: list(set(x)))).explode('filename_raw')
 
@@ -492,13 +564,18 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
         df['filename_raw_lower'] = df['filename_raw'].str.lower()
         df['filename_lower'] = df['filename'].str.lower()
 
-        if bool(set(df['filename_raw_lower']) & set(raw_file_name_df['filename_base_lower'])):
+        if bool(set(df['filename_raw']) & set(raw_file_name_df['filename_base'])):
+            print('found filename_raw to filename_base match')
+            df = df.merge(raw_file_name_df, left_on='filename_raw', right_on='filename_base', how='left')
+            df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
+        elif bool(set(df['filename_raw_lower']) & set(raw_file_name_df['filename_base_lower'])):
             df = df.merge(raw_file_name_df, left_on='filename_raw_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
         elif bool(set(df['filename_lower']) & set(raw_file_name_df['filename_base_lower'])):
             df = df.merge(raw_file_name_df, left_on='filename_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
     
+
         else:
             df['filename_base_wo_extension'] = df['filename_raw_lower'].str.split('.').str[0]
             raw_file_name_df['filename_base_wo_extension'] = raw_file_name_df['filename_base'].str.split('.').str[0].str.lower()
@@ -562,13 +639,15 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
             df['filename_raw_lower'] = df['filename_base']
             df = df.drop(columns=['filename_base'])
 
-    
-    df = df.drop_duplicates(subset=['filename', 'Key' , 'Value'], keep=False).reset_index(drop=True)
+
+    df = df[pd.notna(df['USI'])]
+    df = df.drop_duplicates(subset=['filename', 'Key' , 'Value', 'USI'], keep='first').reset_index(drop=True)
     if len(df) == 0:
         raise ValueError("No raw data could be associated with metadata. Stopping!")
     
     df['Value'] = df['Value'].str.lower()
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
+    df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
     df = get_key_info_into_outer(df, key_vars=["gender", "sex", "gender (f/m)", "biological_sex"], new_col="MWB_sex")
     df = get_key_info_into_outer(df, key_vars=["age", "age (years)"], new_col="MWB_age")
     df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country", "site", "location"],
@@ -578,12 +657,25 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, raw_file_name_df=None, pa
     df['LatitudeandLongitude'] = df.apply(
         lambda x: f'{x.Latitude}|{x.Longitude}' if x.Latitude is not None and x.Longitude is not None and not np.isnan(
             x.Latitude) and not np.isnan(x.Longitude) else None, axis=1)
-
+    
     df[['SampleType_inner', 'SampleTypeSub1_inner']] = df.apply(lambda x: get_blanks(x['Value']), axis=1,
                                                                 result_type='expand')
 
     df = translate_MWB_to_REDU_from_csv(df, case='inner', path_to_csvs=path_to_csvs, add_to_cols=add_to_cols, ontology_table=ontology_table, allowedTerm_dict=allowedTerm_dict)
-    df = df.drop(columns=['Key', 'Value', 'Longitude', 'Latitude'])
+
+    
+    df.loc[df['MWB_sampleSource'] == '_BLANK_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_analysis', 'blank_analysis']
+    df.loc[df['MWB_sampleSource'] == '_QC_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
+    df.loc[df['MWB_sampleSource'] == '_POOLED_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
+    df.loc[(df['MWB_sampleSource'] == 'Culture Media') | 
+           (df['MWB_sampleSource'] == 'Bacterial media') | 
+           (df['MWB_sampleSource'] == 'Adipocyte media') |
+           (df['MWB_sampleSource'] == 'Media'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_culturemedia', 'blank_culturemedia']
+    df.loc[(df['MWB_sampleSource'] == 'Bacterial cells'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['culture_bacterial', 'culture_bacterial']
+   
+   #add environemntal columns
+    
+    df = df.drop(columns=['Key', 'Value', 'Longitude', 'Latitude', 'MWB_sampleSource'])
     df = df.drop_duplicates().reset_index(drop=True)
 
     df['filename'] = df['filename_raw_path']
@@ -602,7 +694,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS_collapsed_factors(data):
     return df
 
 
-def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_csvs = 'translation_sheets', **kwargs):
+def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=None, path_to_csvs = 'translation_sheets', **kwargs):
     entry = {
         'ANALYSIS_TYPE': MWB_mwTAB_dict.get('ANALYSIS', {}).get('ANALYSIS_TYPE', 'NA'),
         'PROJECT_TITLE': MWB_mwTAB_dict.get('PROJECT', {}).get('PROJECT_TITLE', 'NA'),
@@ -705,8 +797,13 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, raw_file_name_df=None, path_to_c
     else:
         add_to_cols = []
 
+
+    #add REST api here
+
+
     df_inner_SUBJECT_SAMPLE_FACTORS = create_dataframe_from_SUBJECT_SAMPLE_FACTORS(
         MWB_mwTAB_dict['SUBJECT_SAMPLE_FACTORS'],
+        rest_response=rest_response,
         raw_file_name_df=raw_file_name_df,
         path_to_csvs=path_to_csvs,
         ontology_table=ontology_table,
@@ -783,8 +880,11 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
         if case == 'inner':
 
             if col_csv_name != 'NCBITaxonomy':
-                MWB_table['match'] = MWB_table['Value'].isin(df_translations['MWB'].tolist())
-                MWB_table = MWB_table.merge(df_translations, left_on='Value', right_on='MWB', how='left')
+                if col_csv_name == 'UBERONBodyPartName':
+                    left = 'MWB_sampleSource'
+                else:
+                    left = 'Value'
+                MWB_table = MWB_table.merge(df_translations, left_on=left, right_on='MWB', how='left')
                 MWB_table[col_csv_name] = MWB_table.groupby('filename')['REDU'].transform('first')
                 if col_csv_name == 'UBERONBodyPartName':
                     MWB_table = pd.merge(MWB_table, ontology_table, left_on='UBERONBodyPartName', right_on='Label', how='left')
@@ -793,7 +893,7 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                     MWB_table['DOIDOntologyIndex'] = MWB_table.groupby('filename')['REDU_DOIDOntologyIndex'].transform('first')
                     MWB_table = MWB_table.drop(columns=['REDU_DOIDOntologyIndex'])
 
-                MWB_table = MWB_table.drop(['MWB', 'match', 'REDU'], axis=1)
+                MWB_table = MWB_table.drop(['MWB', 'REDU'], axis=1)
 
             elif col_csv_name == 'NCBITaxonomy':
 
@@ -909,6 +1009,11 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     if not isinstance(next(iter(stdy_info.values())), dict):
         stdy_info = {'1': stdy_info}
 
+    
+    # Get REST API response
+    response = requests.get(f'https://www.metabolomicsworkbench.org/rest/study/study_id/{str(study_id)}/factors')
+    rest_response = response.json()
+
     redu_dfs = []
     for analysis_id, analysis_details in stdy_info.items():
 
@@ -926,6 +1031,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
         
         redu_df = MWB_to_REDU_wrapper(MWB_analysis_ID=analysis_details["analysis_id"],
+                                      rest_response=rest_response,
                                       raw_file_name_df=raw_file_name_df[['filename', 'filename_base', 'USI']],
                                       path_to_csvs=path_to_csvs,
                                       Massive_ID=study_id + '|' + str(analysis_details["analysis_id"]),
@@ -1020,7 +1126,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     return redu_df_final
 
 
-def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=None, Massive_ID='',
+def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=None, raw_file_name_df=None, Massive_ID='',
                         path_to_csvs='translation_sheets', **kwargs):
     if mwTab_json is None and MWB_analysis_ID is None:
         raise SystemExit("mwTab_json or MWB_analysis_ID has to be provided!")
@@ -1034,6 +1140,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
 
         try:
             mwTab_json = json.loads(mwb_anlysis_req.text, object_pairs_hook=handle_duplicates)
+
         except json.JSONDecodeError:
             print("Did not receive valid mwTab json for {}!".format(str(MWB_analysis_ID)))
             return None
@@ -1046,7 +1153,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, MWB_analysis_ID=None, raw_file_name_df=
         complete_df = translate_MWB_to_REDU_by_logic(
             translate_MWB_to_REDU_from_csv(
                 translate_MWB_to_REDU_from_csv(
-                    create_dataframe_outer_dict(mwTab_json, raw_file_name_df=raw_file_name_df, path_to_csvs=path_to_csvs, allowedTerm_dict=allowedTerm_dict, ontology_table=ontology_table),
+                    create_dataframe_outer_dict(mwTab_json, rest_response, raw_file_name_df=raw_file_name_df, path_to_csvs=path_to_csvs, allowedTerm_dict=allowedTerm_dict, ontology_table=ontology_table),
                     path_to_csvs=path_to_csvs,
                 ontology_table=ontology_table,
                 allowedTerm_dict=allowedTerm_dict),
