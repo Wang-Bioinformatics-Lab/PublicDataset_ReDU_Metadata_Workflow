@@ -8,18 +8,13 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 import json
 from tqdm import tqdm
-import time
-from extend_allowed_terms import adapt_allowed_terms 
-from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
-from read_and_validate_redu_from_github import complete_and_fill_REDU_table
-from REDU_conversion_functions import update_unassigned_terms
-from REDU_conversion_functions import get_taxonomy_id_from_name
-from REDU_conversion_functions import get_uberon_table
-from REDU_conversion_functions import get_ontology_table
-from REDU_conversion_functions import age_category
-from REDU_conversion_functions import get_taxonomy_info
 from collections import Counter
 import traceback
+import time
+from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from read_and_validate_redu_from_github import complete_and_fill_REDU_table
+from REDU_conversion_functions import age_category
+from REDU_conversion_functions import get_taxonomy_info
 
 
 def clean_path(path):
@@ -49,14 +44,14 @@ def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
             for col in li_make_most_common:
                 most_common_value = Counter(group[col]).most_common(1)[0][0]
                 if most_common_value is None or most_common_value == 'None':
-                    most_common_value = 'ML import: not available'
+                    most_common_value = 'missing value'
                 group[col] = most_common_value
 
         # Handle discrepancies for columns not in 'li_make_most_common'
         li_rm_discrepancies = [col for col in group.columns if col not in li_make_most_common]
         for col in li_rm_discrepancies:
             if len(set(group[col])) > 1 or all(value is None for value in group[col]):
-                group[col] = 'ML import: not available'
+                group[col] = 'missing value'
             else:
                 # If there's no discrepancy, keep the original value
                 group[col] = group[col].iloc[0]
@@ -138,21 +133,6 @@ def _get_metabolomicsworkbench_files(dataset_accession):
 
 
 
-def get_taxonomy_id_from_name(species_name):
-    # Query NCBI's Entrez API to get the NCBI ID for the species based on its Latin name
-    if species_name is not None and species_name != "NA" and species_name != "N/A":
-        try:
-            response = requests.get(
-                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}"
-            )
-            soup = BeautifulSoup(response.text, "xml")
-            ncbi_id = soup.find("IdList").find("Id").text
-            return ncbi_id
-        except Exception:
-            return None
-    else:
-        return None
-
 def convert_to_numeric_or_original(x):
     try:
         numeric_x = pd.to_numeric(x)
@@ -160,15 +140,6 @@ def convert_to_numeric_or_original(x):
     except ValueError:
         return x
 
-
-def print_dict_with_exclude(d, exclude=[]):
-    for key, value in d.items():
-        if key in exclude:
-            continue
-        if isinstance(value, list):
-            print(f"{key}: {value[:3]}")
-        else:
-            print(f"{key}: {value}")
 
 
 def get_enviromental_water(x):
@@ -205,28 +176,6 @@ def get_blanks(x):
     else:
         return [None, None]
 
-def get_raw_file_names(x, y, raw_file_name_df):
-    raw_file_names = list(raw_file_name_df['filename_base'])
-    raw_file_nameswo_extension = [os.path.splitext(filename)[0] for filename in raw_file_names]
-
-    if x in raw_file_names:
-        filtered_df = raw_file_name_df[raw_file_name_df['filename_base'] == x]
-        if not filtered_df.empty:
-            return [x, filtered_df.iloc[0]['filename']]
-    elif x in raw_file_nameswo_extension:
-        filtered_df = raw_file_name_df[raw_file_name_df['filename_base'].apply(lambda f: os.path.splitext(f)[0]) == x]
-        if not filtered_df.empty:
-            return [x, filtered_df.iloc[0]['filename']]
-    elif y in raw_file_names:
-        filtered_df = raw_file_name_df[raw_file_name_df['filename_base'] == y]
-        if not filtered_df.empty:
-            return [y, filtered_df.iloc[0]['filename']]
-    elif y in raw_file_nameswo_extension:
-        filtered_df = raw_file_name_df[raw_file_name_df['filename_base'].apply(lambda f: os.path.splitext(f)[0]) == y]
-        if not filtered_df.empty:
-            return [y, filtered_df.iloc[0]['filename']]
-
-    return [None, None]
 
 def convert_sex(x):
     x = x.lower()
@@ -237,7 +186,7 @@ def convert_sex(x):
     elif x in ['as', 'asexual']:
         return 'asexual'
     else:
-        return 'ML import: not available'
+        return 'missing value'
 
 
 def convert_to_years(age):
@@ -306,26 +255,8 @@ def get_rawFile_names(df, key_vars, new_col):
 
 
 
-def find_unique_match_index(row, target_df, target_column):
-    # Find all potential matches based on the condition
-    matches = [target_row[target_column] for _, target_row in target_df.iterrows()
-               if target_row[target_column] in row['filename_raw_lower'] or row['filename_raw_lower'] in target_row[target_column]]
-        
-    # Deduplicate the matches to consider only unique values
-    unique_matches = set(matches)
-        
-    # Check if there's exactly one unique match
-    if len(unique_matches) == 1:
-        match_value = unique_matches.pop()
-        match_index = target_df[target_df[target_column] == match_value].index[0]
-        return match_index, False  # No ambiguity
-    else:
-        return pd.NA, True  # Ambiguity exists
-
-
-
 def map_potential_matches(df, target_df, target_column, source_columns):
-    from tqdm import tqdm
+    
     # Temporary storage for potential matches
     potential_matches = {}
 
@@ -360,38 +291,8 @@ def analyze_for_contradictions(potential_matches):
     return contradictions
 
 
-def resolve_contradictions(contradictions, potential_matches):
-    for raw_value, conflicting_df_values in contradictions.items():
-        # Determine the "better" match for each contradiction
-        better_match = None
-        max_overlap = 0
-        
-        for df_value in conflicting_df_values:
-            overlap = len(set(df_value) & set(raw_value))  # Simple way to estimate overlap; consider refining based on your actual data structure
-            if overlap > max_overlap:
-                max_overlap = overlap
-                better_match = df_value
-        
-        # Update potential_matches to only include the better match for this raw_value
-        if better_match:
-            for df_value in conflicting_df_values:
-                if df_value != better_match:
-                    # Remove the raw_value from the non-better matches
-                    potential_matches[df_value].discard(raw_value)
-    
-    return potential_matches
 
-def filter_unresolved_contradictions(potential_matches, contradictions):
-    # This function assumes 'contradictions' is updated to reflect any unresolved contradictions
-    # Remove or mark potential matches that are part of unresolved contradictions
-    for conflict_value in contradictions:
-        for df_value in contradictions[conflict_value]:
-            if df_value in potential_matches:
-                potential_matches[df_value] = set()  # Remove match or mark as unresolved
 
-    return potential_matches
-
-from collections import Counter
 def filter_unresolved_contradictions(potential_matches):
     
     # Step 1: Flatten all values into a single list and count occurrences
@@ -435,6 +336,9 @@ def resolve_contradictions(contradictions, potential_matches):
     return potential_matches
 
 def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
+    
+    ontology_table = kwargs['ontology_table']
+    
     data_list = []
     for id, item in enumerate(data):
         subject_id = item.get('Subject ID', 'NA')
@@ -477,24 +381,13 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         df_rest['raw_data_source'] = "Rest"
 
 
-
-    ontology_table = kwargs['ontology_table']
-
     #raw data name might be in the Sample ID, Factors
     expected_raw_file_keys = ["raw_file_name",  "rawfilename", "raw_file",
                               "datafile name", "raw files", "raw file name", 
                               "rawfile name", "rpm_filename", "zhp_filename",
                               "data file", "raw_data"]
 
-    ###new REST implementtation
-
-    # Filtering `df` for relevant keys
-    relevant_keys = ["raw_file_name",  "rawfilename", "raw_file",
-                    "datafile name", "raw files", "raw file name", 
-                    "rawfile name", "rpm_filename", "zhp_filename",
-                    "data file", "raw_data"]
-
-    df_filtered = df[df['Key'].isin(relevant_keys)]
+    df_filtered = df[df['Key'].isin(expected_raw_file_keys)]
 
     # Assigning unique script_id based on Local Sample ID
     df_rest['script_id'] = df_rest.groupby('Local Sample ID').ngroup()
@@ -526,7 +419,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         'Factor Value': 'Value'
     })
     ######
-
 
 
     if not any(key in df['Key'].values for key in expected_raw_file_keys):
@@ -575,7 +467,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             df = df.merge(raw_file_name_df, left_on='filename_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
     
-
         else:
             df['filename_base_wo_extension'] = df['filename_raw_lower'].str.split('.').str[0]
             raw_file_name_df['filename_base_wo_extension'] = raw_file_name_df['filename_base'].str.split('.').str[0].str.lower()
@@ -600,6 +491,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                 df = df[['script_id', 'SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value', match_df]]
                 df = df.merge(raw_file_name_df, left_on=match_df, right_on=match_raw_file_name_df, how='left')
             else:
+                # here we try to find raw file names which are represented as substrings oif actual file names in the uploader provided raw file names
 
                 print(f"use from match_df: {match_df}")
                 print(f"use from raw_file_name_df: {match_raw_file_name_df}")
@@ -613,7 +505,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                 print('filtering contradictions,..')
                 potential_matches = filter_unresolved_contradictions(potential_matches)
                 
-
                 #create dict to assign matches
                 match_indices = {}
 
@@ -664,14 +555,14 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df = translate_MWB_to_REDU_from_csv(df, case='inner', path_to_csvs=path_to_csvs, add_to_cols=add_to_cols, ontology_table=ontology_table, allowedTerm_dict=allowedTerm_dict)
 
     
-    df.loc[df['MWB_sampleSource'] == '_BLANK_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_analysis', 'blank_analysis']
-    df.loc[df['MWB_sampleSource'] == '_QC_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
-    df.loc[df['MWB_sampleSource'] == '_POOLED_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
-    df.loc[(df['MWB_sampleSource'] == 'Culture Media') | 
-           (df['MWB_sampleSource'] == 'Bacterial media') | 
-           (df['MWB_sampleSource'] == 'Adipocyte media') |
-           (df['MWB_sampleSource'] == 'Media'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_culturemedia', 'blank_culturemedia']
-    df.loc[(df['MWB_sampleSource'] == 'Bacterial cells'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['culture_bacterial', 'culture_bacterial']
+    df.loc[df['MWB_sampleSource'] == '_blank_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_analysis', 'blank_analysis']
+    df.loc[df['MWB_sampleSource'] == '_qc_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
+    df.loc[df['MWB_sampleSource'] == '_pooled_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
+    df.loc[(df['MWB_sampleSource'] == 'culture media') | 
+           (df['MWB_sampleSource'] == 'bacterial media') | 
+           (df['MWB_sampleSource'] == 'adipocyte media') |
+           (df['MWB_sampleSource'] == 'media'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_culturemedia', 'blank_culturemedia']
+    df.loc[(df['MWB_sampleSource'] == 'bacterial cells'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['culture_bacterial', 'culture_bacterial']
    
    #add environemntal columns
     
@@ -679,18 +570,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df = df.drop_duplicates().reset_index(drop=True)
 
     df['filename'] = df['filename_raw_path']
-    return df
-
-
-def create_dataframe_from_SUBJECT_SAMPLE_FACTORS_collapsed_factors(data):
-    data_list = []
-    for item in data:
-        subject_id = item.get('Subject ID', 'NA')
-        sample_id = item.get('Sample ID', 'NA')
-        factors = " ".join([f"{key}: {value}" for key, value in item.get('Factors', {}).items()])
-        additional_data = " ".join([f"{key}: {value}" for key, value in item.get('Additional sample data', {}).items()])
-        data_list.append([subject_id, sample_id, factors + " " + additional_data])
-    df = pd.DataFrame(data_list, columns=['SubjectIdentifierAsRecorded', 'filename', 'Factors'])
     return df
 
 
@@ -726,7 +605,7 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
 
     df_outer = pd.DataFrame(entry, index=[0])
 
-    #add NCBITaxonomy
+    #add NCBITaxonomy on dataset level
     #######
     unique_species = set(df_outer['SUBJECT_SPECIES'])
     unique_species_ncbiIDs = set(df_outer['TAXONOMY_ID'])
@@ -737,7 +616,7 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
         attempt_taxa_extraction_from_inner = True
 
 
-    #add LC method
+    #add LC method on dataset level
     #######
     if 'CHROMATOGRAPHY_TYPE' in df_outer.columns:
         df_outer['CHROMATOGRAPHY_TYPE'] = df_outer['CHROMATOGRAPHY_TYPE'].fillna('')
@@ -762,13 +641,14 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
             df_outer.loc[df_outer['ChromatographyAndPhase'].str.contains('reverse phase') & ~df_outer['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (NOS)'
 
 
+    #add YearOfAnalysis on dataset level
     df_outer['YearOfAnalysis'] = df_outer['ACQUISITION_DATE'].apply(lambda x: extract_years(x))
     df_outer['YearOfAnalysis'] = df_outer.apply(
         lambda x: extract_years(x['CREATED_ON']) if x['YearOfAnalysis'] is None else x['YearOfAnalysis'], axis=1)
 
     df_outer['IonizationSourceAndPolarity'] = df_outer['MS_TYPE'] + '|' + df_outer['ION_MODE']
 
-    df_outer.loc[:, ['SampleType', 'SampleTypeSub1']] = 'ML import: not available'
+    df_outer.loc[:, ['SampleType', 'SampleTypeSub1']] = 'missing value'
 
     processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
                         for taxonomy in df_outer['NCBITaxonomy'].unique()
@@ -796,9 +676,6 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
         add_to_cols = ['NCBITaxonomy']
     else:
         add_to_cols = []
-
-
-    #add REST api here
 
 
     df_inner_SUBJECT_SAMPLE_FACTORS = create_dataframe_from_SUBJECT_SAMPLE_FACTORS(
@@ -902,8 +779,6 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                 none_count = 0
                 unique_species = set(MWB_table[MWB_table['Key'] != 'raw_file_name']['Value'])
                 
-
-                #processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict) for species in unique_species} 
                 for species in unique_species:
                     result = get_taxonomy_id_from_name__allowedTerms(species, allowedTerm_dict=allowedTerm_dict)
                     if result is None:
@@ -925,14 +800,13 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                             return None
                         return series.loc[lengths.idxmax()]
                     
-                    #MWB_table['NCBITaxonomy'] = MWB_table.groupby('filename')['REDU'].transform('first')
                     MWB_table['NCBITaxonomy'] = MWB_table.groupby('filename')['REDU'].transform(get_longest_value)
                     MWB_table = MWB_table.drop(['REDU'], axis=1)
 
         if case == 'fill':
             MWB_table[origin_cols[index]] = MWB_table[origin_cols[index]].str.lower()
             MWB_table = pd.merge(MWB_table, df_translations, left_on=origin_cols[index], right_on='MWB', how='left')
-            MWB_table['REDU'] = MWB_table['REDU'].fillna('ML import: not available')
+            MWB_table['REDU'] = MWB_table['REDU'].fillna('missing value')
             MWB_table[col_csv_name] = MWB_table[col_csv_name].fillna(MWB_table['REDU'])
             if col_csv_name == 'UBERONBodyPartName':
                 MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
@@ -973,11 +847,11 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
     for column in columns_to_check:
         # Check if the column exists in the DataFrame
         if column not in MWB_table.columns:
-            # If the column does not exist, create it with all values set to 'ML import: not available'
-            MWB_table[column] = 'ML import: not available'
+            # If the column does not exist, create it with all values set to 'missing value'
+            MWB_table[column] = 'missing value'
         else:
-            # If the column exists, replace NaNs with 'ML import: not available'
-            MWB_table[column] = MWB_table[column].replace(np.nan, 'ML import: not available')
+            # If the column exists, replace NaNs with 'missing value'
+            MWB_table[column] = MWB_table[column].replace(np.nan, 'missing value')
 
     return MWB_table
 
@@ -1009,8 +883,6 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     if not isinstance(next(iter(stdy_info.values())), dict):
         stdy_info = {'1': stdy_info}
 
-    
-    # Get REST API response
     response = requests.get(f'https://www.metabolomicsworkbench.org/rest/study/study_id/{str(study_id)}/factors')
     rest_response = response.json()
 
@@ -1074,43 +946,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         return None
 
 
-    #ensure correct order of columns
-    redu_df_final = redu_df_final[["MassiveID",
-                                   "filename",
-                                   "SampleType",
-                                   "SampleTypeSub1",
-                                   "NCBITaxonomy",
-                                   "YearOfAnalysis",
-                                   "SampleCollectionMethod",
-                                   "SampleExtractionMethod",
-                                   "InternalStandardsUsed",
-                                   "MassSpectrometer",
-                                   "IonizationSourceAndPolarity",
-                                   "ChromatographyAndPhase",
-                                   "SubjectIdentifierAsRecorded",
-                                   "AgeInYears",
-                                   "BiologicalSex",
-                                   "UBERONBodyPartName",
-                                   "TermsofPosition",
-                                   "HealthStatus",
-                                   "DOIDCommonName",
-                                   "ComorbidityListDOIDIndex",
-                                   "SampleCollectionDateandTime",
-                                   "Country",
-                                   "HumanPopulationDensity",
-                                   "LatitudeandLongitude",
-                                   "DepthorAltitudeMeters",
-                                   "qiita_sample_name",
-                                   "UniqueSubjectID",
-                                   "LifeStage",
-                                   "UBERONOntologyIndex",
-                                   "DOIDOntologyIndex",
-                                   "USI"
-                                   ]]
-
-
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
-    redu_df_final.to_csv('check_taht.csv', index = False)
+
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
     redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, 
                                                  ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
@@ -1150,18 +987,18 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
 
     try:
 
-        complete_df = translate_MWB_to_REDU_by_logic(
-            translate_MWB_to_REDU_from_csv(
-                translate_MWB_to_REDU_from_csv(
-                    create_dataframe_outer_dict(mwTab_json, rest_response, raw_file_name_df=raw_file_name_df, path_to_csvs=path_to_csvs, allowedTerm_dict=allowedTerm_dict, ontology_table=ontology_table),
-                    path_to_csvs=path_to_csvs,
-                ontology_table=ontology_table,
-                allowedTerm_dict=allowedTerm_dict),
-                case='fill',
-                path_to_csvs=path_to_csvs,
-                ontology_table=ontology_table,
-                allowedTerm_dict=allowedTerm_dict),
-            path_to_csvs=path_to_csvs)
+        #create dataframe from mwTab file only considering per study variables
+        df_outer_dict = create_dataframe_outer_dict(mwTab_json, rest_response, raw_file_name_df=raw_file_name_df, path_to_csvs=path_to_csvs, allowedTerm_dict=allowedTerm_dict, ontology_table=ontology_table)
+
+        #translate terms from per-study-variables to ReDU ontology 
+        df_outer_dict_REDUfied = translate_MWB_to_REDU_from_csv(df_outer_dict,case='outer',path_to_csvs=path_to_csvs,ontology_table=ontology_table,allowedTerm_dict=allowedTerm_dict)
+
+        #
+        df_outer_dict_REDUfied_filled = translate_MWB_to_REDU_from_csv(df_outer_dict_REDUfied,case='fill',path_to_csvs=path_to_csvs,ontology_table=ontology_table,allowedTerm_dict=allowedTerm_dict)
+        
+        #utilize substring matches and other logic to get to harmonized ontology
+        complete_df = translate_MWB_to_REDU_by_logic(df_outer_dict_REDUfied_filled,path_to_csvs=path_to_csvs)
+
 
     except Exception as e:
         traceback_info = traceback.format_exc()
@@ -1189,7 +1026,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
 
     complete_df[['SampleCollectionDateandTime',
                  'DepthorAltitudeMeters',
-                 'qiita_sample_name']] = 'ML import: not available'
+                 'qiita_sample_name']] = 'missing value'
 
     missing_not_imported = ["SampleType",
                             "SampleTypeSub1",
@@ -1219,7 +1056,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                             ]
     
     complete_df[missing_not_imported] = complete_df[missing_not_imported].replace(
-        {np.nan: 'ML import: not available', None: 'ML import: not available'})
+        {np.nan: 'missing value', None: 'missing value'})
 
     missing_not_collected = ["AgeInYears"]
     complete_df[missing_not_collected] = complete_df[missing_not_collected].replace(
@@ -1228,7 +1065,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
     complete_df[['TermsofPosition',
                  'SampleCollectionDateandTime',
                  'DepthorAltitudeMeters',
-                 'qiita_sample_name']] = 'ML import: not available'
+                 'qiita_sample_name']] = 'missing value'
 
     REDU_df = complete_df[["MassiveID",
                            "filename",
@@ -1278,7 +1115,6 @@ if __name__ == '__main__':
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
     parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
 
-    #python3.8 workflows/PublicDataset_ReDU_Metadata_Workflow/bin/MWB_to_REDU.py --study_id  ST000107 --path_ncbi_rank_division /home/yasin/projects/ReDU-MS2-GNPS2/work/e6/38262664f20d60872789d747698ac2/NCBI_Rank_Division.csv --path_to_envo_material_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/e6/38262664f20d60872789d747698ac2/ENVO_material_ontology.csv --path_to_envo_biome_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/e6/38262664f20d60872789d747698ac2/ENVO_biome_ontology.csv --path_to_csvs /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/translation_sheets --path_to_allowed_term_json /home/yasin/projects/ReDU-MS2-GNPS2/work/03/59b15db86cef31d8a337537d4cff04/allowed_terms.json --duplicate_raw_file_handling keep_all --path_to_uberon_cl_po_csv /home/yasin/projects/ReDU-MS2-GNPS2/work/ca/535593beabd1e7034883820a96e530/UBERON_CL_PO_ontology.csv --path_to_polarity_info /home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/data/MWB_polarity_table.csv 
     print('Starting MWB2REDU script,..')
 
     args = parser.parse_args()
