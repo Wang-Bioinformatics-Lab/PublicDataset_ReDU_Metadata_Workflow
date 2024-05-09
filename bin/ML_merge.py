@@ -16,8 +16,8 @@ def main():
     # reading metadata
     metadata_df = pd.read_csv(args.input_metadata, sep='\t')
     # # reading files
-    # files_df = pd.read_csv(args.input_files, sep='\t')
-
+    files_df = pd.read_csv(args.input_files, sep='\t')
+    files_df = files_df[["USI"]]
     # #metadata_df["MassiveID"] = metadata_df["MassiveID"].apply(lambda x: x.split('|')[0])
     # print('meta:')
     # print(metadata_df)
@@ -28,17 +28,17 @@ def main():
     # files_df["short_filename"] = files_df["filename"].apply(lambda x: os.path.basename(x))
     # files_df["key"] = files_df["STUDY_ID"] + ":" + files_df["short_filename"]
 
-    metadata_df["key"] = metadata_df["MassiveID"] + ":" + metadata_df["filename"]
+    #metadata_df["key"] = metadata_df["MassiveID"] + ":" + metadata_df["filename"]
 
     # # merging from both dataframes
-    # merged_df = pd.merge(metadata_df, files_df, on="key", how="inner")
+    merged_df = pd.merge(metadata_df, files_df, on="USI", how="inner")
     # print('merged: ')
     # print(merged_df)
     # # Filtering columsn to original
     # merged_df = merged_df[metadata_df.columns]
 
     metadata_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'}, inplace=True)
-    metadata_df.drop('key', axis=1, inplace=True)
+    #metadata_df.drop('key', axis=1, inplace=True)
 
     metadata_df['filename'] = 'f.' + metadata_df['filename']
 

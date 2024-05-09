@@ -237,7 +237,6 @@ def Metabolights2REDU(study_id, **kwargs):
         if len(df_study) > 0:
             
             allowedTerm_dict = kwargs['allowedTerm_dict']
-            unassigned_term_json = kwargs['unassigned_term_json']
             ontology_table = kwargs['ontology_table']
             ENVOEnvironmentMaterialIndex_table = kwargs['ENVOEnvironmentMaterialIndex_table']
             ENVOEnvironmentBiomeIndex_table = kwargs['ENVOEnvironmentBiomeIndex_table']
@@ -249,7 +248,7 @@ def Metabolights2REDU(study_id, **kwargs):
             #add NCBITaxonomy and Sampletype & SampleTypeSub1
             #######
             if 'Samples_Organism' in df_study.columns:
-                processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict, unassigned_term_json=unassigned_term_json)) for org in df_study['Samples_Organism'].unique()}
+                processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict)) for org in df_study['Samples_Organism'].unique()}
 
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='missing value', regex=True)
@@ -307,19 +306,30 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study.loc[:, 'ENVOEnvironmentMaterial'] = df_study['Samples_Organism'].map(updated_species_dict)
 
+
+                #add ENV biome column
+                #######
+                updated_species_dict = {}
+
+                for key, value in processed_organisms.items():
+                    if value == 'None':
+                        match = ENVOEnvironmentBiomeIndex_table[(ENVOEnvironmentBiomeIndex_table['Label'] == key) | (ENVOEnvironmentBiomeIndex_table['Synonym'] == key)]['Label'].values
+                        if match.size > 0:
+                            updated_species_dict[key] = match[0]
+                        else:
+                            updated_species_dict[key] = 'missing value'
+
+                df_study.loc[:, 'ENVOEnvironmentBiome'] = df_study['Samples_Organism'].map(updated_species_dict)
+
+
                 #add UBERON bodypart column
                 #######
-                df_bodypart = pd.read_csv(os.path.join(transSheet_dir, 'bodypart_Metabolights.csv'))
-                df_study = df_study.merge(df_bodypart[['ML', 'bodypart']], left_on='Samples_Organism part', right_on='ML', how='left')
-                df_study.rename(columns={'bodypart': 'UBERONBodyPartName'}, inplace=True)
-                df_study.drop('ML', axis=1, inplace=True)
+                df_study['UBERONBodyPartName'] = 'missing value'
 
                 labels_in_ontology_table = set(ontology_table['Label'])
                 synonyms_in_ontology_table = set(ontology_table['Synonym'])
                 allowed_bodyparts = set(allowedTerm_dict['UBERONBodyPartName']['allowed_values'])
                 allowed_bodypart_ids = set(allowedTerm_dict['UBERONOntologyIndex']['allowed_values'])
-
-                terms_to_add_to_allowed_terms = []
 
                 for index, row in df_study.iterrows():
                     organism_part = row['Samples_Organism part']
@@ -328,12 +338,7 @@ def Metabolights2REDU(study_id, **kwargs):
                         df_study.at[index, 'UBERONBodyPartName'] = organism_part
                         continue 
 
-                    if organism_part in labels_in_ontology_table and unassigned_term_json != 'none':
-                        df_study.at[index, 'UBERONBodyPartName'] = organism_part
-                        terms_to_add_to_allowed_terms.append(organism_part)
-                        continue
-
-                    if organism_part in synonyms_in_ontology_table and unassigned_term_json != 'none':
+                    if organism_part in synonyms_in_ontology_table:
 
                         matching_rows = ontology_table[ontology_table['Synonym'] == organism_part]
 
@@ -349,10 +354,6 @@ def Metabolights2REDU(study_id, **kwargs):
                             
                             label = matching_rows['Label'].iloc[0] 
                             df_study.at[index, 'UBERONBodyPartName'] = label
-                            
-                            if label not in terms_to_add_to_allowed_terms and not label in allowed_bodyparts:  # Check to avoid duplicates
-                                terms_to_add_to_allowed_terms.append(label)
-                            continue
 
                         
                 ontology_table_unique = ontology_table.drop_duplicates(subset=['Label', 'UBERONOntologyIndex']).drop(columns=['Synonym'])
@@ -365,13 +366,6 @@ def Metabolights2REDU(study_id, **kwargs):
                 df_study['UBERONOntologyIndex'] = df_study['UBERONOntologyIndex'].str.replace("_", ":", regex=False)
 
 
-                if unassigned_term_json != 'none':
-                    df_study['UBERONOntologyIndex'] = df_study['UBERONOntologyIndex'].fillna('')
-                    usedUberon_values = df_study[df_study['UBERONOntologyIndex'].str.contains("CL|UBERON|PO")]['UBERONOntologyIndex']
-                    if len(usedUberon_values) > 0:
-                        # Find values not present in 'allowed_bodypart_ids'
-                        not_allowed_values = usedUberon_values[~usedUberon_values.isin(allowed_bodypart_ids)].unique().tolist()
-            
             #add MassSpectrometer column
             #######
             if 'Assay_Instrument' in df_study.columns:
@@ -477,8 +471,6 @@ def Metabolights2REDU(study_id, **kwargs):
             
             df_study = df_study.drop_duplicates() 
 
-            df_study.to_csv('check.csv')
-
             #remove files if they are assigned multiple times as we cannot tell which sample they belong to (this is probably because people make mistakes when creating their study)
             df_study['count'] = df_study.groupby('USI')['USI'].transform('size')
             df_study = df_study[df_study['count'] == 1]
@@ -499,7 +491,6 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_envo_biome_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--path_to_envo_material_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--path_ncbi_rank_division", type=str, help="Path to the path_ncbi_rank_division")
-    parser.add_argument("--path_to_unassigned_term_json", type=str, help="If you want to export a json with terms that have not been associated with anything (optional)", default="none")
             
     args = parser.parse_args()
 
@@ -541,8 +532,7 @@ if __name__ == "__main__":
     for study_id in tqdm(public_metabolights_studies):
         try:
             redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
-                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table, 
-                                                  unassigned_term_json = args.path_to_unassigned_term_json)
+                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table)
         except Exception as e:
             traceback_info = traceback.format_exc()
             print(f"An error occurred with study_id {study_id}: {e}\nTraceback:\n{traceback_info}")
