@@ -1,7 +1,6 @@
 import json
 import os
 import requests
-from extend_allowed_terms import adapt_allowed_terms 
 import time
 from bs4 import BeautifulSoup
 from owlready2 import get_ontology
@@ -11,41 +10,29 @@ import tqdm
 
 
 
-def complete_and_fill_REDU_table(df, allowedTerm_dict):
-    """
-    Completes and fills a REDU table with values based on a dictionary of allowed terms and missing values.
+def merge_repeated_fileobservations(df):
 
-    Args:
-    df: A pandas DataFrame containing the initial data.
-    allowedTerm_dict: A dictionary containing allowed terms and missing values for each column.
 
-    Returns:
-    A DataFrame that has been filled with default values for missing columns,
-    with values replaced by the corresponding "missing" value from the dictionary 
-    if they are not in the allowed terms or are missing/empty, except for specific columns.
-    """
-    # Convert year to string for comparison
-    if 'YearOfAnalysis' in df.columns:
-        df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str)
+    def process_group(group):
 
-    # Add missing columns with their respective default missing value from the dictionary
-    for key, value in allowedTerm_dict.items():
-        if key not in df.columns:
-            df[key] = value['missing']
-
-    # Replace values with the respective "missing" value if they're not in the allowed terms or are missing/empty
-    for key, value in allowedTerm_dict.items():
-        allowed_terms = value['allowed_values']
-        missing_value = value['missing']
-        if key in df.columns:
-            if key not in ["MassiveID", "filename", "AgeInYears"]:
-                df[key] = df[key].apply(lambda x: x if x in allowed_terms else missing_value).fillna(missing_value).replace("", missing_value)
+        # Handle discrepancies for columns not in 'li_make_most_common'
+        li_rm_discrepancies = [col for col in group.columns]
+        for col in li_rm_discrepancies:
+            if len(set(group[col])) > 1 or all(value is None for value in group[col]):
+                group[col] = 'missing value'
             else:
-                df[key] = df[key].fillna(missing_value).replace("", missing_value)
+                # If there's no discrepancy, keep the original value
+                group[col] = group[col].iloc[0]
+        
+        return group
 
-    # Ensure the dataframe contains only the columns specified in the dictionary plus 'USI'
-    return df[[*allowedTerm_dict.keys()]]
+    # Group by 'USI' and apply the processing function to each group
+    df = df.groupby('filename').apply(process_group)
 
+    # Remove duplicates based on 'filename' column
+    df = df.drop_duplicates(subset='filename')
+
+    return df
 
 def find_column_after_target_column(df, target_column='', search_column_prefix='Samples_Unit'):
     if target_column in df.columns:
@@ -233,21 +220,6 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
 
     return None
 
-def update_unassigned_terms(organism_name, column_key = "Samples_Organism", autoupdated=False, unassigned_file='unassigned_terms.json'):
-    if os.path.exists(unassigned_file):
-        with open(unassigned_file, 'r') as file:
-            unassigned_data = json.load(file)
-    else:
-        unassigned_data = {column_key: {}}
-    
-    if organism_name in unassigned_data[column_key]:
-        unassigned_data[column_key][organism_name]["count"] += 1
-    else:
-        unassigned_data[column_key][organism_name] = {"count": 1, "autoupdated": autoupdated}
-
-    with open(unassigned_file, 'w') as file:
-        json.dump(unassigned_data, file, indent=4)
-
 
 def get_taxonomy_id_from_name(species_name, retries=3):
     if species_name is None or species_name in ["NA", "N/A"]:
@@ -380,19 +352,5 @@ def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_n
     return df
 
 
-
-
-
-
-def get_raw_data_from_factors_json():
-
-    #ST001491
-    stdy_info_req = requests.get(
-        'https://www.metabolomicsworkbench.org/rest/study/study_id/{}/factors'.format(str('ST001491')))
-    
-    stdy_info = stdy_info_req.json()
-
-    print(stdy_info)
-
 if __name__ == '__main__':
-    get_raw_data_from_factors_json()
+    pass

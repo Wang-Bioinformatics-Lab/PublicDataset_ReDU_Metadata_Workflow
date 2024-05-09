@@ -5,16 +5,18 @@ from bs4 import BeautifulSoup
 import argparse
 import json
 import time
+import traceback
 import numpy as np
 from tqdm import tqdm
-from extend_allowed_terms import adapt_allowed_terms 
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
 from REDU_conversion_functions import get_taxonomy_info
+from REDU_conversion_functions import merge_repeated_fileobservations
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
-import traceback
-from owlready2 import get_ontology
+
+
+
 
 def prefer_extension(group):
     extensions = group['extension'].values
@@ -24,21 +26,6 @@ def prefer_extension(group):
         # Mark only the first row to keep if no preferred extension found
         group['keep'] = [True] + [False] * (len(group) - 1)
     return group
-
-def update_unassigned_terms(organism_name, autoupdated=False, unassigned_file='unassigned_terms.json'):
-    if os.path.exists(unassigned_file):
-        with open(unassigned_file, 'r') as file:
-            unassigned_data = json.load(file)
-    else:
-        unassigned_data = {"Samples_Organism": {}}
-    
-    if organism_name in unassigned_data["Samples_Organism"]:
-        unassigned_data["Samples_Organism"][organism_name]["count"] += 1
-    else:
-        unassigned_data["Samples_Organism"][organism_name] = {"count": 1, "autoupdated": autoupdated}
-
-    with open(unassigned_file, 'w') as file:
-        json.dump(unassigned_data, file, indent=4)
 
 
 def get_enviromental_water(x):
@@ -76,56 +63,8 @@ def get_blanks(x):
         return [None, None]
 
 
-def get_taxonomy_id_from_name(species_name, retries=3):
-    if species_name is None or species_name in ["NA", "N/A"]:
-        return None
-
-    attempts = 0
-    while attempts < retries:
-        try:
-            response = requests.get(
-                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}&retmode=xml"
-            )
-
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "xml")
-                id_list = soup.find("IdList")
-                if id_list is not None and id_list.find("Id") is not None:
-                    ncbi_id = id_list.find("Id").text
-                    term = soup.find("Term").text.split("[")[0].strip()
-                    if term.lower() == species_name.lower():
-                        return str(ncbi_id) + '|' + species_name
-                    else:
-                        return None
-                else:
-                    return  None
-            else:
-                print(f"Server responded with status code {response.status_code} for {species_name}.")
-                time.sleep(10)
-
-        except Exception as e:
-            print(f"Attempt {attempts + 1} failed for {species_name}: {e}")
-            time.sleep(10)
-
-        attempts += 1
-
-    print(f'{species_name} returned no NCBI-ID after {retries} attempts')
-    return  None
-
 def safe_api_request(url, retries=3, expected_codes={200}):
 
-  """
-  Safely requests JSON data from an API and checks for errors.
-
-  Args:
-    url: The URL of the API endpoint.
-    retries: The number of retries to attempt in case of errors.
-    expected_codes: A set of expected HTTP status codes indicating success.
-
-  Returns:
-    A dictionary containing the JSON data if successful,
-    or None if all retries fail.
-  """
   for _ in range(retries):
     try:
       response = requests.get(url)
@@ -298,7 +237,6 @@ def Metabolights2REDU(study_id, **kwargs):
         if len(df_study) > 0:
             
             allowedTerm_dict = kwargs['allowedTerm_dict']
-            unassigned_term_json = kwargs['unassigned_term_json']
             ontology_table = kwargs['ontology_table']
             ENVOEnvironmentMaterialIndex_table = kwargs['ENVOEnvironmentMaterialIndex_table']
             ENVOEnvironmentBiomeIndex_table = kwargs['ENVOEnvironmentBiomeIndex_table']
@@ -310,13 +248,12 @@ def Metabolights2REDU(study_id, **kwargs):
             #add NCBITaxonomy and Sampletype & SampleTypeSub1
             #######
             if 'Samples_Organism' in df_study.columns:
-                #processed_organisms = {org: str(get_taxonomy_id_from_name(org)) + '|' + str(org) for org in df_study['Samples_Organism'].unique()}
-                processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict, unassigned_term_json=unassigned_term_json)) for org in df_study['Samples_Organism'].unique()}
+                processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict)) for org in df_study['Samples_Organism'].unique()}
 
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
-                df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='ML import: not available', regex=True)
+                df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='missing value', regex=True)
                 
-                df_study.loc[:, ['SampleType', 'SampleTypeSub1']] = 'ML import: not available'
+                df_study.loc[:, ['SampleType', 'SampleTypeSub1']] = 'missing value'
 
                 processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
                                     for taxonomy in df_study['NCBITaxonomy'].unique()
@@ -330,14 +267,14 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(
                     lambda row: get_blanks(row.Samples_Organism) 
-                    if (pd.isna(row.SampleType) or row.SampleType == 'ML import: not available') 
+                    if (pd.isna(row.SampleType) or row.SampleType == 'missing value') 
                     else [row.SampleType, row.SampleTypeSub1], 
                     axis=1
                 ).apply(pd.Series)
 
                 df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(
                     lambda row: get_enviromental_water(row.Samples_Organism) 
-                    if (pd.isna(row.SampleType) or row.SampleType == 'ML import: not available') 
+                    if (pd.isna(row.SampleType) or row.SampleType == 'missing value') 
                     else [row.SampleType, row.SampleTypeSub1], 
                     axis=1
                 ).apply(pd.Series)
@@ -369,19 +306,30 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study.loc[:, 'ENVOEnvironmentMaterial'] = df_study['Samples_Organism'].map(updated_species_dict)
 
+
+                #add ENV biome column
+                #######
+                updated_species_dict = {}
+
+                for key, value in processed_organisms.items():
+                    if value == 'None':
+                        match = ENVOEnvironmentBiomeIndex_table[(ENVOEnvironmentBiomeIndex_table['Label'] == key) | (ENVOEnvironmentBiomeIndex_table['Synonym'] == key)]['Label'].values
+                        if match.size > 0:
+                            updated_species_dict[key] = match[0]
+                        else:
+                            updated_species_dict[key] = 'missing value'
+
+                df_study.loc[:, 'ENVOEnvironmentBiome'] = df_study['Samples_Organism'].map(updated_species_dict)
+
+
                 #add UBERON bodypart column
                 #######
-                df_bodypart = pd.read_csv(os.path.join(transSheet_dir, 'bodypart_Metabolights.csv'))
-                df_study = df_study.merge(df_bodypart[['ML', 'bodypart']], left_on='Samples_Organism part', right_on='ML', how='left')
-                df_study.rename(columns={'bodypart': 'UBERONBodyPartName'}, inplace=True)
-                df_study.drop('ML', axis=1, inplace=True)
+                df_study['UBERONBodyPartName'] = 'missing value'
 
                 labels_in_ontology_table = set(ontology_table['Label'])
                 synonyms_in_ontology_table = set(ontology_table['Synonym'])
                 allowed_bodyparts = set(allowedTerm_dict['UBERONBodyPartName']['allowed_values'])
                 allowed_bodypart_ids = set(allowedTerm_dict['UBERONOntologyIndex']['allowed_values'])
-
-                terms_to_add_to_allowed_terms = []
 
                 for index, row in df_study.iterrows():
                     organism_part = row['Samples_Organism part']
@@ -390,12 +338,7 @@ def Metabolights2REDU(study_id, **kwargs):
                         df_study.at[index, 'UBERONBodyPartName'] = organism_part
                         continue 
 
-                    if organism_part in labels_in_ontology_table and unassigned_term_json != 'none':
-                        df_study.at[index, 'UBERONBodyPartName'] = organism_part
-                        terms_to_add_to_allowed_terms.append(organism_part)
-                        continue
-
-                    if organism_part in synonyms_in_ontology_table and unassigned_term_json != 'none':
+                    if organism_part in synonyms_in_ontology_table:
 
                         matching_rows = ontology_table[ontology_table['Synonym'] == organism_part]
 
@@ -411,19 +354,7 @@ def Metabolights2REDU(study_id, **kwargs):
                             
                             label = matching_rows['Label'].iloc[0] 
                             df_study.at[index, 'UBERONBodyPartName'] = label
-                            
-                            if label not in terms_to_add_to_allowed_terms and not label in allowed_bodyparts:  # Check to avoid duplicates
-                                terms_to_add_to_allowed_terms.append(label)
-                            continue
 
-                if len(terms_to_add_to_allowed_terms) > 0 and unassigned_term_json != 'none':
-                    adapt_allowed_terms(terms_dict = allowedTerm_dict,
-                                        redu_variable = 'UBERONBodyPartName',
-                                        term_list = terms_to_add_to_allowed_terms,
-                                        add_or_remove = 'add',
-                                        add_to_terms = '__AUTOUPDATE',
-                                        load_dict_from_path='/home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms_autoupdate.json',
-                                        save_dict_to_path = '/home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms_autoupdate.json')
                         
                 ontology_table_unique = ontology_table.drop_duplicates(subset=['Label', 'UBERONOntologyIndex']).drop(columns=['Synonym'])
 
@@ -435,22 +366,6 @@ def Metabolights2REDU(study_id, **kwargs):
                 df_study['UBERONOntologyIndex'] = df_study['UBERONOntologyIndex'].str.replace("_", ":", regex=False)
 
 
-                if unassigned_term_json != 'none':
-                    df_study['UBERONOntologyIndex'] = df_study['UBERONOntologyIndex'].fillna('')
-                    usedUberon_values = df_study[df_study['UBERONOntologyIndex'].str.contains("CL|UBERON|PO")]['UBERONOntologyIndex']
-                    if len(usedUberon_values) > 0:
-                        # Find values not present in 'allowed_bodypart_ids'
-                        not_allowed_values = usedUberon_values[~usedUberon_values.isin(allowed_bodypart_ids)].unique().tolist()
-                        if len(not_allowed_values) > 0:
-                            adapt_allowed_terms(terms_dict = allowedTerm_dict,
-                                            redu_variable = 'UBERONOntologyIndex',
-                                            term_list = not_allowed_values,
-                                            add_or_remove = 'add',
-                                            add_to_terms = '__AUTOUPDATE',
-                                            load_dict_from_path='/home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms_autoupdate.json',
-                                            save_dict_to_path = '/home/yasin/projects/ReDU-MS2-GNPS2/workflows/PublicDataset_ReDU_Metadata_Workflow/bin/allowed_terms/allowed_terms_autoupdate.json')               
-
-            
             #add MassSpectrometer column
             #######
             if 'Assay_Instrument' in df_study.columns:
@@ -517,7 +432,7 @@ def Metabolights2REDU(study_id, **kwargs):
                     df_study.loc[df_study[unit_column] == 'day', 'AgeInYears'] = df_study.loc[df_study[unit_column] == 'day', 'Samples_age'] / 365
                     df_study.loc[df_study[unit_column] == 'hour', 'AgeInYears'] = df_study.loc[df_study[unit_column] == 'hour', 'Samples_age'] / 8760
 
-                    df_study['AgeInYears'] = df_study['AgeInYears'].astype(str).replace('nan', 'ML import: not available')
+                    df_study['AgeInYears'] = df_study['AgeInYears'].astype(str).replace('nan', 'missing value')
 
             #add AgeInYears 
             #######
@@ -539,7 +454,7 @@ def Metabolights2REDU(study_id, **kwargs):
             
             if 'Samples_gender' in df_study.columns:
 
-                df_study["BiologicalSex"] = 'ML import: not available'
+                df_study["BiologicalSex"] = 'missing value'
                 df_study.loc[df_study['Samples_gender'].str.lower().str.contains('female'), 'BiologicalSex'] = 'female'
                 df_study.loc[(df_study['Samples_gender'].str.lower().str.contains('male')) & (df_study['BiologicalSex'] != 'female'), 'BiologicalSex'] = 'male'
 
@@ -549,6 +464,7 @@ def Metabolights2REDU(study_id, **kwargs):
             df_study['MassiveID'] = study_id
             
             ontology_table = ontology_table.drop_duplicates(subset=['Label'])
+            df_study = merge_repeated_fileobservations(df_study)
             df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                     ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,NCBIRankDivision_table=NCBIRankDivision_table, add_usi = True, 
                                                     other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
@@ -575,7 +491,6 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_envo_biome_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--path_to_envo_material_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--path_ncbi_rank_division", type=str, help="Path to the path_ncbi_rank_division")
-    parser.add_argument("--path_to_unassigned_term_json", type=str, help="If you want to export a json with terms that have not been associated with anything (optional)", default="none")
             
     args = parser.parse_args()
 
@@ -617,8 +532,7 @@ if __name__ == "__main__":
     for study_id in tqdm(public_metabolights_studies):
         try:
             redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
-                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table, 
-                                                  unassigned_term_json = args.path_to_unassigned_term_json)
+                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table)
         except Exception as e:
             traceback_info = traceback.format_exc()
             print(f"An error occurred with study_id {study_id}: {e}\nTraceback:\n{traceback_info}")

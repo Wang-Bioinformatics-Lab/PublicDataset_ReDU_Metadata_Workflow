@@ -171,12 +171,5 @@ def main():
     print("\t".join(output_list))
 
 
-    #with open(args.inputmetadata, 'rb') as csvfile:
-        #dialect = csv.Sniffer().sniff(csvfile.read(1024))
-        #csvfile.seek(0)
-        #reader = csv.DictReader(csvfile, dialect=dialect)
-        #for row in reader:
-        #    print(row)
-
 if __name__ == "__main__":
     main()

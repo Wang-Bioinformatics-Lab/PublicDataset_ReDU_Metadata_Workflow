@@ -204,8 +204,9 @@ process mlFiles {
     file 'MetabolightsFilePaths_ALL.tsv'
 
     """
-    python $TOOL_FOLDER/GetAllMetabolightsFiles.py \
-    --study_id ALL
+    python $TOOL_FOLDER/getAllMetabolights_file_paths.py \
+    --output_filename MetabolightsFilePaths_ALL.tsv \
+    --user_token e6db13e8-bfa7-452c-83dd-92ddf10677c1
     """
 }
 

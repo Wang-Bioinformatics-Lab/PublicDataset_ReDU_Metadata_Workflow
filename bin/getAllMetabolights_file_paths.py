@@ -37,30 +37,58 @@ def safe_api_request(url, retries=3, expected_codes={200}):
   return None
 
 
-public_metabolights_studies = safe_api_request('https://www.ebi.ac.uk:443/metabolights/ws/studies/technology', retries = 1)
-
-#print(public_metabolights_studies)
-
-def get_files_recursive(study_id, directory, headers, files_list, depth=0, max_depth=4):
-    if depth > max_depth or 'nmr' in directory.lower():
-        return
-
-    url = f'https://www.ebi.ac.uk/metabolights/ws/studies/{study_id}/fileslist?directory_name={directory}'
-    response = requests.get(url, headers=headers)
-    filelist_archive = response.json()
+def get_all_files(study_id, headers):
+    base_url = f'https://www.ebi.ac.uk:443/metabolights/ws/studies/{study_id}/data-files'
+    search_patterns = [
+        'FILES/**/*.*',
+        'FILES/**/*.zip',
+        'FILES/**/*.raw',
+        'FILES/**/*.RAW',
+        'FILES/**/*.d',
+        'FILES/**/*.D',
+        'FILES/**/*.lcd',
+        'FILES/**/*.mzML',
+        'FILES/**/*.mzXML',
+        'FILES/**/*.cdf',
+        'FILES/**/*.CDF',
+        'FILES/**/*.wiff',
+        'FILES/**/*.wiff.scan'
+    ]
     
-    for file_info in filelist_archive.get('files', []):
-        if '.' in file_info['file']:  # Check if it's a file
-            file_path = file_info.get('path', '')
-            files_list.append({'study_id': study_id, 'file_path': file_path})
-    
-    for subdirectory_info in filelist_archive.get('directories', []):
-        subdirectory_name = subdirectory_info['directory']
-        if 'nmr' not in subdirectory_name.lower():
-            new_directory = f"{directory}/{subdirectory_name}" if directory else subdirectory_name
-            get_files_recursive(study_id, new_directory, headers, files_list, depth=depth+1, max_depth=max_depth)
+    all_files = []
+    initial_try = True
+
+    for pattern in search_patterns:
+        url = f"{base_url}?search_pattern={pattern}&file_match=true&folder_match=true"
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()  # Raises HTTPError for 4XX/5XX responses
+            files_data = response.json()
+            if files_data['files']:
+                all_files.extend(files_data['files'])
+                if initial_try:  # If initial broad pattern works, no need to try more specific patterns
+                    break
+        except requests.exceptions.HTTPError as http_err:
+            if response.status_code == 504 and initial_try:  # Gateway Timeout only matters on first try
+                print(f"Timeout encountered in {study_id} with pattern: {pattern}. Trying more specific patterns.")
+                initial_try = False  # Subsequent attempts will not break after first success
+            else:
+                print(f"HTTP error occurred in {study_id} : {http_err} - Status code: {response.status_code}")
+        except requests.RequestException as err:
+            print(f"Request failed: {err}")
+        except ValueError as json_err:
+            print(f"JSON decoding failed in {study_id}: {json_err}")
+            print("Response content:", response.text)  # Print the response text that was not JSON
+
+    if not all_files:
+        print(f"No files found for study {study_id}.")
+    return {'files': all_files}
 
             
+       
+def create_usi(row):
+    return f"mzspec:{row['study_id']}:{row['file_path']}"
+     
             
 if __name__ == "__main__":
             
@@ -70,20 +98,31 @@ if __name__ == "__main__":
     
     
     args = parser.parse_args()
-    
+        
+
+    public_metabolights_studies = safe_api_request('https://www.ebi.ac.uk:443/metabolights/ws/studies/technology', retries = 1)
+
+
     # Initialize variables and headers with your API token
     headers = {'user_token': args.user_token}
-    files_list = []
+    data = []
 
-    # Assuming public_metabolights_studies is a list of study IDs
+    # Loop over each study and gather files
     for study in tqdm(public_metabolights_studies, desc="Processing studies"):
         study_id = study['accession']
-        get_files_recursive(study_id, 'FILES', headers, files_list)
+        files_list = get_all_files(study_id, headers)  
+        
+        # Extract each file and append to the list with the study_id
+        for file in files_list['files']:
+            data.append({'study_id': study_id, 'file_path': file['name']})
 
     # Convert the list to a DataFrame
-    files_df = pd.DataFrame(files_list)
+    files_df = pd.DataFrame(data)
 
+    #add  USI
+    files_df['USI'] = files_df.apply(create_usi, axis=1)
 
+    #export tsv file
     files_df.to_csv(args.output_filename, index = False, sep = "\t")
 
 
