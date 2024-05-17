@@ -7,7 +7,8 @@ import glob
 from io import StringIO
 from subprocess import PIPE, run
 
-ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
+##  ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
+ccms_peak_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath"
 gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'NCBIDivision', 'NCBIRank', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
 gnps_column_names_added = ['USI']
 
@@ -29,10 +30,10 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         # Get the value of the first row of the 'column_name' column
         dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
 
+        print(f"Checking dataset {dataset} (value extracting from column.)")
         dataset_files_response = requests.get("{}&dataset__exact={}".format(ccms_peak_link, dataset))
         csvStringIO = StringIO(dataset_files_response.text)
         ccms_df = pd.read_csv(csvStringIO)
-
         ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
     except TypeError:
         print("Error")
@@ -52,8 +53,8 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         found_file_paths = ccms_df[ccms_df["query_path"] == filename]["filepath"].tolist()
         found_file_paths += ccms_df[ccms_df["query_path"] == filename2]["filepath"].tolist()
 
-        if len(found_file_paths) == 1:
-            # We've found a match
+        if len(found_file_paths) <= 2 and len(found_file_paths) > 0:
+            # We've found a match   
             print("Found match", found_file_paths[0])
             metadata_row["filename"] = "f." + found_file_paths[0]
             metadata_row["USI"] = _make_usi_from_filename(metadata_row["filename"])
@@ -96,6 +97,8 @@ def main():
         # print("echo Working on")
         # csv_path = os.path.join(current_dir, './data.csv' file)
         dataset_metadata_df = pd.read_csv( file , delimiter='\t')
+
+        print(f"reading potential ReDU data with {len(dataset_metadata_df)} rows.")
         
         #Renaming the coloumn, Matching common columns and rearranging them in same order to final file
         dataset_metadata_df = dataset_metadata_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'})
@@ -110,7 +113,6 @@ def main():
         # Matching the metadata
         enriched_metadata_df = _match_filenames_and_add_usi(dataset_metadata_df)
         if enriched_metadata_df is not None:
-            print('returning at least some files')
             all_metadata_list.append(enriched_metadata_df)
 
     # Create a DataFrame from the list with headers
