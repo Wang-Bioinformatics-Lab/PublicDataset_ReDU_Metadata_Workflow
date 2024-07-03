@@ -11,24 +11,6 @@ def main():
 
     args = parser.parse_args()
 
-    print(args)
-
-    # # reading metadata
-    # metadata_df = pd.read_csv(args.input_metadata, sep='\t')
-    # # # reading files
-    # files_df = pd.read_csv(args.input_files, sep='\t')
-    # files_df = files_df[["USI"]]
-    
-    # merged_df = pd.merge(metadata_df, files_df, on="USI", how="inner")
-
-    # metadata_df.rename(columns={'MassiveID': 'ATTRIBUTE_DatasetAccession'}, inplace=True)
-
-    # metadata_df['filename'] = 'f.' + metadata_df['filename']
-
-    # # Saving file
-    # metadata_df.to_csv(args.output_merged_file, sep='\t', index=False)
-
-
 
     # reading metadata
     metadata_df = pd.read_csv(args.input_metadata, sep='\t')
