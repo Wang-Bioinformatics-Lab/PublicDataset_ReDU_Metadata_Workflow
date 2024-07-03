@@ -136,9 +136,10 @@ process mwbFiles {
     file 'mwb_files_all.tsv'
 
     """
-    python $TOOL_FOLDER/MWB_to_fileDF.py \
+    python $TOOL_FOLDER/getAllWorkbench_file_paths.py \
     --study_id ALL \
-    --output_path mwb_files_all.tsv
+    --output_path mwb_files_all.tsv \
+    --filter_extensions True
     """
 }
 
@@ -214,6 +215,7 @@ process formatml {
     publishDir "./nf_output", mode: 'copy'
 
     conda "$TOOL_FOLDER/conda_env.yml"
+
 
     input:
     file ml_metadata

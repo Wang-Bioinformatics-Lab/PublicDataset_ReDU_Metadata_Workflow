@@ -5,6 +5,7 @@ import requests
 import pandas as pd
 import argparse 
 import time
+import os 
 
 def safe_api_request(url, retries=3, expected_codes={200}):
 
@@ -88,7 +89,14 @@ def get_all_files(study_id, headers):
        
 def create_usi(row):
     return f"mzspec:{row['study_id']}:{row['file_path']}"
-     
+
+def process_filename(filename):
+    path_parts = filename.split('/')
+    for part in path_parts:
+        print(part)
+        if part.endswith('.d'):
+            return '/'.join(path_parts[:path_parts.index(part)+1])
+    return filename
             
 if __name__ == "__main__":
             
@@ -120,6 +128,8 @@ if __name__ == "__main__":
     files_df = pd.DataFrame(data)
 
     #add  USI
+    files_df['file_path'] = files_df['file_path'].apply(process_filename)
+    files_df = files_df.drop_duplicates(keep='first')
     files_df['USI'] = files_df.apply(create_usi, axis=1)
 
     #export tsv file
