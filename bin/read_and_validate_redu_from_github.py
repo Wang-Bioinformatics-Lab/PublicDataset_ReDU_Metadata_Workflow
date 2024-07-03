@@ -188,6 +188,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
                 df = df.merge(envome_material_ontology_table[['Label', 'ENVOEnvironmentMaterialIndex']], left_on='ENVOEnvironmentMaterial', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'USI' and add_usi == True:
+                df['filename'] = df['filename'].apply(process_filename)
                 df['USI'] = 'mzspec:' + df['MassiveID'] + ':' + df['filename']
             if key == 'NCBIRank':
                 df['TaxonID'] = df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if '|' in x else 'missing value')
@@ -227,6 +228,13 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
 
     return df[keys_to_include]
 
+def process_filename(filename):
+    path_parts = filename.split('/')
+    for part in path_parts:
+        print(part)
+        if part.endswith('.d'):
+            return '/'.join(path_parts[:path_parts.index(part)+1])
+    return filename
 
 
 def clean_read_tsv_quoted_lines(path):
