@@ -7,7 +7,6 @@ import glob
 from io import StringIO
 from subprocess import PIPE, run
 
-##  ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
 ccms_peak_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath"
 gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'NCBIDivision', 'NCBIRank', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
 gnps_column_names_added = ['USI']
@@ -35,8 +34,13 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         csvStringIO = StringIO(dataset_files_response.text)
         ccms_df = pd.read_csv(csvStringIO)
         ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
+
+        assert(len(ccms_df) > 1000)
     except TypeError:
         print("Error")
+        return None
+    except:
+        print("Error the size of the input is too small")
         return None
 
     
