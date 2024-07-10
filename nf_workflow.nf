@@ -468,7 +468,7 @@ workflow {
     // gnps_github_metadata_ch = gnpsmatchName_github('all', prepared_files_folder)
     // need to compare with gnps_massive_metadata
 
-    // Massive REDU data
+    // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
     msv_metadata_ch = read_and_clean_before_github_redu_metadata(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
     gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch)
