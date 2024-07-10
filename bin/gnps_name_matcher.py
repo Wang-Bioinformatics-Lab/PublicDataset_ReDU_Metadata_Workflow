@@ -29,8 +29,18 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         # Get the value of the first row of the 'column_name' column
         dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
 
-        print(f"Checking dataset {dataset} (value extracting from column.)")
-        dataset_files_response = requests.get("{}&dataset__exact={}".format(ccms_peak_link, dataset))
+        # Getting the dataset files from the dataset cache
+        print(f"Checking dataset {dataset} by going to the dataset cache")
+        dataset_cache_url = "{}&dataset__exact={}".format(ccms_peak_link, dataset)
+
+        dataset_files_response = requests.get(dataset_cache_url)
+
+        # If the response is not 200, return None
+        if dataset_files_response.status_code != 200:
+            print("Dataset Cache Response Error", dataset_files_response.status_code)
+            print(dataset_cache_url)
+            return None
+
         csvStringIO = StringIO(dataset_files_response.text)
         ccms_df = pd.read_csv(csvStringIO)
         ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
