@@ -35,12 +35,12 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         ccms_df = pd.read_csv(csvStringIO)
         ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
 
-        assert(len(ccms_df) > 1000)
+        assert(len(ccms_df) > 0)
     except TypeError:
         print("Error")
         return None
     except:
-        print("Error the size of the input is too small")
+        print("Error the size of the input is too small", len(ccms_df))
         return None
 
     

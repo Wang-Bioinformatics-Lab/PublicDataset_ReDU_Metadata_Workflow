@@ -333,7 +333,7 @@ process gnpsmatchName_github {
     """
 }
 
-
+// This cleans up the metadata from MassIVE into the appropriate CV terms
 process read_and_clean_before_github_redu_metadata {
     publishDir "./nf_output", mode: 'copy'
 
@@ -388,6 +388,7 @@ process gnpsmatchName_before_github {
     """
 }
 
+// Downloading all the tentative microbeMASST and PlantMASST metadata
 process downloadMicrobePlantMASST {
     publishDir "./nf_output", mode: 'copy'
 
@@ -406,6 +407,7 @@ process downloadMicrobePlantMASST {
     """
 }
 
+// Getting microbmemasst data and putting it in a tentaive redu format
 process MASST_to_REDU {
     publishDir "./nf_output", mode: 'copy'
 
@@ -431,7 +433,7 @@ process MASST_to_REDU {
     """
 }
 
-
+// This is taking metadata from microbeMASST and PlatnMASST and modifying it
 process gnpsmatchName_masst {
     publishDir "./nf_output", mode: 'copy'
 
