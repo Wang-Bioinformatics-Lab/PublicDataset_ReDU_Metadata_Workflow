@@ -66,13 +66,25 @@ def process_filename(filename):
             return '/'.join(path_parts[:path_parts.index(part)+1])
     return filename
 
+def _get_existing_datasets(path_to_file):
+    try:
+        existing_datasets = pd.read_csv(path_to_file, sep="\t")
+        existing_datasets = set(existing_datasets['dataset'])
+        return existing_datasets
+    except:
+        return set()
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Give an MWB study ID and get a tsv with file paths present in the study.')
     parser.add_argument("--study_id", "-mwb_id", type=str, help='An MWB study ID such as "ST002050", "ALL" for every study', required=True)
     parser.add_argument("--output_path", type=str, help='Output file path to tsv file.')
     parser.add_argument("--filter_extensions", type=str, help='Filter extensions to ".mzml", ".mzxml", ".cdf", ".raw", ".wiff", and ".d".', default='False')
+    parser.add_argument("--existing_datasets", type=str, help="path to a file of datasets already indexed", default="none")
+
 
     args = parser.parse_args()
+
+    existing_datasets = _get_existing_datasets(args.existing_datasets)
 
     if args.study_id == "ALL":
         # Getting all files
@@ -88,6 +100,10 @@ if __name__ == '__main__':
 
         all_results_list = []
         for study_id in tqdm.tqdm(study_list):
+            if study_id in existing_datasets:
+                print("Skipping", study_id, "Already indexed")
+                continue
+
             try:
                 temp_result_df = _get_metabolomicsworkbench_filepaths(study_id=study_id)
                 all_results_list.append(temp_result_df)

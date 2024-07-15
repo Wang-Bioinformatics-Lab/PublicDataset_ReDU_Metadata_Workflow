@@ -98,15 +98,24 @@ def process_filename(filename):
             return '/'.join(path_parts[:path_parts.index(part)+1])
     return filename
             
+def _get_existing_datasets(path_to_file):
+    try:
+        existing_datasets = pd.read_csv(path_to_file, sep="\t")
+        existing_datasets = set(existing_datasets['dataset'])
+        return existing_datasets
+    except:
+        return set()
+
 if __name__ == "__main__":
             
     parser = argparse.ArgumentParser(description='Get all Metabolights file paths')
     parser.add_argument("--output_filename", type=str, help="tsv file name for output", default="none")
     parser.add_argument("--user_token", type=str, help="user token you can get from metabolights account", default="none")
-    
+    parser.add_argument("--existing_datasets", type=str, help="path to a file of datasets already indexed", default="none")
     
     args = parser.parse_args()
         
+    existing_datasets = _get_existing_datasets(args.existing_datasets)
 
     public_metabolights_studies = safe_api_request('https://www.ebi.ac.uk:443/metabolights/ws/studies/technology', retries = 1)
 
@@ -118,6 +127,11 @@ if __name__ == "__main__":
     # Loop over each study and gather files
     for study in tqdm(public_metabolights_studies, desc="Processing studies"):
         study_id = study['accession']
+
+        if study_id in existing_datasets:
+            print("Skipping", study_id, "Already indexed")
+            continue
+
         files_list = get_all_files(study_id, headers)  
         
         # Extract each file and append to the list with the study_id
