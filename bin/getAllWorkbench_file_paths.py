@@ -69,7 +69,7 @@ def process_filename(filename):
 def _get_existing_datasets(path_to_file):
     try:
         existing_datasets = pd.read_csv(path_to_file, sep="\t")
-        existing_datasets = set(existing_datasets['dataset'])
+        existing_datasets = set(existing_datasets['datasets'])
         return existing_datasets
     except:
         return set()
