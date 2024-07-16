@@ -35,7 +35,6 @@ def _make_usi_from_filename(filename, dataset_id):
 def _match_filenames_and_add_usi(dataset_metadata_df):
          
     dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
-
     print(f"Checking dataset {dataset} (value extracting from column.)")
 
     url_f = "{}{}&filepath__endswith=%25.mz%25ML&_size=max".format(ccms_peak_link, dataset) 
@@ -44,9 +43,8 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
     # Request URL and retry 3 times after waiting 5 seconds if ccms_df does not have a column named 'filepath'
     retry_attempts = 3
     for attempt in range(retry_attempts):
+        print(f"Checking dataset {dataset} by going to the dataset cache")
         dataset_files_response = requests.get(url_f)
-
-        print(dataset_files_response)
 
         csvStringIO = StringIO(dataset_files_response.text)
         ccms_df = pd.read_csv(csvStringIO)
@@ -56,21 +54,20 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         else:
             print(f"Attempt {attempt + 1} failed. Retrying in 5 seconds...")
             sleep(5)
-    else:
-        raise ValueError("Failed to fetch 'filepath' column after 3 attempts.")
 
-    print("Received a dataframe with {} rows.".format(len(ccms_df)))
-    print(ccms_df)
+    if len(ccms_df) > 0:
+        print("Received a dataframe with {} rows.".format(len(ccms_df)))
+        print(ccms_df)
+        pass
+    else:
+        print("Error: the size of the input is too small, length:", len(ccms_df))
+        return None
 
     ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
-
 
     metadata_row_list = dataset_metadata_df.to_dict('records')
     output_row_list = []
 
-
-    # have to come up with something to deal with cases where we match to a file with different extension
-    # we could change filename in the table to the new extension
     for metadata_row in metadata_row_list:
 
         print(f"Processing {metadata_row['filename']}")
@@ -104,9 +101,6 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
 
             if not selected_path:
                 selected_path = found_file_paths[0]
-
-
-
 
             print("Found match", selected_path)
             metadata_row["filename"] = "f." + selected_path
