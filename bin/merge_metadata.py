@@ -24,7 +24,7 @@ def main():
     gnps_df["DataSource"] = "GNPS"
 
     #drop duplicated files
-    duplicates = gnps_df.duplicated(subset='filename', keep=False)
+    duplicates = gnps_df.duplicated(subset='USI', keep=False)
     gnps_df = gnps_df[~duplicates]
 
 
