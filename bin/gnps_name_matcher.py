@@ -3,61 +3,75 @@ import pandas as pd
 import argparse
 import collections
 import requests
+from time import sleep
 import glob
 from io import StringIO
 from subprocess import PIPE, run
 
-ccms_peak_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath"
+##  ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
+##  ccms_peak_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath"
+ccms_peak_link = "https://datasetcache.gnps2.org/datasette/datasette/database/uniquemri.csv?_sort=usi&dataset__exact=" # MSV000081468&filepath__endswith=%25.mz%25ML&_size=max"
 gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'NCBIDivision', 'NCBIRank', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
 gnps_column_names_added = ['USI']
 
-def _make_usi_from_filename(s):
+def _make_usi_from_filename(filename, dataset_id):
     # Replace initial "f." with "mzspec:"
-    if s.startswith("f."):
-        s = "mzspec:" + s[2:]
-    # Replace the first "/" with ":"
-    first_slash_index = s.find('/')
-    if first_slash_index != -1:
-        s = s[:first_slash_index] + ':' + s[first_slash_index+1:]
-    return s
+    if filename.startswith("f.MSV"):
+        usi = "mzspec:" + filename[2:]
+        # Replace the first "/" with ":"
+        first_slash_index = usi.find('/')
+        if first_slash_index != -1:
+            usi = filename[:first_slash_index] + ':' + filename[first_slash_index+1:]
+    elif filename.startswith("f."):
+        usi = "mzspec:" + dataset_id + ':' + filename[2:]
+    else:
+        print('Do filenames not start with f. anymore?')
+
+    return usi
 
 
 
 
 def _match_filenames_and_add_usi(dataset_metadata_df):
-    try:            
-        # Get the value of the first row of the 'column_name' column
-        dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
+         
+    dataset = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].iloc[0]
+    print(f"Checking dataset {dataset} (value extracting from column.)")
 
-        # Getting the dataset files from the dataset cache
+    url_f = "{}{}&filepath__endswith=%25.mz%25ML&_size=max".format(ccms_peak_link, dataset) 
+    print("Fetching {}".format(url_f))
+
+    # Request URL and retry 3 times after waiting 5 seconds if ccms_df does not have a column named 'filepath'
+    retry_attempts = 3
+    for attempt in range(retry_attempts):
         print(f"Checking dataset {dataset} by going to the dataset cache")
-        dataset_cache_url = "{}&dataset__exact={}".format(ccms_peak_link, dataset)
-
-        dataset_files_response = requests.get(dataset_cache_url)
-
-        # If the response is not 200, return None
-        if dataset_files_response.status_code != 200:
-            print("Dataset Cache Response Error", dataset_files_response.status_code)
-            print(dataset_cache_url)
-            return None
+        dataset_files_response = requests.get(url_f)
 
         csvStringIO = StringIO(dataset_files_response.text)
         ccms_df = pd.read_csv(csvStringIO)
-        ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
+        
+        if 'filepath' in ccms_df.columns:
+            break
+        else:
+            print(f"Attempt {attempt + 1} failed. Retrying in 5 seconds...")
+            sleep(5)
 
-        assert(len(ccms_df) > 0)
-    except TypeError:
-        print("Error")
-        return None
-    except:
-        print("Error the size of the input is too small", len(ccms_df))
+    if len(ccms_df) > 0:
+        print("Received a dataframe with {} rows.".format(len(ccms_df)))
+        print(ccms_df)
+        pass
+    else:
+        print("Error: the size of the input is too small, length:", len(ccms_df))
         return None
 
-    
+    ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
+
     metadata_row_list = dataset_metadata_df.to_dict('records')
     output_row_list = []
 
     for metadata_row in metadata_row_list:
+
+        print(f"Processing {metadata_row['filename']}")
+
         filename = os.path.basename(metadata_row["filename"])
         filename2 = filename[:-3] + "ML"
 
@@ -67,11 +81,30 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         found_file_paths = ccms_df[ccms_df["query_path"] == filename]["filepath"].tolist()
         found_file_paths += ccms_df[ccms_df["query_path"] == filename2]["filepath"].tolist()
 
-        if len(found_file_paths) <= 2 and len(found_file_paths) > 0:
-            # We've found a match   
-            print("Found match", found_file_paths[0])
-            metadata_row["filename"] = "f." + found_file_paths[0]
-            metadata_row["USI"] = _make_usi_from_filename(metadata_row["filename"])
+        print(f"Found file paths: {found_file_paths}")
+
+        if len(found_file_paths) > 0:
+
+            # Select the ccms_peak folder if we have one, otherwise peak, otherwise raw
+            # and if non of those is available the first path in the list   
+            preferred_directories = ['ccms_peak', 'peak', 'raw']
+
+            selected_path = None
+
+            for preferred_dir in preferred_directories:
+                for path in found_file_paths:
+                    if preferred_dir in path:
+                        selected_path = path
+                        break
+                if selected_path:
+                    break
+
+            if not selected_path:
+                selected_path = found_file_paths[0]
+
+            print("Found match", selected_path)
+            metadata_row["filename"] = "f." + selected_path
+            metadata_row["USI"] = _make_usi_from_filename(metadata_row["filename"], metadata_row["ATTRIBUTE_DatasetAccession"])
 
             output_row_list.append(metadata_row)
         else:
