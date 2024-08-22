@@ -87,6 +87,7 @@
             "culture_fungal",
             "hospital",
             "dissolvedorganicmatter_soil",
+            "particulateorganicmatter",
             "blank_analysis",
             "mobile phone",
             "food_source_fungi",
@@ -243,7 +244,8 @@
             "not specified",
             "decahydroquinoline",
             "1-O-hexadecyl-2-acetyl-snglycero-3-phosphocholine",
-            "cocaine-d3"
+            "cocaine-d3",
+            "Sulfadimethoxine-d6"
         ]
     },
     "MassSpectrometer": {
