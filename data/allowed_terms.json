@@ -37,7 +37,8 @@
             "blank_culturemedia",
             "culture_fungal",
             "blank_analysis",
-            "fungi"
+            "fungi",
+            "pool_QC"
         ]
     },
     "SampleTypeSub1": {
@@ -96,7 +97,8 @@
             "water_surface_isolate",
             "plant_NOS",
             "keys",
-            "dissolvedorganicmatter_water_freshwater"
+            "dissolvedorganicmatter_water_freshwater",
+            "pool_QC"
         ]
     },
     "NCBITaxonomy": {
