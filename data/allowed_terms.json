@@ -1,6 +1,7 @@
 {
     "MassiveID": {
         "generate": "False",
+        "type": "identifier",
         "missing": "not allowed",
         "description": "The unique identifier for the dataset in the MassIVE repository.",
         "example": "MSV000080673",
@@ -11,6 +12,7 @@
     },
     "filename": {
         "generate": "False",
+        "type": "identifier",
         "missing": "not allowed",
         "description": "The name of the spectral mz(X)ML file with extension. The filename should be unique within the dataset. Contact us if you are not able to provide this file format.",
         "example": "my_filename.mzML",
@@ -22,6 +24,7 @@
     },
     "SampleType": {
         "generate": "False",
+        "type": "sample type",
         "missing": "missing value",
         "description": "Vague descriptor of analyzed sample type. Make especially sure you label blanks correctly.",
         "example": "culture_mammalian",
@@ -51,6 +54,7 @@
     },
     "SampleTypeSub1": {
         "generate": "False",
+        "type": "sample type",
         "missing": "missing value",
         "description": "Further descriptor of analyzed sample type. Make especially sure you label blanks correctly.",
         "example": "culture_bacterial",
@@ -113,6 +117,7 @@
     },
     "NCBITaxonomy": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "Enter a Taxonomy ID and NCBI name separated by |. ***if multiple organisms are present in a sample - please separate different entries by || (e.g. 562|Escherichia coli||29387|Staphylococcus sp.)",
         "example": "9606|Homo sapiens",
@@ -121,6 +126,7 @@
     },
     "YearOfAnalysis": {
         "generate": "False",
+        "type": "analysis",
         "missing": "missing value",
         "description": "The year the sample was analyzed.",
         "example": "2021",
@@ -161,6 +167,7 @@
     },
     "SampleCollectionMethod": {
         "generate": "False",
+        "type": "analysis",
         "missing": "missing value",
         "description": "The method used to collect the sample.",
         "example": "swabs, solution (95% EtOH)",
@@ -200,6 +207,7 @@
     },
     "SampleExtractionMethod": {
         "generate": "False",
+        "type": "analysis",
         "missing": "missing value",
         "description": "The method used to extract the sample.",
         "example": "methanol-water (1:1)",
@@ -244,6 +252,7 @@
     },
     "InternalStandardsUsed": {
         "generate": "False",
+        "type": "analysis",
         "missing": "missing value",
         "description": "The internal standards used in the analysis.",
         "example": "sulfadimethoxine",
@@ -277,6 +286,7 @@
     },
     "MassSpectrometer": {
         "generate": "False",
+        "type": "analysis",
         "missing": "missing value",
         "description": "The mass spectrometer used in the analysis. We rely on an ontobee publicly controlled vocabulary for this field. Provide the name and the MS_ID of the mass spectrometer separated by |.",
         "example": "MS:1002523|Q Exactive HF",
@@ -285,6 +295,7 @@
     },
     "IonizationSourceAndPolarity": {
         "generate": "False",
+        "type": "analysis",
         "missing": "missing value",
         "description": "The ionization source and polarity used in the analysis.",
         "example": "electrospray ionization (positive)",
@@ -302,6 +313,7 @@
     },
     "ChromatographyAndPhase": {
         "generate": "False",
+        "type": "analysis",
         "missing": "missing value",
         "description": "The chromatography and phase used in the analysis.",
         "example": "reverse phase (C18)",
@@ -321,6 +333,7 @@
     },
     "SubjectIdentifierAsRecorded": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "Provide an identifier for sampled individuals. If the same subject (e.g. person, or mouse) is sampled multiple times, the same identifier should be used for all samples from that subject. Any text or number can be used as an identifier. Make sure to remove any personal information from the identifier!",
         "example": "subject_1",
@@ -331,6 +344,7 @@
     },
     "AgeInYears": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "The age of the subject in years. If you have ages in another unit such as days please convert to years.",
         "example": "25",
@@ -341,6 +355,7 @@
     },
     "BiologicalSex": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "The biological sex of the subject.",
         "example": "female",
@@ -353,6 +368,7 @@
     },
     "UBERONBodyPartName": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "The name of the body part sampled. While the column is called UBERONBodyPartName we also support the Cell ontology and Plant ontology in this field. You can find all allowed terms in the resource links.",
         "example": "liver",
@@ -361,6 +377,7 @@
     },
     "TermsofPosition": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "The position of the body part sampled such as left or right arm.",
         "example": "Right",
@@ -373,6 +390,7 @@
     },
     "HealthStatus": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "The health status of the subject.",
         "example": "healthy",
@@ -386,6 +404,7 @@
     },
     "DOIDCommonName": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
         "description": "The common name of the disease or condition of the subject. You can find all allowed terms in the resource link.",
         "example": "diabetes mellitus",
@@ -394,7 +413,11 @@
     },
     "ComorbidityListDOIDIndex": {
         "generate": "False",
+        "type": "biology/medicine",
         "missing": "missing value",
+        "description": "DOID IDs of comorbidities. Please separate multiple comorbidities by a |. You can find all allowed IDs in the resource link.",
+        "example": "DOID:526|DOID:1596",
+        "source": "https://www.ebi.ac.uk/ols4/ontologies/doid",
         "allowed_values": [
             "DOID:526|DOID:1596",
             "DOID:1596|DOID:635",
@@ -404,6 +427,7 @@
     },
     "SampleCollectionDateandTime": {
         "generate": "False",
+        "type": "general",
         "missing": "missing value",
         "description": "Enter time and date (month/day/year 24:00 time)",
         "example": "7/2/2019 12:00",
@@ -414,6 +438,7 @@
     },
     "Country": {
         "generate": "False",
+        "type": "general",
         "missing": "missing value",
         "description": "The country where the sample was collected.",
         "example": "United States of America",
@@ -629,6 +654,7 @@
     },
     "HumanPopulationDensity": {
         "generate": "False",
+        "type": "general",
         "missing": "missing value",
         "description": "The population density of the area where the sample was collected or the sampled individual is from.",
         "example": "Urban",
@@ -640,6 +666,7 @@
     },
     "LatitudeandLongitude": {
         "generate": "False",
+        "type": "general",
         "missing": "missing value",
         "description": "Enter latitude and longitude separated by a |. please convert GPS coordinates using a GPS coordinates converter.",
         "example": "32.876878|-117.234459",
@@ -650,6 +677,7 @@
     },
     "DepthorAltitudeMeters": {
         "generate": "False",
+        "type": "general",
         "missing": "missing value",
         "description": "enter depths as negative values from sea-level (e.g. -200 m) and altitudes as positive values from sea-level (e.g. 2000 m)",
         "example": "100",
@@ -660,6 +688,7 @@
     },
     "qiita_sample_name": {
         "generate": "False",
+        "type": "identifier",
         "missing": "missing value",
         "description": "Enter the sample_name of a corresponding sequencing file in Qiita (https://qiita.ucsd.edu/) for cross-platform connectivity. The identifier must be exact and prepended with the Qiita identifier. *Note, files names should be entered as present in Qiita which does not allow for underscores or special characters",
         "example": "10317.000001032",
@@ -670,6 +699,7 @@
     },
     "UniqueSubjectID": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) formula which generates massive ID number & SubjectID",
         "example": "MSV000080673_1527",
@@ -680,6 +710,7 @@
     },
     "LifeStage": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(no input necessary - automatically generated) The life range of the subject if human.",
         "example": "Adolescence (8 yrs < x <= 18 yrs)",
@@ -695,6 +726,7 @@
     },
     "UBERONOntologyIndex": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) The index of the UBERON body part name.",
         "example": "UBERON:0002107",
@@ -703,6 +735,7 @@
     },
     "DOIDOntologyIndex": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) The index of the DOID common name.",
         "example": "DOID:9351",
@@ -711,6 +744,7 @@
     },
     "NCBIRank": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) The rank of the NCBITaxonomy as specified by NCBI.",
         "example": "species",
@@ -764,6 +798,7 @@
     },    
     "NCBIDivision": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) The division of the NCBITaxonomy as specified by NCBI.",
         "example": "Bacteria",
@@ -785,6 +820,7 @@
     },
     "ENVOEnvironmentBiome": {
         "generate": "False",
+        "type": "environmental",
         "missing": "missing value",
         "description": "The biome of the environment where the sample was collected. All terms given in the label column of the resource link are allowed.",
         "example": "freshwater biome",
@@ -793,6 +829,7 @@
     },
     "ENVOEnvironmentMaterial": {
         "generate": "False",
+        "type": "environmental",
         "missing": "missing value",
         "description": "The material of the environment where the sample was collected. All terms given in the label column of the resource link are allowed.",
         "example": "soil",
@@ -801,6 +838,7 @@
     },
     "ENVOEnvironmentBiomeIndex": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment biome.",
         "example": "ENVO:00000446",
@@ -809,6 +847,7 @@
     },
     "ENVOEnvironmentMaterialIndex": {
         "generate": "True",
+        "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment material.",
         "example": "ENVO:00002007",
@@ -817,6 +856,7 @@
     },  
     "USI": {
         "generate": "True",
+        "type": "generated",
         "missing": "not allowed",
         "description": "(automatically generated) The unique identifier of the spectral raw file in the repository. Which can be used to access the file thorugh various tools.",
         "example": "mzspec:MSV000080290:ccms_peak/media_blank.mzXML",
