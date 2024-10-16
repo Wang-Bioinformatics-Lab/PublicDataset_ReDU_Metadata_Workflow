@@ -371,11 +371,11 @@ process gnpsmatchName_before_github {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
-    cache false
 
     input:
     // file 'passed_file_names.tsv'
-    file 'adjusted_metadata_folder' 
+    file 'adjusted_metadata_folder'
+    path allowed_terms
 
     output:
     file 'gnps_metadata_all.tsv'
@@ -384,7 +384,8 @@ process gnpsmatchName_before_github {
     python $TOOL_FOLDER/gnps_name_matcher.py \
     all \
     adjusted_metadata_folder \
-    gnps_metadata_all.tsv
+    gnps_metadata_all.tsv \
+    ${allowed_terms}
     """
 }
 
@@ -443,6 +444,7 @@ process gnpsmatchName_masst {
 
     input:
     file 'adjusted_metadata_folder' 
+    path allowed_terms
 
     output:
     file 'masst_metadata_all.tsv'
@@ -451,7 +453,8 @@ process gnpsmatchName_masst {
     python $TOOL_FOLDER/gnps_name_matcher.py \
     all \
     adjusted_metadata_folder \
-    masst_metadata_all.tsv
+    masst_metadata_all.tsv \
+    ${allowed_terms}
     """
 }
 
@@ -471,12 +474,12 @@ workflow {
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata(1)
     msv_metadata_ch = read_and_clean_before_github_redu_metadata(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
-    gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch)
+    gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch, allowed_terms)
 
     // MicrobeMASST and PlantMASST
     // (microbeMASST_table, plantMASST_table) = downloadMicrobePlantMASST(1)
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms)
-    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch)
+    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench
     mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)

@@ -109,10 +109,6 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
             # Initialize value_map for each condition
             if key not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) > 1:
                 # General case for non-specific keys with multiple allowed terms
-                # value_map = {
-                #     observed_value: observed_value if observed_value in allowed_terms else missing_value
-                #     for observed_value in unique_values
-                # }
                 value_map = {
                     observed_value: next((allowed for allowed in allowed_terms if allowed.replace(" ", "") == str(observed_value).replace(" ", "")), missing_value)
                     for observed_value in unique_values

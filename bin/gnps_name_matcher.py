@@ -7,11 +7,11 @@ from time import sleep
 import glob
 from io import StringIO
 from subprocess import PIPE, run
+import json
 
 ##  ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
 ##  ccms_peak_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath"
 ccms_peak_link = "https://datasetcache.gnps2.org/datasette/datasette/database/uniquemri.csv?_sort=usi&dataset__exact=" # MSV000081468&filepath__endswith=%25.mz%25ML&_size=max"
-gnps_column_names = ['filename', 'ATTRIBUTE_DatasetAccession', 'NCBIDivision', 'NCBIRank', 'AgeInYears', 'BiologicalSex', 'ChromatographyAndPhase', 'ComorbidityListDOIDIndex', 'Country', 'DOIDCommonName', 'DOIDOntologyIndex', 'DepthorAltitudeMeters', 'HealthStatus', 'HumanPopulationDensity', 'InternalStandardsUsed', 'IonizationSourceAndPolarity', 'LatitudeandLongitude', 'LifeStage', 'MassSpectrometer', 'NCBITaxonomy', 'SampleCollectionDateandTime', 'SampleCollectionMethod', 'SampleExtractionMethod', 'SampleType', 'SampleTypeSub1', 'SubjectIdentifierAsRecorded', 'TermsofPosition', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'UniqueSubjectID', 'YearOfAnalysis']
 gnps_column_names_added = ['USI']
 
 def _make_usi_from_filename(filename, dataset_id):
@@ -119,6 +119,7 @@ def main():
     parser.add_argument('passed_file_names', help='Input TSV file')
     parser.add_argument('metadata_folder')
     parser.add_argument('output_filename')
+    parser.add_argument('path_allowed_terms_json')
 
     args = parser.parse_args()
      
@@ -133,6 +134,12 @@ def main():
         df = pd.read_csv(args.passed_file_names, delimiter='\t', header=None, names=['Name'])
         # Extract the names from a specific column (e.g., column 'Name')
         passed_file_names = df['Name'].tolist()
+
+    
+    with open(args.path_allowed_terms_json, 'r') as file:
+        allowed_terms_json = json.load(file)
+
+    gnps_column_names = ["ATTRIBUTE_DatasetAccession"] + list(set(allowed_terms_json.keys()) - {'USI', 'MassiveID'})
 
     print("echo Iterating though rows now")
     
