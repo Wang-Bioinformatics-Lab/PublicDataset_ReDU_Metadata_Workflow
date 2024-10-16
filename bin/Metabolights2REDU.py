@@ -204,7 +204,6 @@ def Metabolights2REDU(study_id, **kwargs):
         elif len(df_study_raw) == 0 and len(df_study_mzml) == 0:
             return pd.DataFrame()
         
-        
         df_study = rename_duplicated_column_names(df_study)
         df_study['filename'] = df_study['filepath']#.apply(lambda x: os.path.basename(x))
 
@@ -217,7 +216,6 @@ def Metabolights2REDU(study_id, **kwargs):
         # List of allowed extensions
         allowed_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
         df_study = df_study[df_study['filename_lower'].apply(lambda x: any(x.endswith(ext) for ext in allowed_extensions))]
-
 
         if len(df_study) == 0:
             return None
@@ -280,16 +278,16 @@ def Metabolights2REDU(study_id, **kwargs):
                 ).apply(pd.Series)
 
 
-                df_biofluid_vs_tissue = pd.read_csv(os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv'))
+                # df_biofluid_vs_tissue = pd.read_csv(os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv'))
 
-                df_study['Samples_Organism part'] = df_study['Samples_Organism part'].str.lower()
+                # df_study['Samples_Organism part'] = df_study['Samples_Organism part'].str.lower()
 
-                for index, row in df_study.iterrows():
-                    if pd.isna(row['SampleTypeSub1']):
-                        org_part = row['Samples_Organism part']
-                        matching_row = df_biofluid_vs_tissue[df_biofluid_vs_tissue['ML'] == org_part]
-                        if not matching_row.empty:
-                            df_study.at[index, 'SampleTypeSub1'] = matching_row.iloc[0]['tissueVSbiofluid']
+                # for index, row in df_study.iterrows():
+                #     if pd.isna(row['SampleTypeSub1']):
+                #         org_part = row['Samples_Organism part']
+                #         matching_row = df_biofluid_vs_tissue[df_biofluid_vs_tissue['ML'] == org_part]
+                #         if not matching_row.empty:
+                #             df_study.at[index, 'SampleTypeSub1'] = matching_row.iloc[0]['tissueVSbiofluid']
 
 
                 #add ENV material column
@@ -370,9 +368,10 @@ def Metabolights2REDU(study_id, **kwargs):
             #######
             if 'Assay_Instrument' in df_study.columns:
                 df_study['Assay_Instrument'] = df_study['Assay_Instrument'].fillna('')
-                df_ms = pd.read_csv(os.path.join(transSheet_dir, 'MassSpectrometer_Metabolights.csv'))
-                df_study = df_study.merge(df_ms[['ML', 'MassSpectrometer']], left_on='Assay_Instrument', right_on='ML', how='left')
-                df_study.drop('ML', axis=1, inplace=True)
+
+                #rename column Assay_Instrument to MassSpectrometer
+                df_study = df_study.rename(columns={'Assay_Instrument': 'MassSpectrometer'})
+
 
             #add IonizationMethod/Polarity column
             #######
