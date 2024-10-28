@@ -32,7 +32,7 @@ process updateAllowedTerms {
 
 
 
-process downloadMetadata {
+process downloadMetadata_massive_and_github {
     publishDir "./nf_output", mode: 'copy'
 
     conda "$TOOL_FOLDER/conda_env.yml"
@@ -46,53 +46,12 @@ process downloadMetadata {
 
     """
     mkdir metadata_folder
+    git clone https://github.com/Wang-Bioinformatics-Lab/ReDU_metadata.git
+    mv ReDU_metadata/metadata/* metadata_folder/
     python $TOOL_FOLDER/gnps_downloader.py metadata_folder
     """
 }
 
-process validateMetadata {
-    publishDir "./nf_output", mode: 'copy'
-
-    conda "$TOOL_FOLDER/conda_env.yml"
-
-    input:
-    file 'file_paths.tsv'
-    file 'metadata_folder'
-    file 'allowed_terms.json'
-
-    output:
-    file 'passed_file_names.tsv'
-
-    """
-    python $TOOL_FOLDER/gnps_validator.py \
-    file_paths.tsv \
-    metadata_folder \
-    --AllowedTermJson_path 'allowed_terms.json'
-    """
-}
-
-process gnpsmatchName {
-    publishDir "./nf_output", mode: 'copy'
-
-    conda "$TOOL_FOLDER/conda_env.yml"
-
-    cache false
-
-    input:
-    // file 'passed_file_names.tsv'
-    val passed_file_names
-    file 'metadata_folder' 
-
-    output:
-    file 'gnps_metadata_all.tsv'
-
-    """
-    python $TOOL_FOLDER/gnps_name_matcher.py \
-    ${passed_file_names} \
-    metadata_folder \
-    gnps_metadata_all.tsv
-    """
-}
 
 process mwbRun {
     conda "$TOOL_FOLDER/conda_env.yml"
@@ -286,55 +245,8 @@ process prepare_ontologies {
 }
 
 
-process read_and_clean_github_redu_metadata {
-    publishDir "./nf_output", mode: 'copy'
-
-    conda "$TOOL_FOLDER/conda_env.yml"
-
-    input:
-    path UBERON_CL_PO_ontology_csv
-    path DOID_ontology_csv
-    path allowed_terms
-
-    output:
-    file 'metadata_folder'
-
-    """
-    mkdir metadata_folder
-    python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
-    /home/yasin/projects/ReDU_metadata/metadata \
-    metadata_folder \
-    --AllowedTermJson_path ${allowed_terms} \
-    --path_to_uberon_cl_po_csv ${UBERON_CL_PO_ontology_csv} \
-    --path_to_doid_csv ${DOID_ontology_csv}
-    """
-}
-
-process gnpsmatchName_github {
-    publishDir "./nf_output", mode: 'copy'
-
-    conda "$TOOL_FOLDER/conda_env.yml"
-
-    cache false
-
-    input:
-    // file 'passed_file_names.tsv'
-    val passed_file_names
-    file 'metadata_folder' 
-
-    output:
-    file 'gnps_metadata_all.tsv'
-
-    """
-    python $TOOL_FOLDER/gnps_name_matcher.py \
-    ${passed_file_names} \
-    metadata_folder \
-    gnps_metadata_all.tsv
-    """
-}
-
 // This cleans up the metadata from MassIVE into the appropriate CV terms
-process read_and_clean_before_github_redu_metadata {
+process gnpsHarmonize {
     publishDir "./nf_output", mode: 'copy'
 
     conda "$TOOL_FOLDER/conda_env.yml"
@@ -366,7 +278,7 @@ process read_and_clean_before_github_redu_metadata {
 }
 
 
-process gnpsmatchName_before_github {
+process gnpsmatchName {
     publishDir "./nf_output", mode: 'copy'
 
     conda "$TOOL_FOLDER/conda_env.yml"
@@ -389,24 +301,6 @@ process gnpsmatchName_before_github {
     """
 }
 
-// Downloading all the tentative microbeMASST and PlantMASST metadata
-process downloadMicrobePlantMASST {
-    publishDir "./nf_output", mode: 'copy'
-
-    conda "$TOOL_FOLDER/conda_env.yml"
-
-    input:
-    file x
-
-    output:
-    file 'microbe_masst_table.csv'
-    file 'plant_masst_table.csv'
-
-    """
-    curl -LJO https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv
-    curl -LJO https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/plant_masst_table.csv
-    """
-}
 
 // Getting microbmemasst data and putting it in a tentaive redu format
 process MASST_to_REDU {
@@ -466,15 +360,10 @@ workflow {
     (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division) = prepare_ontologies(1)
     allowed_terms = updateAllowedTerms(1)
 
-    // Github REDU data
-    // prepared_files_folder = read_and_clean_github_redu_metadata(uberon_cl_co_onto, doid_onto, allowed_terms)
-    // gnps_github_metadata_ch = gnpsmatchName_github('all', prepared_files_folder)
-    // need to compare with gnps_massive_metadata
-
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
-    (file_paths_ch, metadata_ch) = downloadMetadata(1)
-    msv_metadata_ch = read_and_clean_before_github_redu_metadata(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
-    gnps_metadata_ch = gnpsmatchName_before_github(msv_metadata_ch, allowed_terms)
+    (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
+    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
+    gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
 
     // MicrobeMASST and PlantMASST
     // (microbeMASST_table, plantMASST_table) = downloadMicrobePlantMASST(1)
