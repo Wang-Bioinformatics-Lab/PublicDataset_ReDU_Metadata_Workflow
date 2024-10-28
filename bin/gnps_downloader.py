@@ -51,6 +51,12 @@ def main():
     print("Total gnps file are ", len(gnps_list))
     os.system("echo Filepath list generated ... ")
 
+    # Get already present github files by listing file paths in the output_metadata_folder
+    existing_files = os.listdir(args.output_metadata_folder)
+
+    # Get list of basenames of existing files without file extension
+    existing_files = [os.path.basename(file).split(".")[0] for file in existing_files]
+
     # Set the download link for GNPS files
     download_link = "https://massive.ucsd.edu/ProteoSAFe/DownloadResultFile?forceDownload=true&file=f."
     print("echo We are downloading now ...")
@@ -60,6 +66,15 @@ def main():
 
     # Download files from the links in the gnps_list and store them locally
     for index, link in enumerate(gnps_list):
+
+        # get parentfolder of path in link
+        msv_id = link.split(os.sep)[0]
+
+        # Check if the files is already present from github
+        if msv_id in existing_files:
+            print(f"File {msv_id} already present in the folder from github!")
+            continue
+
         download_url = download_link + link
         r = requests.get(download_url, verify=False)
         file_name = os.path.join(args.output_metadata_folder, str(index) + "_gnps_metadata.tsv")
