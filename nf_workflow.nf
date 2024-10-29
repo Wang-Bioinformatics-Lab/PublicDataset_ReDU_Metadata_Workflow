@@ -46,8 +46,9 @@ process downloadMetadata_massive_and_github {
 
     """
     mkdir metadata_folder
-    git clone https://github.com/Wang-Bioinformatics-Lab/ReDU_metadata.git
-    mv ReDU_metadata/metadata/* metadata_folder/
+    wget https://github.com/Wang-Bioinformatics-Lab/ReDU_metadata/archive/refs/heads/main.zip
+    unzip main
+    mv ReDU_metadata-main/metadata/*.tsv metadata_folder/
     python $TOOL_FOLDER/gnps_downloader.py metadata_folder
     """
 }
@@ -366,7 +367,6 @@ workflow {
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
 
     // MicrobeMASST and PlantMASST
-    // (microbeMASST_table, plantMASST_table) = downloadMicrobePlantMASST(1)
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms)
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
