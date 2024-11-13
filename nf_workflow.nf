@@ -205,7 +205,7 @@ process mergeAllMetadata {
     file masst_metadata
 
     output:
-    file 'merged_metadata.tsv'
+    path 'merged_metadata_wo_cache_columns.tsv'
 
     """
     python $TOOL_FOLDER/merge_metadata.py \
@@ -353,6 +353,23 @@ process gnpsmatchName_masst {
     """
 }
 
+process add_cache_columns {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    file merged_ch
+
+    output:
+    file 'merged_metadata.tsv'
+
+    """
+    python $TOOL_FOLDER/add_cache_columns.py \
+    ${merged_ch} \
+    merged_metadata.tsv
+    """
+}
 
 
 workflow {
@@ -381,5 +398,9 @@ workflow {
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
     merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, masst_metadata_wFiles_ch)
+
+
+    // Add Cache columns
+    cache_enriched_metadata = add_cache_columns(merged_ch)
 
 }
