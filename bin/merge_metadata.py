@@ -29,16 +29,16 @@ def main():
 
 
     # read Workbench metadata
-    mwb_df = pd.read_csv(args.mwb_metadata, sep='\t')
+    mwb_df = pd.read_csv(args.mwb_metadata, sep='\t', dtype=str)
     mwb_df["DataSource"] = "Workbench"
 
 
     # read MetaboLights metadata
-    metabo_df = pd.read_csv(args.metabolights_metadata, sep='\t')
+    metabo_df = pd.read_csv(args.metabolights_metadata, sep='\t', dtype=str)
     metabo_df["DataSource"] = "MetaboLights"
 
     # read MASST metadata
-    masst_df = pd.read_csv(args.masst_metadata, sep='\t')
+    masst_df = pd.read_csv(args.masst_metadata, sep='\t', dtype=str)
     masst_df["DataSource"] = "GNPS"
 
     # merge GNPS and ReDU metadata

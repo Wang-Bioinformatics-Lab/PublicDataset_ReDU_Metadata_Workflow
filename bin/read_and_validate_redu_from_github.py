@@ -286,10 +286,7 @@ if __name__ == '__main__':
     all_metadata_files = glob.glob(f"{args.path_to_github_metadata}/*.tsv")
 
     print("Processing", len(all_metadata_files), "files")
-
-    # Debugging
-    # all_metadata_files = all_metadata_files[:20]
-    
+   
 
     for file_path in all_metadata_files:
     #for file_path in ["/home/yasin/projects/ReDU_metadata/metadata/redu_MSV000093329.tsv"]:
