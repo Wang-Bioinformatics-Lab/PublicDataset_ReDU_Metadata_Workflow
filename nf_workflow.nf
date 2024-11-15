@@ -355,6 +355,8 @@ process gnpsmatchName_masst {
 process add_cache_columns {
     publishDir "./nf_output", mode: 'copy'
 
+    cache false
+
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:

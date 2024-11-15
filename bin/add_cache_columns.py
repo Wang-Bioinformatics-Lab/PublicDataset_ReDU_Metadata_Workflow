@@ -41,10 +41,11 @@ if __name__ == "__main__":
 
     
     # subset the cache dataframe to only the columns we need
-    cache_df = cache_df[['usi', 'classification']]
+    cache_df = cache_df[['usi', 'classification', 'spectra_ms2']]
 
     #set name usi to USI
     cache_df.rename(columns={'usi':'USI'}, inplace=True)
+    cache_df.rename(columns={'spectra_ms2':'MS2spectra_count'}, inplace=True)
 
 
     # read the metadata file
