@@ -213,7 +213,7 @@ process mergeAllMetadata {
     $mwb_redu \
     $metabolights_redu \
     $masst_metadata \
-    merged_metadata.tsv
+    merged_metadata_wo_cache_columns.tsv
     """
 }
 
@@ -335,7 +335,6 @@ process gnpsmatchName_masst {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
-    cache false
 
     input:
     file 'adjusted_metadata_folder' 
