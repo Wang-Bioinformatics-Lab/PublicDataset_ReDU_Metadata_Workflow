@@ -48,7 +48,7 @@ if __name__ == "__main__":
     cache_df.rename(columns={'spectra_ms2':'MS2spectra_count'}, inplace=True)
 
 
-    cache_df['MS2spectra_count'] = pd.to_numeric(cache_df['MS2spectra_count'], errors='coerce').fillna(0).astype(int)
+    cache_df['MS2spectra_count'] = pd.to_numeric(cache_df['MS2spectra_count'], errors='coerce').fillna(-1).astype(int)
 
     # read the metadata file
     metadata_df = pd.read_csv(args.merged_metadata_path, sep='\t')
