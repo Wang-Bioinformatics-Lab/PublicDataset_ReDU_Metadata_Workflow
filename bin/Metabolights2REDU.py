@@ -369,8 +369,33 @@ def Metabolights2REDU(study_id, **kwargs):
             if 'Assay_Instrument' in df_study.columns:
                 df_study['Assay_Instrument'] = df_study['Assay_Instrument'].fillna('')
 
-                #rename column Assay_Instrument to MassSpectrometer
-                df_study = df_study.rename(columns={'Assay_Instrument': 'MassSpectrometer'})
+                prefixes = [
+                    "Thermo Scientific ",
+                    "Waters ",
+                    "Agilent ",
+                    "AB SCIEX ",
+                    "LECO ",
+                    "Bruker ",
+                    "Shimadzu "
+                ]
+
+                # Function to remove prefixes
+                def remove_prefixes(value, prefixes):
+                    for prefix in prefixes:
+                        if value.startswith(prefix):
+                            return value[len(prefix):]
+                    return value
+
+                # Apply the function to the column
+                df_study['Assay_Instrument'] = df_study['Assay_Instrument'].apply(lambda x: remove_prefixes(x, prefixes))
+
+                allowed_values_map = dict(zip(
+                    allowedTerm_dict["MassSpectrometer"]["allowed_values_matching_0"],
+                    allowedTerm_dict["MassSpectrometer"]["allowed_values"]
+                ))
+
+                df_study["MassSpectrometer"] = df_study["Assay_Instrument"].map(allowed_values_map)
+
 
 
             #add IonizationMethod/Polarity column
@@ -384,9 +409,9 @@ def Metabolights2REDU(study_id, **kwargs):
                 df_study.loc[df_study['Assay_Ion source'].str.contains('electrospray'), 'IonizationSourceAndPolarity'] = 'electrospray ionization'
                 df_study.loc[df_study['Assay_Ion source'].str.contains('electron ionization'), 'IonizationSourceAndPolarity'] = 'electron ionization'      
                 df_study.loc[df_study['Assay_Ion source'].str.contains('chemical ionization'), 'IonizationSourceAndPolarity'] = 'atmospheric pressure chemical ionization'
-                df_study.loc[df_study['Assay_Scan polarity'].str.contains('negative'), 'IonizationSourceAndPolarity'] += ' (negative)'
-                df_study.loc[df_study['Assay_Scan polarity'].str.contains('positive'), 'IonizationSourceAndPolarity'] += ' (positive)'
-                df_study.loc[df_study['Assay_Scan polarity'].str.contains('alternating'), 'IonizationSourceAndPolarity'] += ' (alternating)'
+                df_study.loc[df_study['Assay_Scan polarity'].str.contains('negative') & ~df_study['IonizationSourceAndPolarity'].str.contains("electron ionization"), 'IonizationSourceAndPolarity'] += ' (negative)'
+                df_study.loc[df_study['Assay_Scan polarity'].str.contains('positive') & ~df_study['IonizationSourceAndPolarity'].str.contains("electron ionization"), 'IonizationSourceAndPolarity'] += ' (positive)'
+                df_study.loc[df_study['Assay_Scan polarity'].str.contains('alternating') & ~df_study['IonizationSourceAndPolarity'].str.contains("electron ionization"), 'IonizationSourceAndPolarity'] += ' (alternating)'
 
 
             #add LC method
@@ -401,8 +426,8 @@ def Metabolights2REDU(study_id, **kwargs):
                 
                 if 'Assay_Column model' in df_study.columns:
                     df_study['Assay_Column model'] = df_study['Assay_Column model'].fillna('')
-                    df_study.loc[df_study['Assay_Column model'].str.contains('Phenyl', case=False) & df_study['Assay_Column model'].str.contains('Hexyl', case=False), 'ChromatographyAndPhase'] = ' (Phenyl-Hexyl)'
-                    df_study.loc[df_study['Assay_Column model'].str.contains('C18') & df_study['Assay_Column model'].str.contains('polar', case=False), 'ChromatographyAndPhase'] = ' (polar-C18)'
+                    df_study.loc[df_study['Assay_Column model'].str.contains('Phenyl', case=False) & df_study['Assay_Column model'].str.contains('Hexyl', case=False), 'ChromatographyAndPhase'] += ' (Phenyl-Hexyl)'
+                    df_study.loc[df_study['Assay_Column model'].str.contains('C18') & df_study['Assay_Column model'].str.contains('polar', case=False), 'ChromatographyAndPhase'] += ' (polar-C18)'
                     
                     df_study.loc[df_study['Assay_Column model'].str.contains('HSS T3') & ~df_study['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (C18)'
                     df_study.loc[df_study['Assay_Column model'].str.contains('C18') & ~df_study['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (C18)'
@@ -515,6 +540,11 @@ if __name__ == "__main__":
     # Read allowed terms json
     with open(allowedTermSheet_json, 'r') as file:
         allowedTerm_dict = json.load(file)
+
+    # Add terms for matching
+    allowed_values = allowedTerm_dict["MassSpectrometer"]["allowed_values"]
+    allowedTerm_dict["MassSpectrometer"]["allowed_values_matching_0"] = [value.split('|')[0] for value in allowed_values]
+
 
     # Read ontology tables
     ontology_table = pd.read_csv(args.path_to_uberon_cl_po_csv)
