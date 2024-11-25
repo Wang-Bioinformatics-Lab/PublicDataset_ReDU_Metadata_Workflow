@@ -5,6 +5,9 @@ TOOL_FOLDER = "$baseDir/bin"
 DATA_FOLDER = "$baseDir/data"
 
 
+params.old_redu = ''
+
+
 process updateAllowedTerms {
     publishDir "./nf_output", mode: 'copy'
 
@@ -380,6 +383,7 @@ process saveOlderData {
 
     input:
     path merged_ch
+    path old_redu
 
     output:
     path 'merged_with_old.tsv'
@@ -387,6 +391,7 @@ process saveOlderData {
     """
     python $TOOL_FOLDER/save_older_data.py \
     ${merged_ch} \
+    ${old_redu} \
     merged_with_old.tsv
     """
 }
@@ -420,7 +425,7 @@ workflow {
     merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, masst_metadata_wFiles_ch)
 
     // Make sure we dont loose older data
-    merged_with_old_ch = saveOlderData(merged_ch)
+    merged_with_old_ch = saveOlderData(merged_ch, params.old_redu)
 
     // Add Cache columns
     cache_enriched_metadata = add_cache_columns(merged_with_old_ch)

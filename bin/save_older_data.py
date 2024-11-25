@@ -7,14 +7,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Save older data')
     parser.add_argument('input', help='Input file path')
-    #parser.add_argument('older_data', help='Older data file path')
+    parser.add_argument('older_data', help='Older data file path')
     parser.add_argument('output', help='Output file path')
     args = parser.parse_args()
 
     
 
     df = pd.read_csv(args.input, dtype=str, sep = '\t')
-    df_older = pd.read_csv('https://redu.gnps2.org/dump', sep = '\t')
+    df_older = pd.read_csv(args.older_data, dtype=str, sep = '\t')
 
     df = pd.concat([df, df_older])
 
