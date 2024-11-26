@@ -6,26 +6,27 @@ import pandas as pd
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Save older data')
-    parser.add_argument('input', help='Input file path')
+    parser.add_argument('input_new_data', help='Input file path')
     parser.add_argument('older_data', help='Older data file path')
-    parser.add_argument('output', help='Output file path')
+    parser.add_argument('output_merged_data', help='Output file path for merged data')
     args = parser.parse_args()
 
-    
+    df_current = pd.read_csv(args.input, dtype=str, sep = '\t')
+    try:
+        df_older = pd.read_csv(args.older_data, dtype=str, sep = '\t')
+    except:
+        df_older = pd.DataFrame()
 
-    df = pd.read_csv(args.input, dtype=str, sep = '\t')
-    df_older = pd.read_csv(args.older_data, dtype=str, sep = '\t')
-
-    df = pd.concat([df, df_older])
+    df_merged = pd.concat([df_current, df_older])
 
     #unique by USI column
-    df = df.drop_duplicates(subset=['USI'])
+    df_merged = df_merged.drop_duplicates(subset=['USI'])
 
     #reindex
-    df.reset_index(drop=True, inplace=True)
+    df_merged.reset_index(drop=True, inplace=True)
 
 
-    df.to_csv(args.output, index=False, sep = '\t')
+    df_merged.to_csv(args.output, index=False, sep = '\t')
 
 
     
