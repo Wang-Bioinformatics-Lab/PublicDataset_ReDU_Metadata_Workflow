@@ -3,6 +3,7 @@ import argparse
 import requests
 from io import StringIO
 from time import sleep
+import numpy as np
 
 
 
@@ -50,8 +51,20 @@ if __name__ == "__main__":
 
     cache_df['MS2spectra_count'] = pd.to_numeric(cache_df['MS2spectra_count'], errors='coerce').fillna(-1).astype(int)
 
+    # making nan or inf to -1 in the MS2spectra_count column
+    cache_df['MS2spectra_count'] = cache_df['MS2spectra_count'].replace([np.inf, -np.inf], -1)
+    # making nan to -1
+    cache_df['MS2spectra_count'] = cache_df['MS2spectra_count'].fillna(-1)
+    # casting to int
+    cache_df['MS2spectra_count'] = cache_df['MS2spectra_count'].astype(int)
+    
+
+
     # read the metadata file
     metadata_df = pd.read_csv(args.merged_metadata_path, sep='\t')
+    
+    #drop columns to be added
+    metadata_df = metadata_df.drop(columns=['classification', 'MS2spectra_count'])
 
 
     # merge the metadata with the cache dataframe keeping all metadata rows
@@ -60,6 +73,13 @@ if __name__ == "__main__":
 
     # fill NA value in classification with Unclassified
     metadata_df['classification'].fillna('Unclassified', inplace=True)
+
+    # making nan or inf to -1 in the MS2spectra_count column
+    metadata_df['MS2spectra_count'] = metadata_df['MS2spectra_count'].replace([np.inf, -np.inf], -1)
+    # making nan to -1
+    metadata_df['MS2spectra_count'] = metadata_df['MS2spectra_count'].fillna(-1)
+    # casting to int
+    metadata_df['MS2spectra_count'] = metadata_df['MS2spectra_count'].astype(int)
 
 
     # write the metadata file with the new columns
