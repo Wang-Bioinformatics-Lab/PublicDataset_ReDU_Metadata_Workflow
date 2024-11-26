@@ -258,6 +258,7 @@
         "example": "sulfadimethoxine",
         "source": "-",
         "allowed_values": [
+            "biotin",
             "sulfadimethoxine;sulfachloropyridazine",
             "cocaine;cocaine-d3",
             "ampicillin",
@@ -320,6 +321,7 @@
         "source": "-",
         "allowed_values": [
             "reverse phase (C8)",
+            "porous graphitic carbon (PGC)",
             "reverse phase (Phenyl-Hexyl)",
             "gas chromatography (DB-5)",
             "reverse phase (NOS)",
