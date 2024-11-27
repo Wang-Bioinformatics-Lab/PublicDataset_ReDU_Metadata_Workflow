@@ -5,7 +5,8 @@ TOOL_FOLDER = "$baseDir/bin"
 DATA_FOLDER = "$baseDir/data"
 
 
-params.old_redu = ''
+//This is default empty file, we will overwrite this in web application
+params.old_redu = './data/empty_redu.tsv'
 
 
 process updateAllowedTerms {
@@ -425,7 +426,8 @@ workflow {
     merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, masst_metadata_wFiles_ch)
 
     // Make sure we dont loose older data
-    merged_with_old_ch = saveOlderData(merged_ch, params.old_redu)
+    old_redu_path_ch = Channel.fromPath(params.old_redu)
+    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch)
 
     // Add Cache columns
     cache_enriched_metadata = add_cache_columns(merged_with_old_ch)
