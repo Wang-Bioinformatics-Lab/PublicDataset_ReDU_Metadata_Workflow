@@ -11,7 +11,7 @@ if __name__ == "__main__":
     parser.add_argument('output_merged_data', help='Output file path for merged data')
     args = parser.parse_args()
 
-    df_current = pd.read_csv(args.input, dtype=str, sep = '\t')
+    df_current = pd.read_csv(args.input_new_data, dtype=str, sep = '\t')
     try:
         df_older = pd.read_csv(args.older_data, dtype=str, sep = '\t')
     except:
@@ -26,7 +26,7 @@ if __name__ == "__main__":
     df_merged.reset_index(drop=True, inplace=True)
 
 
-    df_merged.to_csv(args.output, index=False, sep = '\t')
+    df_merged.to_csv(args.output_merged_data, index=False, sep = '\t')
 
 
     
