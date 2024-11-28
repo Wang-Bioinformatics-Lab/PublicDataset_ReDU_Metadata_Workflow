@@ -191,9 +191,16 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, other_al
                 df['TaxonID'] = df['TaxonID'].astype(str)
                 df = pd.merge(df, NCBIRankDivision_table, on='TaxonID', how='left')
                 df.drop(columns=['TaxonID'], inplace=True)
-                df['NCBIRank'].fillna(missing_value, inplace=True)
-                df['NCBIDivision'].fillna(missing_value, inplace=True)
 
+                if 'NCBIRank' in df.columns:
+                    df['NCBIRank'] = df['NCBIRank'].fillna(missing_value)
+                else:
+                    df['NCBIRank'] = missing_value
+
+                if 'NCBIDivision' in df.columns:
+                    df['NCBIDivision'] = df['NCBIDivision'].fillna(missing_value)
+                else:
+                    df['NCBIDivision'] = missing_value
 
 
 
