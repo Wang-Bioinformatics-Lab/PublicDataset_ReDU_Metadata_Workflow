@@ -62,9 +62,14 @@ if __name__ == "__main__":
 
     # read the metadata file
     metadata_df = pd.read_csv(args.merged_metadata_path, sep='\t')
+
+
+    if 'classification' in metadata_df.columns:
+        metadata_df = metadata_df.drop(columns=['classification'])
+
+    if 'MS2spectra_count' in metadata_df.columns:
+        metadata_df = metadata_df.drop(columns=['MS2spectra_count'])       
     
-    #drop columns to be added
-    metadata_df = metadata_df.drop(columns=['classification', 'MS2spectra_count'])
 
 
     # merge the metadata with the cache dataframe keeping all metadata rows
