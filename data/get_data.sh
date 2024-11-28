@@ -3,17 +3,17 @@
 # Get the directory where the script is located
 SCRIPT_DIR="$(dirname "$0")"
 
-# Function to download a file if it does not already exist and echo its download status
+# Function to download a file if and replace it if it exists
 download_file() {
     local url=$1
     local path=$2
-    if [ ! -f "$path" ]; then
-        echo "Downloading $(basename "$path")..."
-        curl -o "$path" "$url"
-        echo "$(basename "$path") has been downloaded to ${SCRIPT_DIR}"
+    if [ -f "$path" ]; then
+        echo "$(basename "$path") already exists. Replacing it..."
     else
-        echo "$(basename "$path") already exists. Skipping download."
+        echo "$(basename "$path") does not exist. Downloading..."
     fi
+    curl -o "$path" "$url"
+    echo "$(basename "$path") has been downloaded to $(dirname "$path")"
 }
 
 # Download commands with check for each file
@@ -21,7 +21,7 @@ download_file "http://aber-owl.net/media/ontologies/UBERON/304/uberon.owl" "${SC
 download_file "http://aber-owl.net/media/ontologies/PO/27/po.owl" "${SCRIPT_DIR}/po.owl"
 download_file "http://aber-owl.net/media/ontologies/CL/109/cl.owl" "${SCRIPT_DIR}/cl.owl"
 download_file "http://aber-owl.net/media/ontologies/DOID/687/doid.owl" "${SCRIPT_DIR}/doid.owl"
-download_file "http://aber-owl.net/media/ontologies/MS/194/ms.owl" "${SCRIPT_DIR}/ms.owl"
+download_file "http://aber-owl.net/media/ontologies/MS/189/ms.owl" "${SCRIPT_DIR}/ms.owl"
 download_file "https://raw.githubusercontent.com/EnvironmentOntology/envo/eee9040f3ff04b4cf21fdb632fb8c62333d843cf/subsets/biome-hierarchy.owl" "${SCRIPT_DIR}/biome-hierarchy.owl"
 download_file "https://raw.githubusercontent.com/EnvironmentOntology/envo/master/subsets/material-hierarchy.owl" "${SCRIPT_DIR}/material-hierarchy.owl"
 download_file "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv" "${SCRIPT_DIR}/microbe_masst_table.csv"
