@@ -8,7 +8,7 @@ import re
 from urllib.parse import unquote
 
 def create_usi(row):
-    return f"mzspec:DSFP_{row['uuid']}:{row['file_names']}"
+    return f"mzspec:DSFP_{row['uuid']}:{row['file_paths']}"
 
 
 def _get_existing_datasets(path_to_file):
@@ -29,6 +29,11 @@ def extract_file_name(url):
     
     return unquote(url_after_version)
 
+def extract_file_path(url):
+    # Step 1: Remove everything before and including the first occurrence of "sample/{some_number}/"
+    file_path = re.sub(r'https://files.dsfp.norman-data.eu/','', url)
+        
+    return unquote(file_path)
 
 def main(output_filename, study_id, filter_extensions, existing_datasets):
     # Step 1: Fetch the list of datasets
@@ -80,7 +85,7 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
                     continue
 
                 # Melt the file columns into a single column 'file_urls'
-                df_melted = df_files[file_cols].melt(value_name='file_urls')
+                df_melted = df_files[['sample_id'] + file_cols].melt(id_vars=['sample_id'], value_name='file_urls')
                 # Remove rows with missing or empty file paths
                 df_melted = df_melted.dropna(subset=['file_urls'])
                 df_melted = df_melted[df_melted['file_urls'].astype(str).str.strip() != '']
@@ -88,6 +93,7 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
 
                 # Make column file_names by extracing the part between "{internal_id}" and "?VersionId". if "?VersionId" does not exist take until the end of the string
                 df_melted['file_names'] = df_melted['file_urls'].apply(lambda url: extract_file_name(url))
+                df_melted['file_paths'] = df_melted['file_urls'].apply(lambda url: extract_file_path(url))
 
 
                 # Add dataset information columns
@@ -122,7 +128,7 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
 
         # rename columns
         combined_df = combined_df.rename(columns={'uuid': 'study_id', 'file_names': 'file_path', 'file_urls': 'file_url'})
-        combined_df = combined_df[['study_id', 'internal_id', 'file_path', 'file_url', 'USI']]
+        combined_df = combined_df[['study_id', 'internal_id', 'sample_id', 'file_path', 'file_url', 'USI']]
 
         # Step 4: Save the result as a TSV file
         combined_df.to_csv(output_filename, sep='\t', index=False)
