@@ -337,7 +337,8 @@
             "reverse phase (polar-C18)",
             "mixed mode (Scherzo SM-C18)",
             "reverse phase (C18)",
-            "reverse phase (C30)"
+            "reverse phase (C30)",
+            "gas chromatography (NOS)"
         ]
     },
     "SubjectIdentifierAsRecorded": {

@@ -17,12 +17,13 @@ download_file() {
 }
 
 # Download commands with check for each file
-download_file "http://aber-owl.net/media/ontologies/UBERON/304/uberon.owl" "${SCRIPT_DIR}/uberon.owl"
+download_file "http://aber-owl.net/media/ontologies/UBERON/307/uberon.owl" "${SCRIPT_DIR}/uberon.owl"
 download_file "http://aber-owl.net/media/ontologies/PO/27/po.owl" "${SCRIPT_DIR}/po.owl"
-download_file "http://aber-owl.net/media/ontologies/CL/109/cl.owl" "${SCRIPT_DIR}/cl.owl"
-download_file "http://aber-owl.net/media/ontologies/DOID/687/doid.owl" "${SCRIPT_DIR}/doid.owl"
-download_file "http://aber-owl.net/media/ontologies/MS/189/ms.owl" "${SCRIPT_DIR}/ms.owl"
-download_file "https://raw.githubusercontent.com/EnvironmentOntology/envo/eee9040f3ff04b4cf21fdb632fb8c62333d843cf/subsets/biome-hierarchy.owl" "${SCRIPT_DIR}/biome-hierarchy.owl"
+download_file "http://aber-owl.net/media/ontologies/CL/112/cl.owl" "${SCRIPT_DIR}/cl.owl"
+download_file "http://aber-owl.net/media/ontologies/DOID/694/doid.owl" "${SCRIPT_DIR}/doid.owl"
+download_file "http://aber-owl.net/media/ontologies/MS/214/ms.owl" "${SCRIPT_DIR}/ms.owl"
+#download_file "https://raw.githubusercontent.com/EnvironmentOntology/envo/eee9040f3ff04b4cf21fdb632fb8c62333d843cf/subsets/biome-hierarchy.owl" "${SCRIPT_DIR}/biome-hierarchy.owl"
+download_file "https://raw.githubusercontent.com/EnvironmentOntology/envo/master/subsets/biome-hierarchy.owl" "${SCRIPT_DIR}/biome-hierarchy.owl"
 download_file "https://raw.githubusercontent.com/EnvironmentOntology/envo/master/subsets/material-hierarchy.owl" "${SCRIPT_DIR}/material-hierarchy.owl"
 download_file "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv" "${SCRIPT_DIR}/microbe_masst_table.csv"
 download_file "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/plant_masst_table.csv" "${SCRIPT_DIR}/plant_masst_table.csv"

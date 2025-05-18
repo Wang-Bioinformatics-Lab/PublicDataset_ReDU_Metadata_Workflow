@@ -8,7 +8,7 @@ import re
 from urllib.parse import unquote
 
 def create_usi(row):
-    return f"mzspec:DSFP_{row['uuid']}:{row['file_paths']}"
+    return f"mzspec:NORMAN-{row['uuid']}:{row['file_paths']}"
 
 
 def _get_existing_datasets(path_to_file):
@@ -19,6 +19,48 @@ def _get_existing_datasets(path_to_file):
     except:
         return set()
     
+def process_dataset_files(
+    df_files,
+    internal_id=None,
+    uuid=None,
+    title=None,
+    filter_extensions=True,
+):
+    file_cols = ["data_independent", "data_dependent", "data_fullscan"]
+    missing_cols = [c for c in file_cols if c not in df_files.columns]
+    if missing_cols:
+        print(f"Dataset {internal_id or '(unknown)'} missing columns: {missing_cols}. Skipping.")
+        return pd.DataFrame()
+
+    # reshape → one file per row
+    df = (
+        df_files[["sample_id"] + file_cols]
+        .melt(id_vars=["sample_id"], value_name="file_urls")
+        .dropna(subset=["file_urls"])
+    )
+    df = df[df["file_urls"].astype(str).str.strip() != ""]
+
+    # filenames, paths
+    df["file_names"] = df["file_urls"].apply(extract_file_name)
+    df["file_paths"] = df["file_urls"].apply(extract_file_path)
+
+    # optional metadata columns
+    if internal_id is not None:
+        df["internal_id"] = internal_id
+    if uuid is not None:
+        df["uuid"] = uuid
+    if title is not None:
+        df["title"] = title
+
+    # extension filter
+    if filter_extensions:
+        exts = (".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d")
+        df = df[df["file_names"].str.lower().str.endswith(exts)]
+
+    # USI
+    df["USI"] = df.apply(create_usi, axis=1)
+
+    return df
 
 def extract_file_name(url):
     # Step 1: Remove everything before and including the first occurrence of "sample/{some_number}/"
@@ -77,37 +119,14 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
                 df_files = pd.read_csv(csv_data)
                 print(f"Fetched file data for dataset {internal_id}")
 
-                # Define expected file columns
-                file_cols = ['data_independent', 'data_dependent', 'data_fullscan']
-                missing_cols = [col for col in file_cols if col not in df_files.columns]
-                if missing_cols:
-                    print(f"Dataset {internal_id} missing columns: {missing_cols}. Skipping.")
-                    continue
-
-                # Melt the file columns into a single column 'file_urls'
-                df_melted = df_files[['sample_id'] + file_cols].melt(id_vars=['sample_id'], value_name='file_urls')
-                # Remove rows with missing or empty file paths
-                df_melted = df_melted.dropna(subset=['file_urls'])
-                df_melted = df_melted[df_melted['file_urls'].astype(str).str.strip() != '']
-
-
-                # Make column file_names by extracing the part between "{internal_id}" and "?VersionId". if "?VersionId" does not exist take until the end of the string
-                df_melted['file_names'] = df_melted['file_urls'].apply(lambda url: extract_file_name(url))
-                df_melted['file_paths'] = df_melted['file_urls'].apply(lambda url: extract_file_path(url))
-
-
-                # Add dataset information columns
-                df_melted['uuid'] = uuid
-                df_melted['internal_id'] = internal_id
-                df_melted['title'] = title
-
-                if filter_extensions == 'True':
-                    extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
-                    df_melted = df_melted[df_melted['file_names'].str.lower().str.endswith(tuple(extensions))]
-
-                # Create USIs
-                df_melted['USI'] = df_melted.apply(create_usi, axis=1)
-
+                # Process the DataFrame
+                df_melted = process_dataset_files(
+                    df_files,
+                    internal_id=internal_id,
+                    uuid=uuid,
+                    title=title,
+                    filter_extensions=filter_extensions
+                )
 
                 # Append the processed DataFrame to our list
                 dfs.append(df_melted)
