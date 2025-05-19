@@ -28,7 +28,7 @@ process updateAllowedTerms {
     --path_to_po_owl $DATA_FOLDER/po.owl \
     --path_to_cl_owl $DATA_FOLDER/cl.owl \
     --path_to_doid_owl $DATA_FOLDER/doid.owl \
-    --path_to_ms_owl $DATA_FOLDER/ms.owl \
+    --path_to_ms_owl $DATA_FOLDER/psi_test.owl \
     --path_to_material_envs_owl $DATA_FOLDER/material-hierarchy.owl \
     --path_to_biome_envs_owl $DATA_FOLDER/biome-hierarchy.owl
     """
@@ -196,6 +196,36 @@ process formatml {
     """
 }
 
+process normanRun {
+
+    cache false
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    publishDir "./nf_output", mode: 'copy'
+
+    input:
+    path uberon_po_cl_csv_path
+    path ENVO_bio_csv
+    path ENVO_material_csv
+    path ncbi_rank_division
+    path allowed_terms
+
+    output:
+    file 'NORMAN2REDU_ALL.tsv'
+
+
+    """
+    python $TOOL_FOLDER/NORMAN_to_REDU.py \
+    --study_id ALL  \
+    --path_to_allowed_term_json ${allowed_terms} \
+    --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
+    --path_to_envo_biome_csv ${ENVO_bio_csv} \
+    --path_to_envo_material_csv ${ENVO_material_csv} \
+    --path_ncbi_rank_division ${ncbi_rank_division} \
+    --output NORMAN2REDU_ALL.tsv
+    """
+}
 
 process mergeAllMetadata {
     publishDir "./nf_output", mode: 'copy'
@@ -206,6 +236,7 @@ process mergeAllMetadata {
     file gnps_metadata
     file mwb_redu
     file metabolights_redu
+    file norman_redu
     file masst_metadata
 
     output:
@@ -213,11 +244,12 @@ process mergeAllMetadata {
 
     """
     python $TOOL_FOLDER/merge_metadata.py \
-    $gnps_metadata \
-    $mwb_redu \
-    $metabolights_redu \
-    $masst_metadata \
-    merged_metadata_wo_cache_columns.tsv
+    --gnps_metadata $gnps_metadata \
+    --mwb_metadata $mwb_redu \
+    --metabolights_metadata $metabolights_redu \
+    --norman_metadata $norman_redu \
+    --masst_metadata $masst_metadata \
+    --output_metadata merged_metadata_wo_cache_columns.tsv
     """
 }
 
@@ -423,7 +455,12 @@ workflow {
     ml_files_ch = mlFiles(1)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
-    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, masst_metadata_wFiles_ch)
+    // NORMAN
+    norman_metadata_ch = normanRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
+
+    // Combine everything
+    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch)
+
 
     // Make sure we dont loose older data
     old_redu_path_ch = Channel.fromPath(params.old_redu)
