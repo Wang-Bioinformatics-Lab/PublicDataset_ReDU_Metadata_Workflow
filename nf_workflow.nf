@@ -198,8 +198,6 @@ process formatml {
 
 process normanRun {
 
-    cache false
-
     conda "$TOOL_FOLDER/conda_env.yml"
 
     publishDir "./nf_output", mode: 'copy'
