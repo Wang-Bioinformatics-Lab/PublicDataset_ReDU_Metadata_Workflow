@@ -128,7 +128,7 @@ def Metabolights2REDU(study_id, **kwargs):
 
     #get study assays if they are MS. There can be multiple assay tables in the same study
     for index, assay_json in enumerate(study_assays):
-        if assay_json['technology'] == 'mass spectrometry':        
+        if assay_json['technology'] == 'mass spectrometry' or assay_json['technology'] == 'mass spectrometry assay':        
 
             # Extract headers in the correct order
             headers = [None] * len(assay_json['assayTable']['fields'])
@@ -139,6 +139,8 @@ def Metabolights2REDU(study_id, **kwargs):
             df = rename_duplicated_column_names(df)
 
             df.columns = headers
+
+            print(f'Assay {index} has {len(df)} rows and {len(df.columns)} columns.')
             
             ms_study_assays.append(df)
 
@@ -160,6 +162,8 @@ def Metabolights2REDU(study_id, **kwargs):
         # Concatenate all dataframes into a single dataframe
         df_assays = pd.concat(aligned_dfs, ignore_index=True)
 
+        print(f'Assay table has {len(df_assays)} rows and {len(df_assays.columns)} columns.')
+
         #get info on samples (there is only one sample table per study)
         headers = [None] * len(study_details['content']['sampleTable']['fields'])
         for key, value in study_details['content']['sampleTable']['fields'].items():
@@ -171,6 +175,8 @@ def Metabolights2REDU(study_id, **kwargs):
     
         df_study = df_assays.merge(df_samples, left_on='Assay_Sample Name', right_on='Samples_Sample Name', how='inner')
         df_study['row_id'] = range(1, len(df_study) + 1)
+
+        print(f'Sample table has {len(df_study)} rows and {len(df_study.columns)} columns.')
 
         # Duplicate rows if we have mzml AND raw files
         df_study_raw = pd.DataFrame()
@@ -184,6 +190,7 @@ def Metabolights2REDU(study_id, **kwargs):
                 df_study_raw.drop(columns=['Assay_Raw Spectral Data File'], inplace=True)
             if 'Assay_Derived Spectral Data File' in df_study_raw.columns:
                 df_study_raw.drop(columns=['Assay_Derived Spectral Data File'], inplace=True)
+            print(f'Assay table has {len(df_study_raw)} rows and {len(df_study_raw.columns)} columns.')
 
         df_study_mzml = pd.DataFrame()
         if 'Assay_Derived Spectral Data File' in df_study.columns:
@@ -194,6 +201,7 @@ def Metabolights2REDU(study_id, **kwargs):
                 df_study_mzml.drop(columns=['Assay_Raw Spectral Data File'], inplace=True)
             if 'Assay_Derived Spectral Data File' in df_study_mzml.columns:
                 df_study_mzml.drop(columns=['Assay_Derived Spectral Data File'], inplace=True)
+            print(f'Assay table has {len(df_study_mzml)} rows and {len(df_study_mzml.columns)} columns.')
 
         if len(df_study_raw) > 0 and len(df_study_mzml) > 0:
             df_study = pd.concat([df_study_mzml, df_study_raw], ignore_index=True).copy(deep=True)
@@ -216,6 +224,8 @@ def Metabolights2REDU(study_id, **kwargs):
         # List of allowed extensions
         allowed_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
         df_study = df_study[df_study['filename_lower'].apply(lambda x: any(x.endswith(ext) for ext in allowed_extensions))]
+
+        print(f'Assay table has {len(df_study)} rows and {len(df_study.columns)} columns.')
 
         if len(df_study) == 0:
             return None
@@ -256,6 +266,8 @@ def Metabolights2REDU(study_id, **kwargs):
                 processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
                                     for taxonomy in df_study['NCBITaxonomy'].unique()
                                     if '|' in taxonomy and 'None' not in taxonomy}
+                
+                print(f'Found {len(processed_taxonomy)} unique taxonomy IDs.')
 
 
                 df_study.loc[:,'SampleType'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[0] 
@@ -500,6 +512,8 @@ def Metabolights2REDU(study_id, **kwargs):
             df_study = df_study[df_study['count'] == 1]
             df_study = df_study.drop(columns=['count'])
 
+            print(f'We are adding {len(df_study)} samples to the REDU table for study {study_id}.')
+
             return df_study
 
 
@@ -560,6 +574,7 @@ if __name__ == "__main__":
     redu_table_single = pd.DataFrame()
     for study_id in tqdm(public_metabolights_studies):
         try:
+            print(f'Processing study {study_id}...')
             redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                   ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table)
         except Exception as e:
