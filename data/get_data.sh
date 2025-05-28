@@ -32,11 +32,11 @@ download_file "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip" "${SCRIPT_D
 # Unzip taxdmp.zip if it has been downloaded
 if [ -f "${SCRIPT_DIR}/taxdmp.zip" ]; then
     echo "Unzipping taxdmp.zip..."
-    unzip -j "${SCRIPT_DIR}/taxdmp.zip" "names.dmp" -d "${SCRIPT_DIR}"
+    unzip -o -j "${SCRIPT_DIR}/taxdmp.zip" "names.dmp" -d "${SCRIPT_DIR}"
     echo "names.dmp has been extracted."
-    unzip -j "${SCRIPT_DIR}/taxdmp.zip" "nodes.dmp" -d "${SCRIPT_DIR}"
+    unzip -o -j "${SCRIPT_DIR}/taxdmp.zip" "nodes.dmp" -d "${SCRIPT_DIR}"
     echo "nodes.dmp has been extracted."
-    unzip -j "${SCRIPT_DIR}/taxdmp.zip" "division.dmp" -d "${SCRIPT_DIR}"
+    unzip -o -j "${SCRIPT_DIR}/taxdmp.zip" "division.dmp" -d "${SCRIPT_DIR}"
     echo "division.dmp has been extracted."
     
     # Remove the zip file to clean up
