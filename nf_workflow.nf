@@ -28,7 +28,7 @@ process updateAllowedTerms {
     --path_to_po_owl $DATA_FOLDER/po.owl \
     --path_to_cl_owl $DATA_FOLDER/cl.owl \
     --path_to_doid_owl $DATA_FOLDER/doid.owl \
-    --path_to_ms_owl $DATA_FOLDER/psi_test.owl \
+    --path_to_ms_owl $DATA_FOLDER/ms.owl \
     --path_to_material_envs_owl $DATA_FOLDER/material-hierarchy.owl \
     --path_to_biome_envs_owl $DATA_FOLDER/biome-hierarchy.owl
     """
