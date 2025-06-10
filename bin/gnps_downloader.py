@@ -19,7 +19,6 @@ def main():
     print("echo Importing Done!")
 
     # Set the URL for GNPS metadata CSV file and read it using pandas
-    #gnps_metadata_link = "https://datasetcache.gnps2.org/database/filename.csv?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=max"
     gnps_metadata_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=max"
     gnps_metadata_response = requests.get(gnps_metadata_link)
 
