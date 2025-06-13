@@ -265,6 +265,7 @@
         "example": "sulfadimethoxine",
         "source": "-",
         "allowed_values": [
+            "1,2-diheptadecanoyl-sn-glycero-3-phosphocholine",
             "biotin",
             "sulfadimethoxine;sulfachloropyridazine",
             "cocaine;cocaine-d3",
