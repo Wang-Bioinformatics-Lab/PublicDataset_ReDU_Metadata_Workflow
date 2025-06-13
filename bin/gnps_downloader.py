@@ -19,7 +19,7 @@ def main():
     print("echo Importing Done!")
 
     # Set the URL for GNPS metadata CSV file and read it using pandas
-    gnps_metadata_link = "https://gnps-datasetcache.ucsd.edu/database/filename.csv?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=max"
+    gnps_metadata_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=max"
     gnps_metadata_response = requests.get(gnps_metadata_link)
 
     # Save response as a temp file
@@ -32,7 +32,8 @@ def main():
     print("echo GNPS CSV Read Done!")
 
     # Convert the create time column to a datetime format
-    gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'])
+    gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'], errors='coerce')
+
 
     # Sort the DataFrame by the create time column
     gnps_df = gnps_df.sort_values(by='create_time')
