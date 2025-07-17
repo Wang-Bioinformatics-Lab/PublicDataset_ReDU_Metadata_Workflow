@@ -284,6 +284,7 @@
             "coumarin-314",
             "biochanin A",
             "caffeine;sambunigrin",
+            "caffeine;andrographolide",
             "sulfamethizole",
             "ribitol",
             "cholic_acid-d4;lithocholic_acid-d4",
@@ -843,6 +844,33 @@
         "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/material-hierarchy.tsv",
         "allowed_values": []
     },
+    "ENVOBroadScale": {
+        "generate": "False",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "In this field, report which major environmental system your sample or specimen came from. The systems identified should have a coarse spatial grain, to provide the general environmental context of where the sampling was done (e.g. were you in the desert or a rainforest?).",
+        "example": "freshwater biome",
+        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.tsv",
+        "allowed_values": []
+    },
+    "ENVOLocalScale": {
+        "generate": "False",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "In this field, report the entity or entities which are in your sample or specimen’s local vicinity and which you believe have significant causal influences on your sample or specimen.",
+        "example": "freshwater biome",
+        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.tsv",
+        "allowed_values": []
+    },
+    "ENVOMediumScale": {
+        "generate": "False",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "In this field, report which environmental material or materials (pipe separated) immediately surrounded your sample or specimen prior to sampling.",
+        "example": "soil",
+        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/material-hierarchy.tsv",
+        "allowed_values": []
+    },
     "ENVOEnvironmentBiomeIndex": {
         "generate": "True",
         "type": "generated",
@@ -860,7 +888,34 @@
         "example": "ENVO:00002007",
         "source": "-",
         "allowed_values": []
-    },  
+    },
+    "ENVOLocalScaleIndex": {
+        "generate": "True",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "(automatically generated) The index of the ENVOLocalScale.",
+        "example": "soil",
+        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.tsv",
+        "allowed_values": []
+    },
+    "ENVOBroadScaleIndex": {
+        "generate": "True",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "(automatically generated) The index of the ENVOBroadScale.",
+        "example": "soil",
+        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.tsv",
+        "allowed_values": []
+    },
+    "ENVOMediumScaleIndex": {
+        "generate": "True",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "(automatically generated) The index of the ENVOMediumScale.",
+        "example": "soil",
+        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/material-hierarchy.tsv",
+        "allowed_values": []
+    },       
     "USI": {
         "generate": "True",
         "type": "generated",
