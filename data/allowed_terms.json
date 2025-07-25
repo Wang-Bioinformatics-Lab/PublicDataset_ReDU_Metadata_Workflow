@@ -873,7 +873,7 @@
     },
     "ENVOEnvironmentBiomeIndex": {
         "generate": "True",
-        "type": "generated",
+        "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment biome.",
         "example": "ENVO:00000446",
@@ -882,7 +882,7 @@
     },
     "ENVOEnvironmentMaterialIndex": {
         "generate": "True",
-        "type": "generated",
+        "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment material.",
         "example": "ENVO:00002007",
@@ -895,7 +895,7 @@
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOLocalScale.",
         "example": "soil",
-        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.tsv",
+        "source": "",
         "allowed_values": []
     },
     "ENVOBroadScaleIndex": {
@@ -904,7 +904,7 @@
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOBroadScale.",
         "example": "soil",
-        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.tsv",
+        "source": "",
         "allowed_values": []
     },
     "ENVOMediumScaleIndex": {
@@ -913,7 +913,7 @@
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOMediumScale.",
         "example": "soil",
-        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/material-hierarchy.tsv",
+        "source": "",
         "allowed_values": []
     },       
     "USI": {

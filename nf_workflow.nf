@@ -231,17 +231,19 @@ process mergeAllMetadata {
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
-    file gnps_metadata
-    file mwb_redu
-    file metabolights_redu
-    file norman_redu
-    file masst_metadata
+    path allowed_terms
+    path gnps_metadata
+    path mwb_redu
+    path metabolights_redu
+    path norman_redu
+    path masst_metadata
 
     output:
     path 'merged_metadata_wo_cache_columns.tsv'
 
     """
     python $TOOL_FOLDER/merge_metadata.py \
+    --path_to_allowed_term_json ${allowed_terms} \
     --gnps_metadata $gnps_metadata \
     --mwb_metadata $mwb_redu \
     --metabolights_metadata $metabolights_redu \
@@ -457,7 +459,7 @@ workflow {
     norman_metadata_ch = normanRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
 
     // Combine everything
-    merged_ch = mergeAllMetadata(gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch)
+    merged_ch = mergeAllMetadata(allowed_terms, gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch)
 
 
     // Make sure we dont loose older data
