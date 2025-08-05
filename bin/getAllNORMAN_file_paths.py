@@ -5,7 +5,7 @@ import pandas as pd
 from io import StringIO
 from tqdm import tqdm
 import re
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
 
 def create_usi(row):
     return f"mzspec:NORMAN-{row['uuid']}:{row['file_paths']}"
@@ -40,9 +40,10 @@ def process_dataset_files(
     )
     df = df[df["file_urls"].astype(str).str.strip() != ""]
 
-    # filenames, paths
+    # filenames, paths, url
     df["file_names"] = df["file_urls"].apply(extract_file_name)
     df["file_paths"] = df["file_urls"].apply(extract_file_path)
+    df["file_urls"] = df["file_urls"].apply(remove_version_from_url)
 
     # optional metadata columns
     if internal_id is not None:
@@ -74,8 +75,23 @@ def extract_file_name(url):
 def extract_file_path(url):
     # Step 1: Remove everything before and including the first occurrence of "sample/{some_number}/"
     file_path = re.sub(r'https://files.dsfp.norman-data.eu/','', url)
-        
-    return unquote(file_path)
+
+    # Step 2: Remove everything from "?VersionId" onwards if it exists
+    file_path_after_version = re.sub(r'\?VersionId.*', '', file_path)
+
+    return unquote(file_path_after_version)
+
+
+def remove_version_from_url(url):
+
+    # Step 1: Remove everything before and including the first occurrence of "sample/{some_number}/"
+    #file_path = re.sub(r'https://files.dsfp.norman-data.eu/','', url)
+
+    # Step 2: Remove everything from "?VersionId" onwards if it exists
+    url_after_version = re.sub(r'\?VersionId.*', '', url)
+    
+    return url_after_version
+
 
 def main(output_filename, study_id, filter_extensions, existing_datasets):
     # Step 1: Fetch the list of datasets
