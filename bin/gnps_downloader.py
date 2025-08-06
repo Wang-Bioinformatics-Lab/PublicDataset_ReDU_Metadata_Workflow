@@ -9,6 +9,56 @@ import collections
 import argparse
 
 
+def download_gnps_metadata(temp_file_path="temp.csv"):
+    base_url = "https://datasetcache.gnps2.org/datasette/database/filename.csv"
+    params = {
+        "_sort": "filepath",
+        "filepath__endswith": "gnps_metadata.tsv",
+        "_size": 1000,
+    }
+
+    all_chunks = []
+    next_url = base_url
+    first = True
+
+    print("Starting paginated download...")
+
+    while next_url:
+        print(f"Fetching: {next_url}")
+        try:
+            response = requests.get(next_url, params=params if first else {}, timeout=60)
+        except Exception as e:
+            print(f"Request failed: {e}")
+            break
+
+        if response.status_code != 200 or "html" in response.headers.get("Content-Type", ""):
+            print("Bad response, likely server error:")
+            print(response.text[:500])
+            break
+
+        df_chunk = pd.read_csv(io.StringIO(response.text))
+        if df_chunk.empty:
+            print("No more data.")
+            break
+
+        all_chunks.append(df_chunk)
+
+        # Check for next page
+        next_link = None
+        if "_next=" in response.url:
+            next_link = response.url.split("_next=")[-1]
+            next_url = f"{base_url}?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=1000&_next={next_link}"
+        else:
+            break
+
+        first = False
+
+    # Combine and save to temp file
+    gnps_df = pd.concat(all_chunks, ignore_index=True)
+    gnps_df.to_csv(temp_file_path, index=False)
+    print(f"Saved metadata to {temp_file_path}")
+    return gnps_df
+
 def main():
     # Args parse
     parser = argparse.ArgumentParser(description='Download GNPS files')
@@ -18,15 +68,8 @@ def main():
     # Print message to indicate importing is done
     print("echo Importing Done!")
 
-    # Set the URL for GNPS metadata CSV file and read it using pandas
-    gnps_metadata_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=max"
-    gnps_metadata_response = requests.get(gnps_metadata_link)
 
-    # Save response as a temp file
-    with open("temp.csv", "wb") as f:
-        f.write(gnps_metadata_response.content)
-
-    gnps_df = pd.read_csv("temp.csv")
+    gnps_df = download_gnps_metadata()
 
     # Print message to indicate that the CSV file has been read
     print("echo GNPS CSV Read Done!")

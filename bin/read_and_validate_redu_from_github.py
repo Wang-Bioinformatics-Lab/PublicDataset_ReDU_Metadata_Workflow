@@ -55,6 +55,40 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     envome_material_ontology_table['Label'] = envome_material_ontology_table['Label'].astype(str)
 
+    #prepare environment medium scale table
+    if 'ENVOEnvironmentMaterialIndex_table' in kwargs.keys():
+        envome_medium_scale_ontology_table = kwargs['ENVOEnvironmentMaterialIndex_table']
+        envome_medium_scale_ontology_table = envome_medium_scale_ontology_table.rename(
+            columns={'ENVOEnvironmentMaterialIndex': 'ENVOMediumScaleIndex'}
+            )
+    else:
+        envome_medium_scale_ontology_table = pd.DataFrame(columns=['Label', 'ENVOMediumScaleIndex'])
+
+    envome_medium_scale_ontology_table['Label'] = envome_medium_scale_ontology_table['Label'].astype(str)
+
+
+    #prepare environment local scale table
+    if 'ENVOEnvironmentBiomeIndex_table' in kwargs.keys():
+        envome_local_scale_ontology_table = kwargs['ENVOEnvironmentBiomeIndex_table']
+        envome_local_scale_ontology_table = envome_local_scale_ontology_table.rename(
+            columns={'ENVOEnvironmentBiomeIndex': 'ENVOLocalScaleIndex'}
+            )
+    else:
+        envome_local_scale_ontology_table = pd.DataFrame(columns=['Label', 'ENVOLocalScaleIndex'])
+
+    envome_local_scale_ontology_table['Label'] = envome_local_scale_ontology_table['Label'].astype(str)
+
+
+    #prepare environment broad scale table
+    if 'ENVOEnvironmentBiomeIndex_table' in kwargs.keys():
+        envome_broad_scale_ontology_table = kwargs['ENVOEnvironmentBiomeIndex_table']
+        envome_broad_scale_ontology_table = envome_broad_scale_ontology_table.rename(
+            columns={'ENVOEnvironmentBiomeIndex': 'ENVOBroadScaleIndex'}
+            )
+    else:
+        envome_broad_scale_ontology_table = pd.DataFrame(columns=['Label', 'ENVOBroadScaleIndex'])
+
+    envome_broad_scale_ontology_table['Label'] = envome_broad_scale_ontology_table['Label'].astype(str)
 
 
     #prepare NCBI table
@@ -160,6 +194,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 print(f"{key}:")
                 for k, v in filtered_map.items():
                     print(f"  {k}: {v}")
+        elif key not in df.columns and value['generate'] == 'False':
+            df[key] = value['missing']
 
 
 
@@ -186,6 +222,15 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOEnvironmentMaterialIndex':
                 df = df.merge(envome_material_ontology_table[['Label', 'ENVOEnvironmentMaterialIndex']], left_on='ENVOEnvironmentMaterial', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'ENVOMediumScaleIndex':
+                df = df.merge(envome_medium_scale_ontology_table[['Label', 'ENVOMediumScaleIndex']], left_on='ENVOMediumScale', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'ENVOLocalScaleIndex':
+                df = df.merge(envome_local_scale_ontology_table[['Label', 'ENVOLocalScaleIndex']], left_on='ENVOLocalScale', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'ENVOBroadScaleIndex':
+                df = df.merge(envome_broad_scale_ontology_table[['Label', 'ENVOBroadScaleIndex']], left_on='ENVOBroadScale', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'USI' and add_usi == True:
                 df['filename'] = df['filename'].apply(process_filename)

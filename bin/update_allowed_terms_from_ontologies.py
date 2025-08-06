@@ -117,6 +117,14 @@ if __name__ == "__main__":
         allowedTerm_dict['ENVOEnvironmentBiome']['allowed_values'] = unique_labels
         allowedTerm_dict['ENVOEnvironmentBiomeIndex']['allowed_values'] = unique_indexes
 
+        print('Processing environmental biome local scale ontology,..')
+        allowedTerm_dict['ENVOLocalScale']['allowed_values'] = unique_labels
+        allowedTerm_dict['ENVOLocalScaleIndex']['allowed_values'] = unique_indexes
+
+        print('Processing environmental biome broad scale ontology,..')
+        allowedTerm_dict['ENVOBroadScale']['allowed_values'] = unique_labels
+        allowedTerm_dict['ENVOBroadScaleIndex']['allowed_values'] = unique_indexes
+
 
         print('Processing environmental material ontology,..')
         envMaterial_onto = get_ontology_table(args.path_to_material_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentMaterialIndex')
@@ -125,6 +133,10 @@ if __name__ == "__main__":
 
         allowedTerm_dict['ENVOEnvironmentMaterial']['allowed_values'] = unique_labels
         allowedTerm_dict['ENVOEnvironmentMaterialIndex']['allowed_values'] = unique_indexes
+
+        print('Processing environmental material medium scale ontology,..')
+        allowedTerm_dict['ENVOMediumScale']['allowed_values'] = unique_labels
+        allowedTerm_dict['ENVOMediumScaleIndex']['allowed_values'] = unique_indexes
 
 
     if args.path_to_doid_owl != 'none':

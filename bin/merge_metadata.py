@@ -1,5 +1,6 @@
 import pandas as pd
 import argparse
+import json
 
 def main():
     # parsing arguments
@@ -9,16 +10,27 @@ def main():
     parser.add_argument('--metabolights_metadata')
     parser.add_argument('--norman_metadata')
     parser.add_argument('--masst_metadata')
+    parser.add_argument('--path_to_allowed_term_json')
     parser.add_argument('--output_metadata')
     args = parser.parse_args()
 
-    columns_to_use = ["filename", "ATTRIBUTE_DatasetAccession", "SampleType", "SampleTypeSub1", 
-                      "NCBITaxonomy", "NCBIDivision", "NCBIRank", "YearOfAnalysis", "UBERONBodyPartName", "BiologicalSex", "AgeInYears",  "LifeStage", 
-                      "Country", "HealthStatus", "ChromatographyAndPhase", "IonizationSourceAndPolarity",
-                      "MassSpectrometer", "SampleExtractionMethod",  "SampleCollectionMethod", "ComorbidityListDOIDIndex", 
-                      "DOIDCommonName", "DOIDOntologyIndex", "ENVOEnvironmentBiome", "DepthorAltitudeMeters", "HumanPopulationDensity", "InternalStandardsUsed", 
-                      "LatitudeandLongitude", "SampleCollectionDateandTime", "ENVOEnvironmentMaterial", "ENVOEnvironmentBiomeIndex", "ENVOEnvironmentMaterialIndex",
-                      "SubjectIdentifierAsRecorded", "TermsofPosition", "UBERONOntologyIndex", "UniqueSubjectID", "USI", "DataSource"]
+    # columns_to_use = ["filename", "ATTRIBUTE_DatasetAccession", "SampleType", "SampleTypeSub1", 
+    #                   "NCBITaxonomy", "NCBIDivision", "NCBIRank", "YearOfAnalysis", "UBERONBodyPartName", "BiologicalSex", "AgeInYears",  "LifeStage", 
+    #                   "Country", "HealthStatus", "ChromatographyAndPhase", "IonizationSourceAndPolarity",
+    #                   "MassSpectrometer", "SampleExtractionMethod",  "SampleCollectionMethod", "ComorbidityListDOIDIndex", 
+    #                   "DOIDCommonName", "DOIDOntologyIndex", "ENVOEnvironmentBiome", "DepthorAltitudeMeters", "HumanPopulationDensity", "InternalStandardsUsed", 
+    #                   "LatitudeandLongitude", "SampleCollectionDateandTime", "ENVOEnvironmentMaterial", "ENVOEnvironmentBiomeIndex", "ENVOEnvironmentMaterialIndex",
+    #                   "SubjectIdentifierAsRecorded", "TermsofPosition", "UBERONOntologyIndex", "UniqueSubjectID", "USI", "DataSource"]
+    
+
+    # read allowed terms
+    with open(args.path_to_allowed_term_json, 'r') as f:
+        allowed_terms = json.load(f)
+
+    columns_to_use = list(allowed_terms.keys())
+
+    # replace value "MassiveID" with "ATTRIBUTE_DatasetAccession"
+    columns_to_use = [col.replace("MassiveID", "ATTRIBUTE_DatasetAccession") for col in columns_to_use]
 
     # read GNPS metadata
     gnps_df = pd.read_csv(args.gnps_metadata, sep='\t')
