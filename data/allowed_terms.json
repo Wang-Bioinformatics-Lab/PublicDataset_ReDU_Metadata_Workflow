@@ -228,6 +228,7 @@
             "dichloromethane-methanol (3:1)",
             "water-acetonitrile (149:1)",
             "dichloromethane-methanol (2:1)",
+            "methyltertbutylether-methanol (3:1)",
             "methanol-water (9:1)",
             "acetonitrile-water (7:3)",
             "methanol-water (7:3)",
@@ -915,7 +916,16 @@
         "example": "soil",
         "source": "",
         "allowed_values": []
-    },       
+    },
+    "DataSource": {
+        "generate": "True",
+        "type": "generated",
+        "missing": "missing value",
+        "description": "(automatically generated) Repository the file is hosted at.",
+        "example": "GNPS",
+        "source": "",
+        "allowed_values": []
+    },        
     "USI": {
         "generate": "True",
         "type": "generated",

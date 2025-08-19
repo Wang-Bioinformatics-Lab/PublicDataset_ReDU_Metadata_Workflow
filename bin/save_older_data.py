@@ -22,6 +22,15 @@ if __name__ == "__main__":
     #unique by USI column
     df_merged = df_merged.drop_duplicates(subset=['USI'])
 
+
+    # make sure we have the dataset labels
+    df_merged.loc[df_merged['USI'].str.startswith('mzspec:NORMAN', na=False), 'DataSource'] = 'NORMAN'
+    df_merged.loc[df_merged['USI'].str.startswith('mzspec:MSV', na=False), 'DataSource'] = 'GNPS'
+    df_merged.loc[df_merged['USI'].str.startswith('mzspec:MTBLS', na=False), 'DataSource'] = 'MetaboLights'
+    df_merged.loc[df_merged['USI'].str.startswith('mzspec:ST', na=False), 'DataSource'] = 'Workbench'
+
+
+
     #reindex
     df_merged.reset_index(drop=True, inplace=True)
 
