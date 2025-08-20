@@ -7,57 +7,95 @@ import io
 import sys
 import collections
 import argparse
+import time
 
 
-def download_gnps_metadata(temp_file_path="temp.csv"):
-    base_url = "https://datasetcache.gnps2.org/datasette/database/filename.csv"
+def download_gnps_metadata(out_path="gnps_metadata.tsv", page_size=1000, max_pages=None, max_retries=3):
+    """
+    Downloads all GNPS metadata ending with 'gnps_metadata.tsv' via the Datasette API,
+    paginating with _next and writing results incrementally as TSV.
+
+    Each page is retried up to max_retries times before aborting.
+    """
+    base_url = "https://datasetcache.gnps2.org/datasette/database/filename.json"
     params = {
         "_sort": "filepath",
         "filepath__endswith": "gnps_metadata.tsv",
-        "_size": 1000,
+        "_size": page_size,
+        "_shape": "objects",  # rows as list of dicts
     }
 
-    all_chunks = []
-    next_url = base_url
-    first = True
+    wrote_header = False
+    all_rows = []
+    page = 0
+    next_token = None
 
-    print("Starting paginated download...")
+    # truncate file
+    with open(out_path, "w", encoding="utf-8") as f_out:
+        pass
 
-    while next_url:
-        print(f"Fetching: {next_url}")
-        try:
-            response = requests.get(next_url, params=params if first else {}, timeout=60)
-        except Exception as e:
-            print(f"Request failed: {e}")
+    print("Starting paginated download...", file=sys.stderr)
+
+    while True:
+        if next_token:
+            params["_next"] = next_token
+        elif "_next" in params:
+            del params["_next"]
+
+        page += 1
+        if max_pages and page > max_pages:
+            print("Reached max_pages limit; stopping.", file=sys.stderr)
             break
 
-        if response.status_code != 200 or "html" in response.headers.get("Content-Type", ""):
-            print("Bad response, likely server error:")
-            print(response.text[:500])
+        attempt = 0
+        success = False
+        while attempt < max_retries and not success:
+            attempt += 1
+            try:
+                r = requests.get(base_url, params=params, timeout=120)
+                if r.status_code != 200:
+                    print(f"[page {page}] Attempt {attempt} bad status {r.status_code}", file=sys.stderr)
+                    time.sleep(2)
+                    continue
+                payload = r.json()
+                success = True
+            except Exception as e:
+                print(f"[page {page}] Attempt {attempt} failed: {e}", file=sys.stderr)
+                time.sleep(2)
+
+        if not success:
+            print(f"[page {page}] ❌ All {max_retries} attempts failed; aborting.", file=sys.stderr)
             break
 
-        df_chunk = pd.read_csv(io.StringIO(response.text))
-        if df_chunk.empty:
-            print("No more data.")
+        rows = payload.get("rows", [])
+        next_token = payload.get("next")
+
+        if not rows:
+            print(f"[page {page}] No rows; stopping.", file=sys.stderr)
             break
 
-        all_chunks.append(df_chunk)
+        df_chunk = pd.DataFrame.from_records(rows)
 
-        # Check for next page
-        next_link = None
-        if "_next=" in response.url:
-            next_link = response.url.split("_next=")[-1]
-            next_url = f"{base_url}?_sort=filepath&filepath__endswith=gnps_metadata.tsv&_size=1000&_next={next_link}"
-        else:
+        # write incrementally
+        with open(out_path, "a", encoding="utf-8") as f_out:
+            df_chunk.to_csv(f_out, sep="\t", index=False, header=not wrote_header)
+        wrote_header = True
+
+        all_rows.extend(rows)
+        print(f"[page {page}] Wrote {len(rows)} rows "
+              f"(next={'yes' if next_token else 'no'})", file=sys.stderr)
+
+        if not next_token:
             break
 
-        first = False
+        time.sleep(0.2)  # be nice to server
 
-    # Combine and save to temp file
-    gnps_df = pd.concat(all_chunks, ignore_index=True)
-    gnps_df.to_csv(temp_file_path, index=False)
-    print(f"Saved metadata to {temp_file_path}")
-    return gnps_df
+    if not all_rows:
+        raise RuntimeError("No data downloaded; all pages failed.")
+
+    df = pd.DataFrame.from_records(all_rows)
+    print(f"✅ Saved {len(df)} rows to {out_path}", file=sys.stderr)
+    return df
 
 def main():
     # Args parse

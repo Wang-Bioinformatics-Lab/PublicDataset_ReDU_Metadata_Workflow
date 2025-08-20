@@ -202,6 +202,14 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     for key, value in allowedTerm_dict.items():
         if value['generate'] == 'True':
             missing_value = value['missing']
+
+            if key == 'DataSource':
+                df.loc[df['MassiveID'].str.startswith('NORMAN', na=False), 'DataSource'] = 'NORMAN'
+                df.loc[df['MassiveID'].str.startswith('MSV', na=False), 'DataSource'] = 'GNPS'
+                df.loc[df['MassiveID'].str.startswith('MTBLS', na=False), 'DataSource'] = 'MetaboLights'
+                df.loc[df['MassiveID'].str.startswith('ST', na=False), 'DataSource'] = 'Workbench'
+
+
             if key == 'LifeStage':
                 df[key] = df.apply(lambda x: age_category(x['AgeInYears']) if x['NCBITaxonomy'] == "9606|Homo sapiens" else value['missing'], axis=1)
             if key == 'UniqueSubjectID':

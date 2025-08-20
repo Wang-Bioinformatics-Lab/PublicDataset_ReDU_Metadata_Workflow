@@ -14,15 +14,6 @@ def main():
     parser.add_argument('--output_metadata')
     args = parser.parse_args()
 
-    # columns_to_use = ["filename", "ATTRIBUTE_DatasetAccession", "SampleType", "SampleTypeSub1", 
-    #                   "NCBITaxonomy", "NCBIDivision", "NCBIRank", "YearOfAnalysis", "UBERONBodyPartName", "BiologicalSex", "AgeInYears",  "LifeStage", 
-    #                   "Country", "HealthStatus", "ChromatographyAndPhase", "IonizationSourceAndPolarity",
-    #                   "MassSpectrometer", "SampleExtractionMethod",  "SampleCollectionMethod", "ComorbidityListDOIDIndex", 
-    #                   "DOIDCommonName", "DOIDOntologyIndex", "ENVOEnvironmentBiome", "DepthorAltitudeMeters", "HumanPopulationDensity", "InternalStandardsUsed", 
-    #                   "LatitudeandLongitude", "SampleCollectionDateandTime", "ENVOEnvironmentMaterial", "ENVOEnvironmentBiomeIndex", "ENVOEnvironmentMaterialIndex",
-    #                   "SubjectIdentifierAsRecorded", "TermsofPosition", "UBERONOntologyIndex", "UniqueSubjectID", "USI", "DataSource"]
-    
-
     # read allowed terms
     with open(args.path_to_allowed_term_json, 'r') as f:
         allowed_terms = json.load(f)
