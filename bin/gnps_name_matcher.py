@@ -8,9 +8,8 @@ import glob
 from io import StringIO
 from subprocess import PIPE, run
 import json
+from pathlib import Path
 
-##  ccms_peak_link = "https://gnps-datasetcache.ucsd.edu/datasette/database/filename.csv?_sort=filepath&collection__exact=ccms_peak&_size=max"
-##  ccms_peak_link = "https://datasetcache.gnps2.org/datasette/database/filename.csv?_sort=filepath"
 ccms_peak_link = "https://datasetcache.gnps2.org/datasette/datasette/database/uniquemri.csv?_sort=usi&dataset__exact=" # MSV000081468&filepath__endswith=%25.mz%25ML&_size=max"
 gnps_column_names_added = ['USI']
 
@@ -29,7 +28,14 @@ def _make_usi_from_filename(filename, dataset_id):
 
     return usi
 
-
+def longest_common_dir_suffix_score(meta_dirs, cand_dirs):
+    score = 0
+    for md, cd in zip(reversed(meta_dirs), reversed(cand_dirs)):
+        if md == cd:
+            score += 1
+        else:
+            break
+    return score
 
 
 def _match_filenames_and_add_usi(dataset_metadata_df):
@@ -64,6 +70,7 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         return None
 
     ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
+    ccms_df["_dir_parts"] = ccms_df["filepath"].apply(lambda p: tuple(Path(p).parts[:-1]))
 
     metadata_row_list = dataset_metadata_df.to_dict('records')
     output_row_list = []
@@ -72,25 +79,57 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
 
         print(f"Processing {metadata_row['filename']}")
 
-        filename = os.path.basename(metadata_row["filename"])
-        filename2 = filename[:-3] + "ML"
+        # Metadata path pieces
+        meta_path = str(metadata_row["filename"])
+        meta_basename = os.path.basename(meta_path)
+        # extension-only case handling (keep as you wanted)
+        meta_basename2 = meta_basename[:-3] + "ML" if len(meta_basename) >= 3 else meta_basename
+        meta_dir_parts = tuple(Path(meta_path).parts[:-1])  # () if no dirs present
 
-        found_file_paths = []
+        # 1) Collect candidates by basename or basename2
+        cand_mask = (ccms_df["query_path"] == meta_basename) | (ccms_df["query_path"] == meta_basename2)
+        candidates = ccms_df.loc[cand_mask, ["filepath", "_dir_parts", "query_path"]].copy()
 
-        # Searching the query_path column
-        found_file_paths = ccms_df[ccms_df["query_path"] == filename]["filepath"].tolist()
-        found_file_paths += ccms_df[ccms_df["query_path"] == filename2]["filepath"].tolist()
+        if candidates.empty:
+            found_file_paths = []
+            print(f"Found file paths: {found_file_paths}")
+        else:
+            if len(candidates) == 1:
+                # single candidate → just use it
+                found_file_paths = candidates["filepath"].tolist()
+                print(f"Found file paths: {found_file_paths}")
+            else:
+                if len(meta_dir_parts) == 0:
+                    # multiple candidates but no directory info in metadata → keep all for preference filter
+                    found_file_paths = candidates["filepath"].tolist()
+                    print(f"Found file paths (no dir context): {found_file_paths}")
+                else:
+                    # 2) Score candidates by longest common directory suffix with the metadata path
+                    candidates["_dir_score"] = candidates["_dir_parts"].apply(
+                        lambda dp: longest_common_dir_suffix_score(meta_dir_parts, dp)
+                    )
+                    # 3) Keep only the best-scoring candidate(s)
+                    best_score = candidates["_dir_score"].max()
+                    found_file_paths = candidates.loc[candidates["_dir_score"] == best_score, "filepath"].tolist()
+                    print(f"Found file paths (scored): {found_file_paths}")
+
+
+        # 2) Score candidates by longest common directory suffix with the metadata path
+        candidates["_dir_score"] = candidates["_dir_parts"].apply(
+            lambda dp: longest_common_dir_suffix_score(meta_dir_parts, dp)
+        )
+
+        # 3) Keep only the best-scoring candidate(s)
+        best_score = candidates["_dir_score"].max()
+        best = candidates.loc[candidates["_dir_score"] == best_score, "filepath"].tolist()
+
+        found_file_paths = best
 
         print(f"Found file paths: {found_file_paths}")
 
         if len(found_file_paths) > 0:
-
-            # Select the ccms_peak folder if we have one, otherwise peak, otherwise raw
-            # and if non of those is available the first path in the list   
             preferred_directories = ['ccms_peak', 'peak', 'raw']
-
             selected_path = None
-
             for preferred_dir in preferred_directories:
                 for path in found_file_paths:
                     if preferred_dir in path:
@@ -98,14 +137,15 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
                         break
                 if selected_path:
                     break
-
             if not selected_path:
                 selected_path = found_file_paths[0]
 
             print("Found match", selected_path)
             metadata_row["filename"] = "f." + selected_path
-            metadata_row["USI"] = _make_usi_from_filename(metadata_row["filename"], metadata_row["ATTRIBUTE_DatasetAccession"])
-
+            metadata_row["USI"] = _make_usi_from_filename(
+                metadata_row["filename"],
+                metadata_row["ATTRIBUTE_DatasetAccession"]
+            )
             output_row_list.append(metadata_row)
         else:
             # Didn't find or is ambiguous
@@ -167,6 +207,9 @@ def main():
         # Matching the metadata
         enriched_metadata_df = _match_filenames_and_add_usi(dataset_metadata_df)
         if enriched_metadata_df is not None:
+
+            print(f"Selected {len(enriched_metadata_df)} rows with columns: {list(enriched_metadata_df.columns)}")
+
             all_metadata_list.append(enriched_metadata_df)
 
     # Create a DataFrame from the list with headers

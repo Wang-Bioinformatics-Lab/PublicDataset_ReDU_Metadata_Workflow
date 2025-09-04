@@ -320,7 +320,6 @@ process gnpsmatchName {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
-
     input:
     // file 'passed_file_names.tsv'
     file 'adjusted_metadata_folder'

@@ -96,18 +96,18 @@ def remove_version_from_url(url):
 def main(output_filename, study_id, filter_extensions, existing_datasets):
     # Step 1: Fetch the list of datasets
     datasets_url = "https://dsfp.norman-data.eu/api/1/metastore/schemas/dataset/all"
-    print(f"Fetching datasets from {datasets_url}")
+    print(f"Fetching datasets from {datasets_url}", flush = True)
     response = requests.get(datasets_url)
     response.raise_for_status()  # Raise an error for bad status codes
     datasets = response.json()
-    print(f"Fetched {len(datasets)} datasets")
+    print(f"Fetched {len(datasets)} datasets", flush = True)
 
     # Filter datasets based on study_id
     if study_id != "ALL":
         datasets = [ds for ds in datasets if ds['uuid'] == study_id]
-        print(f"Processing dataset with UUID: {study_id}")
+        print(f"Processing dataset with UUID: {study_id}", flush = True)
     else:
-        print("Processing all datasets")
+        print("Processing all datasets", flush = True)
 
     dfs = []  # List to hold DataFrames for each dataset
     errors = []  # List to hold errors
@@ -118,22 +118,22 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
             uuid = ds['uuid']
             internal_id = ds['internal_id']
             title = ds['title']
-            print(f"Processing dataset: {title} (UUID: {uuid}, Internal ID: {internal_id})")
+            print(f"Processing dataset: {title} (UUID: {uuid}, Internal ID: {internal_id})", flush = True)
 
             if internal_id in existing_datasets:
-                print(f"Dataset {internal_id} already indexed. Skipping.")
+                print(f"Dataset {internal_id} already indexed. Skipping.", flush = True)
                 continue
 
             # Build URL to get the CSV with file info
             file_url = f"https://dsfp.norman-data.eu/data/{internal_id}/files.csv"
-            print(f"Fetching file data from {file_url}")
+            print(f"Fetching file data from {file_url}", flush = True)
             file_response = requests.get(file_url)
 
             if file_response.status_code == 200:
                 # Read CSV data into DataFrame
                 csv_data = StringIO(file_response.text)
                 df_files = pd.read_csv(csv_data)
-                print(f"Fetched file data for dataset {internal_id}")
+                print(f"Fetched file data for dataset {internal_id}", flush = True)
 
                 # Process the DataFrame
                 df_melted = process_dataset_files(
@@ -146,14 +146,14 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
 
                 # Append the processed DataFrame to our list
                 dfs.append(df_melted)
-                print(f"Processed dataset {internal_id} successfully")
+                print(f"Processed dataset {internal_id} successfully", flush = True)
             else:
                 error_message = f"Failed to download files for dataset {internal_id}. Status code: {file_response.status_code}"
-                print(error_message)
+                print(error_message, flush = True)
                 errors.append(error_message)
         except Exception as e:
             error_message = f"Error processing dataset {internal_id}: {str(e)}"
-            print(error_message)
+            print(error_message, flush = True)
             errors.append(error_message)
 
     # Step 3: Combine all per-dataset DataFrames (if any)
@@ -167,13 +167,13 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
 
         # Step 4: Save the result as a TSV file
         combined_df.to_csv(output_filename, sep='\t', index=False)
-        print(f"\nCombined data saved to {output_filename}")
+        print(f"\nCombined data saved to {output_filename}", flush = True)
     else:
-        print("No file data found across datasets.")
+        print("No file data found across datasets.", flush = True)
 
     # Print errors 
     if errors:
-        print("\nErrors encountered during processing:")
+        print("\nErrors encountered during processing:", flush = True)
         for error in errors:
             print(error)
 

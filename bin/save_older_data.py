@@ -1,6 +1,6 @@
 import argparse
 import pandas as pd
-
+import re
 
 #    python $TOOL_FOLDER/save_older_data.py ${merged_ch} ${older_redu_data} merged_with_old.tsv
 if __name__ == "__main__":
@@ -14,6 +14,8 @@ if __name__ == "__main__":
     df_current = pd.read_csv(args.input_new_data, dtype=str, sep = '\t')
     try:
         df_older = pd.read_csv(args.older_data, dtype=str, sep = '\t')
+        #use re.sub(r'\?VersionId.*', '', value) to alter USI values if DataSource is NORMAN
+        df_older.loc[df_older['DataSource'] == 'NORMAN', 'USI'] = df_older.loc[df_older['DataSource'] == 'NORMAN', 'USI'].apply(lambda x: re.sub(r'\?VersionId.*', '', x))
     except:
         df_older = pd.DataFrame()
 
