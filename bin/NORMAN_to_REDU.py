@@ -62,18 +62,18 @@ def main(output_filename, study_id, **kwargs):
 
     # Fetch the list of datasets
     datasets_url = "https://dsfp.norman-data.eu/api/1/metastore/schemas/dataset/all"
-    print(f"Fetching datasets from {datasets_url}")
+    print(f"Fetching datasets from {datasets_url}", flush = True)
     response = requests.get(datasets_url)
     response.raise_for_status() 
     datasets = response.json()
-    print(f"Fetched {len(datasets)} datasets")
+    print(f"Fetched {len(datasets)} datasets", flush = True)
 
     # Filter datasets based on study_id
     if study_id != "ALL":
         datasets = [ds for ds in datasets if ds['uuid'] == study_id]
-        print(f"Processing dataset with UUID: {study_id}")
+        print(f"Processing dataset with UUID: {study_id}", flush = True)
     else:
-        print("Processing all datasets")
+        print("Processing all datasets", flush = True)
 
     dfs = [] 
     errors = [] 
@@ -84,18 +84,18 @@ def main(output_filename, study_id, **kwargs):
             uuid = ds['uuid']
             internal_id = ds['internal_id']
             title = ds['title']
-            print(f"Processing dataset: {title} (UUID: {uuid}, Internal ID: {internal_id})")
+            print(f"Processing dataset: {title} (UUID: {uuid}, Internal ID: {internal_id})", flush = True)
 
             # Build URL to get the CSV with file info
             metadata_collection_url = f"https://dsfp.norman-data.eu/api/1/metastore/schemas/dataset/items/{uuid}"
-            print(f"Fetching file data from {metadata_collection_url}")
+            print(f"Fetching file data from {metadata_collection_url}", flush = True)
             metadata_collection_response = requests.get(metadata_collection_url)
 
             if metadata_collection_response.status_code == 200:
                 
                 metadata_collection_dict = metadata_collection_response.json()
                 
-                print(f"Fetched metadata collection dict for dataset {uuid}")
+                print(f"Fetched metadata collection dict for dataset {uuid}", flush = True)
 
 
                 metadata_collection_links = metadata_collection_dict['distribution']
