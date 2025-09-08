@@ -229,6 +229,7 @@ def get_key_info_into_outer(df, key_vars, new_col):
         df[new_col] = pd.to_numeric(df[new_col], errors='coerce')
     else:
         df[new_col] = df[new_col].fillna(value='NA')
+    print(f"Found {df[new_col].nunique()} unique values for {new_col}")
     return df
 
 def get_rawFile_names(df, key_vars, new_col):
@@ -541,7 +542,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
     df = get_key_info_into_outer(df, key_vars=["gender", "sex", "gender (f/m)", "biological_sex"], new_col="MWB_sex")
     df = get_key_info_into_outer(df, key_vars=["age", "age (years)"], new_col="MWB_age")
-    df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country", "site", "location"],
+    df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country", "site", "location", "country_of_origin"],
                                  new_col="Country")
     df = get_key_info_into_outer(df, key_vars=["latitude"], new_col="Latitude")
     df = get_key_info_into_outer(df, key_vars=["longitude"], new_col="Longitude")
@@ -728,8 +729,10 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
 
     if case == 'outer':
         column_and_csv_names = column_and_csv_names_outer
+        print(f"Translating MWB to REDU for outer columns: {column_and_csv_names}")
     elif case == 'inner':
         column_and_csv_names = column_and_csv_names_inner + add_to_cols
+        print(f"Translating MWB to REDU for inner columns: {column_and_csv_names}")
         present_keys = MWB_table[['Key', 'Value']].copy()
         present_keys['Value'] = present_keys['Value'].apply(convert_to_numeric_or_original)
         present_keys.drop_duplicates(inplace=True)
@@ -738,6 +741,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
         origin_cols = [x[1] for x in fill_col_from]
 
     for index, col_csv_name in enumerate(column_and_csv_names):
+
+        print(f"Translating column {col_csv_name}")
 
         df_translations = pd.read_csv(path_to_csvs + "/{}.csv".format(str(col_csv_name)), encoding="ISO-8859-1",
                                       dtype=str)
@@ -753,6 +758,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
             MWB_table = pd.merge(MWB_table, df_translations, left_on=col_csv_name, right_on='MWB', how='left')
             MWB_table = MWB_table.drop(columns=['MWB', col_csv_name])
             MWB_table = MWB_table.rename(columns={'REDU': col_csv_name})
+
+            print(f"Unique values in {col_csv_name}: {MWB_table[col_csv_name].nunique()}")
                
         if case == 'inner':
 
@@ -771,6 +778,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                     MWB_table = MWB_table.drop(columns=['REDU_DOIDOntologyIndex'])
 
                 MWB_table = MWB_table.drop(['MWB', 'REDU'], axis=1)
+
+                print(f"Unique values in {col_csv_name}: {MWB_table[col_csv_name].nunique()}")
 
             elif col_csv_name == 'NCBITaxonomy':
 
