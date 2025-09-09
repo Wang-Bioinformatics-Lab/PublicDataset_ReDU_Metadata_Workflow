@@ -351,8 +351,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             data_list.append([id, subject_id, sample_id, key, value])
         for key, value in additional_data.items():
             data_list.append([id, subject_id, sample_id, key, value])
-    df = pd.DataFrame(data_list, columns=['script_id', 'SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value'])
-    df['Key'] = df['Key'].str.lower()
+    df_additional = pd.DataFrame(data_list, columns=['script_id', 'SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value'])
+    df_additional['Key'] = df_additional['Key'].str.lower()
 
     print(f"Rest length is {len(rest_response)}")
     if len(rest_response) > 0:
@@ -388,7 +388,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                               "rawfile name", "rpm_filename", "zhp_filename",
                               "data file", "raw_data"]
 
-    df_filtered = df[df['Key'].isin(expected_raw_file_keys)]
+    df_filtered = df_additional[df_additional['Key'].isin(expected_raw_file_keys)]   # after this we only have raw data
 
     # Assigning unique script_id based on Local Sample ID
     df_rest['script_id'] = df_rest.groupby('Local Sample ID').ngroup()
@@ -419,7 +419,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         'Factor Name': 'Key',
         'Factor Value': 'Value'
     })
-    ######
 
 
     if not any(key in df['Key'].values for key in expected_raw_file_keys):
@@ -537,6 +536,19 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     if len(df) == 0:
         raise ValueError("No raw data could be associated with metadata. Stopping!")
     
+
+    # appending the additional data again to make sure we have all metadata
+    df = pd.concat([df, df_additional], ignore_index=True)
+
+    # For each filename group: if a column's non-NA values are all the same, fill that value for the group; else set NA
+    for col in df.columns:
+        if col in ['filename', 'Key', 'Value']:
+            continue
+        df[col] = df.groupby('filename')[col].transform(
+            lambda s: s.dropna().iloc[0] if s.dropna().nunique() <= 1 else np.nan
+        )
+
+
     df['Value'] = df['Value'].str.lower()
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
     df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
@@ -717,7 +729,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                                    column_and_csv_names_inner=['UBERONBodyPartName',
                                                                'DOIDCommonName',
                                                                'HumanPopulationDensity',
-                                                               'HealthStatus'],
+                                                               'HealthStatus',
+                                                               'Country'],
                                    fill_col_from=[['UBERONBodyPartName', 'SAMPLE_TYPE']],
                                    case='outer',
                                    path_to_csvs='translation_sheets',
