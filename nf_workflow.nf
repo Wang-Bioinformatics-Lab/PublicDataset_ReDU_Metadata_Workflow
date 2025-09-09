@@ -429,6 +429,26 @@ process saveOlderData {
 }
 
 
+
+process enrich_ncbi_information {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env_ete3.yml"
+
+    input:
+    path merged_ch
+
+    output:
+    path 'merged_with_ncbi.tsv'
+
+    """
+    python $TOOL_FOLDER/ncbi_database.py \
+    ${merged_ch} \
+    merged_with_ncbi.tsv
+    """
+}
+
+
 workflow {
 
     //  Prepare ontologies
@@ -465,7 +485,10 @@ workflow {
     old_redu_path_ch = Channel.fromPath(params.old_redu)
     merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch)
 
+    // Enrich NCBI information
+    merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch)
+
     // Add Cache columns
-    cache_enriched_metadata = add_cache_columns(merged_with_old_ch)
+    cache_enriched_metadata = add_cache_columns(merged_with_ncbi_ch)
 
 }
