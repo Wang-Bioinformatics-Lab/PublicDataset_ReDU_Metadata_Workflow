@@ -220,8 +220,12 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                                 and not pd.isna(x['SubjectIdentifierAsRecorded']) 
                                 else value['missing'], axis=1)
             if key == 'UBERONOntologyIndex':
-                df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex']], left_on='UBERONBodyPartName', right_on='Label', how='left')
-                df.drop(columns=['Label'], inplace=True)
+                df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex', 'Is Multicellular','Is Organ', 'Is Fluid']], left_on='UBERONBodyPartName', right_on='Label', how='left')
+                # where 'Is Multicellular' is True set SampleTypeSub1 to tissue
+                df.loc[df['Is Multicellular'] == True, 'SampleTypeSub1'] = 'tissue'
+                # where 'Is Fluid' is True set SampleTypeSub1 to biofluid
+                df.loc[df['Is Fluid'] == True, 'SampleTypeSub1'] = 'biofluid'
+                df.drop(columns=['Label', 'Is Multicellular', 'Is Organ', 'Is Fluid'], inplace=True)
             if key == 'DOIDOntologyIndex':
                 df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']], left_on='DOIDCommonName', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
