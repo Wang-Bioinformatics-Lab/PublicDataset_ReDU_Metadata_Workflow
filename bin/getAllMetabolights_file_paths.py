@@ -93,7 +93,6 @@ def create_usi(row):
 def process_filename(filename):
     path_parts = filename.split('/')
     for part in path_parts:
-        print(part)
         if part.endswith('.d'):
             return '/'.join(path_parts[:path_parts.index(part)+1])
     return filename

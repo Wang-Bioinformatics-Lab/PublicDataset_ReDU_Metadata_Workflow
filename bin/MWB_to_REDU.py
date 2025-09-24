@@ -538,15 +538,19 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     
 
     # appending the additional data again to make sure we have all metadata
-    df = pd.concat([df, df_additional], ignore_index=True)
+    try:
+        df_update = pd.concat([df, df_additional], ignore_index=True)
 
-    # For each filename group: if a column's non-NA values are all the same, fill that value for the group; else set NA
-    for col in df.columns:
-        if col in ['filename', 'Key', 'Value']:
-            continue
-        df[col] = df.groupby('filename')[col].transform(
-            lambda s: s.dropna().iloc[0] if s.dropna().nunique() <= 1 else np.nan
-        )
+        # For each filename group: if a column's non-NA values are all the same, fill that value for the group; else set NA
+        for col in df_update.columns:
+            if col in ['filename', 'Key', 'Value']:
+                continue
+            df_update[col] = df_update.groupby('filename')[col].transform(
+                lambda s: s.dropna().iloc[0] if s.dropna().nunique() <= 1 else np.nan
+            )
+        df = df_update.copy()
+    except Exception as e:
+        print("Error during re-adding additional data:", e)
 
 
     df['Value'] = df['Value'].str.lower()

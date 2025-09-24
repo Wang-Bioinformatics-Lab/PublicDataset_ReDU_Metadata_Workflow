@@ -76,6 +76,11 @@ def annotate_taxonomy(df: pd.DataFrame) -> pd.DataFrame:
     df['taxid'] = df['NCBITaxonomy'].apply(safe_extract_taxid).astype(str)
     df['taxid'] = df['taxid'].fillna("missing value")
 
+    # --- drop any existing taxonomy columns before merging ---
+    cols_to_drop = list(rank_to_col.values())
+    df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors="ignore")
+
+    # merge fresh lineage data
     df = df.merge(lineage_df, on='taxid', how='left')
     df = df.fillna("missing value")
 
@@ -83,6 +88,31 @@ def annotate_taxonomy(df: pd.DataFrame) -> pd.DataFrame:
     df.drop(columns=['taxid'], inplace=True)
     return df
 
+
+def update_sampletype(df):
+
+    # Example df
+    # df = pd.DataFrame({"NCBIKingdom": [...], "SampleType": [...]})
+
+    # Define a mapping for NCBIKingdom → SampleType
+    kingdom_to_type = {
+        "Viridiplantae": "plant",
+        "Metazoa": "animal",
+        "Fungi": "fungi",
+        # algae-like groups
+        "Bacillati": "algae",
+        "Pseudomonadati": "algae",
+        "Fusobacteriati": "algae",
+        "Thermoproteati": "algae",
+        "Thermotogati": "algae",
+        "Methanobacteriati": "algae"
+    }
+
+    # Update SampleType only if it's "missing value"
+    mask = df["SampleType"] == "missing value"
+    df.loc[mask, "SampleType"] = df.loc[mask, "NCBIKingdom"].map(kingdom_to_type).fillna("missing value")
+
+    return df
 
 
 
@@ -95,4 +125,27 @@ if __name__ == "__main__":
 
     df = pd.read_csv(args.input_tsv, sep='\t', dtype={'NCBITaxonomy': 'string'}, low_memory=False)
     annotated_df = annotate_taxonomy(df)
+    annotated_df = update_sampletype(annotated_df)
+
+    try:
+        # read the sparql_oto_ncbi tsv file
+        dt_oto_ncbi = pd.read_csv('sparql_oto_ncbi.tsv', sep='\t', dtype=str)
+        dt_oto_ncbi = dt_oto_ncbi.rename(columns={'?ncbi_id': 'NCBI', '?ott_id': 'uid'})
+        dt_oto_ncbi = dt_oto_ncbi[(dt_oto_ncbi['NCBI'].notna()) & (dt_oto_ncbi['NCBI'] != '') & (dt_oto_ncbi['uid'].notna()) & (dt_oto_ncbi['uid'] != '')]
+
+        dt_oto_ncbi['OpenTreeOfLifeTaxonomyID'] = 'ott' + dt_oto_ncbi['uid']
+        dt_oto_ncbi = dt_oto_ncbi[['NCBI', 'OpenTreeOfLifeTaxonomyID']].drop_duplicates()
+        
+        annotated_df['NCBI'] = annotated_df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if pd.notna(x) and '|' in x else None)
+
+        annotated_df = annotated_df.merge(dt_oto_ncbi, on='NCBI', how='left')
+        annotated_df.drop(columns=['NCBI'], inplace=True)
+        
+        annotated_df['OpenTreeOfLifeTaxonomyID'] = annotated_df['OpenTreeOfLifeTaxonomyID'].fillna('missing value')
+
+    except FileNotFoundError:
+        print("sparql_oto_ncbi.tsv not found, skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)
+
+
+
     annotated_df.to_csv(args.output_tsv, index=False, sep='\t')

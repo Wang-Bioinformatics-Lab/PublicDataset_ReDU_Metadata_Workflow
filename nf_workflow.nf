@@ -442,8 +442,14 @@ process enrich_ncbi_information {
     path 'merged_with_ncbi.tsv'
 
     """
+    curl -s https://qlever.cs.uni-freiburg.de/api/wikidata \
+    -H "Accept: text/tab-separated-values" \
+    -H "Content-type: application/sparql-query" \
+    --data "PREFIX wd: <http://www.wikidata.org/entity/> PREFIX wdt: <http://www.wikidata.org/prop/direct/> PREFIX bd: <http://www.bigdata.com/rdf#> PREFIX wikibase: <http://wikiba.se/ontology#> SELECT ?ncbi_id ?ott_id WHERE { ?item wdt:P685 ?ncbi_id. OPTIONAL { ?item wdt:P9157 ?ott_id } ?item wdt:P31 wd:Q16521 }" \
+    -o sparql_oto_ncbi.tsv || :
+
     python $TOOL_FOLDER/ncbi_database.py \
-    ${merged_ch} \
+    ${merged_ch}  \
     merged_with_ncbi.tsv
     """
 }
