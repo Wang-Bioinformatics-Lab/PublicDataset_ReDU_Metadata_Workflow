@@ -50,7 +50,8 @@
             "blank_culturemedia",
             "culture_fungal",
             "blank_analysis",
-            "fungi"
+            "fungi",
+            "bacteria"
         ]
     },
     "SampleTypeSub1": {

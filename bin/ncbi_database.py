@@ -99,13 +99,12 @@ def update_sampletype(df):
         "Viridiplantae": "plant",
         "Metazoa": "animal",
         "Fungi": "fungi",
-        # algae-like groups
-        "Bacillati": "algae",
-        "Pseudomonadati": "algae",
-        "Fusobacteriati": "algae",
-        "Thermoproteati": "algae",
-        "Thermotogati": "algae",
-        "Methanobacteriati": "algae"
+        "Bacillati": "bacteria",
+        "Pseudomonadati": "bacteria",
+        "Fusobacteriati": "bacteria",
+        "Thermoproteati": "bacteria",
+        "Thermotogati": "bacteria",
+        "Methanobacteriati": "bacteria"
     }
 
     # Update SampleType only if it's "missing value"
