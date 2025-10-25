@@ -219,6 +219,7 @@
         "example": "methanol-water (1:1)",
         "source": "-",
         "allowed_values": [
+            "methanol-dichloromethane-ethyl acetate (1:2:3) + 0.1% formic acid",
             "methanol-dichloromethane-trichloroacetic acid (2:1:0.8)",
             "ethanol-water (19:1)",
             "water (95_deg_C)",
