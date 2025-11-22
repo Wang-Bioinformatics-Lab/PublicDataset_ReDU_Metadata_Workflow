@@ -177,6 +177,7 @@
         "source": "-",
         "allowed_values": [
             "extract, solid phase extraction (C18)",
+            "extract, solid phase extraction (NOS)",
             "swabs, solution (95% EtOH)",
             "swabs, solution (100% EtOH)",
             "blood draw, capillary",
@@ -237,6 +238,7 @@
             "acetonitrile-water (7:3)",
             "methanol-water (7:3)",
             "ethyl acetate (100%)",
+            "dichloromethane (100%)",
             "ethanol-water (4:1),boiling",
             "acetonitrile-methanol-water (2:2:1)",
             "ethanol-water (1:1)",
@@ -244,6 +246,7 @@
             "ethanol-water (4:1)",
             "water-acetonitrile (3:2)",
             "methanol (100%)",
+            "hexane (100%)",
             "water (100%) (deg_C_NOS)",
             "methanol-water (3:2)",
             "ethanol-water (9:1)",
