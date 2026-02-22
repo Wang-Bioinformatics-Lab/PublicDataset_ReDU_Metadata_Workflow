@@ -440,6 +440,70 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         print('raw file key found.')
         #attempt to get raw files from associated keys
         raw_file_name_df = raw_file_name_df.rename(columns={'filename': 'filename_raw_path'})
+
+
+        # ---------- BEGIN: keep only preferred uploader file per stem (mzML > mzXML > others) ----------
+        # This modifies raw_file_name_df so downstream matching will prefer mzML/mzXML automatically.
+
+        RAWFILE_PREF_DEBUG_STEM = "p10_1_a6_qing_hao__dist"  # e.g. "p10_1_a6_qing_hao__dist" ; empty disables debug prints
+
+        def _basename_lower(x):
+            s = "" if pd.isna(x) else str(x)
+            s = s.replace("\\", "/").split("/")[-1].lower()
+            return s
+
+        def _strip_gz(name_lower: str) -> str:
+            return re.sub(r"\.gz$", "", name_lower)
+
+        tmp = raw_file_name_df.copy()
+        tmp["_base_lower"] = tmp["filename_base"].map(_basename_lower)
+        tmp["_no_gz"] = tmp["_base_lower"].map(_strip_gz)
+
+        # stem = filename without final extension (after optional .gz removal)
+        tmp["_stem"] = tmp["_no_gz"].str.rsplit(".", n=1).str[0]
+
+        # preference rank
+        tmp["_rank"] = 2
+        tmp.loc[tmp["_no_gz"].str.endswith(".mzml"), "_rank"] = 0
+        tmp.loc[tmp["_no_gz"].str.endswith(".mzxml"), "_rank"] = 1
+
+        before_n = len(tmp)
+
+        # keep one row per stem: best rank, tie-break by name for determinism
+        tmp = tmp.sort_values(["_stem", "_rank", "_base_lower"]).drop_duplicates("_stem", keep="first")
+
+        after_n = len(tmp)
+
+        # optional targeted debug (won't spam)
+        if RAWFILE_PREF_DEBUG_STEM:
+            cand = raw_file_name_df.copy()
+            cand["_base_lower"] = cand["filename_base"].map(_basename_lower)
+            cand["_no_gz"] = cand["_base_lower"].map(_strip_gz)
+            cand["_stem"] = cand["_no_gz"].str.rsplit(".", n=1).str[0]
+            cand["_rank"] = 2
+            cand.loc[cand["_no_gz"].str.endswith(".mzml"), "_rank"] = 0
+            cand.loc[cand["_no_gz"].str.endswith(".mzxml"), "_rank"] = 1
+
+            cand = cand.loc[cand["_stem"] == RAWFILE_PREF_DEBUG_STEM, ["filename_base", "filename_raw_path", "_rank"]] \
+                    .sort_values(["_rank", "filename_base"])
+
+            print(f"\n[rawfile pref DEBUG] stem={RAWFILE_PREF_DEBUG_STEM}")
+            if len(cand) == 0:
+                print("No uploader candidates found for this stem (stem mismatch).")
+            else:
+                print(cand.to_string(index=False))
+                chosen = tmp.loc[tmp["_stem"] == RAWFILE_PREF_DEBUG_STEM, ["filename_base", "filename_raw_path", "_rank"]]
+                print("\n[rawfile pref DEBUG] chosen:")
+                print(chosen.to_string(index=False))
+
+        # write back cleaned uploader df
+        raw_file_name_df = tmp.drop(columns=["_base_lower", "_no_gz", "_stem", "_rank"])
+
+        # tiny summary (one line only)
+        print(f"[rawfile pref] uploader list filtered {before_n} -> {after_n} using mzML > mzXML > others")
+        # ---------- END: keep only preferred uploader file per stem ----------
+
+
         df = get_rawFile_names(df, key_vars=expected_raw_file_keys, new_col="filename_raw")
 
         #explode cases where we have multiple files by separators
@@ -452,7 +516,79 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
         df.reset_index(drop=True, inplace=True)
 
+
+        # --- Prefer mzML > mzXML > others BEFORE matching/merging ---
+
+        # Set to {} to silence stem-specific debug
+        DEBUG_STEMS = {"p10_1_a6_qing_hao__dist"}  # lowercase stem WITHOUT extension
+
+        def _basename_lower(s: str) -> str:
+            # remove folder parts (handles / and \), lowercase
+            return str(s).replace("\\", "/").split("/")[-1].lower()
+
+        # build preferred filename_base per stem from uploader table
+        raw_file_name_df['_base_lower'] = raw_file_name_df['filename_base'].map(_basename_lower)
+
+        raw_file_name_df['_stem'] = raw_file_name_df['_base_lower'].str.rsplit('.', n=1).str[0]
+        raw_file_name_df['_ext']  = raw_file_name_df['_base_lower'].str.rsplit('.', n=1).str[-1].fillna('')
+
+        raw_file_name_df['_rank'] = (
+            raw_file_name_df['_ext']
+            .map({'mzml': 0, 'mzxml': 1})
+            .fillna(2)
+            .astype(int)
+        )
+
+        preferred_raw_by_stem = (
+            raw_file_name_df
+            .sort_values(['_stem', '_rank', '_base_lower'])
+            .drop_duplicates('_stem', keep='first')
+            [['_stem', 'filename_base']]
+            .rename(columns={'filename_base': 'preferred_filename_base'})
+        )
+
+        # compute stem from metadata-provided filename_raw
+        df['filename_raw_orig'] = df['filename_raw']
+
+        df['_raw_base_lower'] = df['filename_raw'].map(_basename_lower)
+        df['_raw_stem'] = df['_raw_base_lower'].str.rsplit('.', n=1).str[0]
+        df['_raw_ext']  = df['_raw_base_lower'].str.rsplit('.', n=1).str[-1].fillna('')
+
+        df = df.merge(preferred_raw_by_stem, left_on='_raw_stem', right_on='_stem', how='left')
+
+        # replace filename_raw with preferred uploader filename_base when available
+        has_pref = df['preferred_filename_base'].notna()
+        df.loc[has_pref, 'filename_raw'] = df.loc[has_pref, 'preferred_filename_base']
+
+        # compact debug
+        changed = (df['filename_raw'] != df['filename_raw_orig'])
+        upgraded = changed & (df['_raw_ext'] == 'raw')
+        print(f"[rawfile preference] upgraded {int(upgraded.sum())} '.raw' -> preferred (mzML/mzXML/other); "
+            f"total changed = {int(changed.sum())}")
+
+        # stem-specific debug only
+        if DEBUG_STEMS:
+            dbg_mask = df['_raw_stem'].isin(DEBUG_STEMS)
+            if dbg_mask.any():
+                print("\n[rawfile preference DEBUG] affected rows (orig -> new):")
+                print(df.loc[dbg_mask, ['filename_raw_orig', 'filename_raw', '_raw_stem', '_raw_ext', 'preferred_filename_base']]
+                        .drop_duplicates()
+                        .to_string(index=False))
+
+                # show uploader candidates for these stems (small, ranked)
+                cand = raw_file_name_df.loc[raw_file_name_df['_stem'].isin(DEBUG_STEMS),
+                                            ['filename_raw_path', 'filename_base', '_ext', '_rank']] \
+                                    .sort_values(['_rank', 'filename_base'])
+                print("\n[rawfile preference DEBUG] uploader candidates for stem(s):")
+                print(cand.to_string(index=False))
+
+        # cleanup temp cols (keep filename_raw_orig if you want)
+        df.drop(columns=['_raw_base_lower', '_raw_stem', '_raw_ext', '_stem', 'preferred_filename_base'], inplace=True, errors='ignore')
+        raw_file_name_df.drop(columns=['_base_lower', '_stem', '_ext', '_rank'], inplace=True, errors='ignore')
+
         raw_file_name_df['filename_base_lower'] = raw_file_name_df['filename_base'].str.lower()
+
+
         df['filename_raw_lower'] = df['filename_raw'].str.lower()
         df['filename_lower'] = df['filename'].str.lower()
 
@@ -527,8 +663,160 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                 df['filename'] = df['filename_raw_path']
                 df.drop(columns=['match_index'], inplace=True)
 
+            if 'filename_base_wo_extension' in df.columns:
+                df['_stem'] = df['filename_base_wo_extension'].astype(str).str.lower()
+                missing_stem = df['_stem'].isin(['', 'nan', 'none']) | df['_stem'].isna()
+                if missing_stem.any():
+                    df.loc[missing_stem, '_stem'] = (
+                        df.loc[missing_stem, 'filename_raw']
+                        .astype(str).str.lower().str.split('.').str[0]
+                    )
+            else:
+                df['_stem'] = df['filename_raw'].astype(str).str.lower().str.split('.').str[0]
+
+            df = df.merge(preferred_raw_by_stem, on='_stem', how='left', suffixes=('', '_preferred'))
+
+            # override only when a preferred file exists
+            if 'filename_raw_path' in df.columns:
+                df['filename_raw_path'] = df['filename_raw_path_preferred'].combine_first(df['filename_raw_path'])
+            else:
+                df['filename_raw_path'] = df['filename_raw_path_preferred']
+
+            if 'filename_base' in df.columns:
+                df['filename_base'] = df['filename_base_preferred'].combine_first(df['filename_base'])
+            else:
+                df['filename_base'] = df['filename_base_preferred']
+
+            df.drop(columns=['_stem', 'filename_base_preferred', 'filename_raw_path_preferred'], inplace=True)
+
+
+            # --- PREFER mzML > mzXML > others (and print debug for why it might not upgrade) ---
+            print("Applying raw-file extension preference: mzML > mzXML > others")
+
+            # helper: strip any folder from a path-like string (handles / and \)
+            raw_file_name_df['_base_lower'] = (
+                raw_file_name_df['filename_base']
+                .astype(str)
+                .str.replace(r'^.*[\\/]', '', regex=True)
+                .str.lower()
+            )
+
+            raw_file_name_df['_stem'] = raw_file_name_df['_base_lower'].str.rsplit('.', n=1).str[0]
+            raw_file_name_df['_ext']  = raw_file_name_df['_base_lower'].str.rsplit('.', n=1).str[-1].fillna('')
+
+            raw_file_name_df['_rank'] = (
+                raw_file_name_df['_ext']
+                .map({'mzml': 0, 'mzxml': 1})
+                .fillna(2)
+                .astype(int)
+            )
+
+            preferred_raw_by_stem = (
+                raw_file_name_df
+                .sort_values(['_stem', '_rank', '_base_lower'])
+                .drop_duplicates('_stem', keep='first')
+                [['_stem', 'filename_base', 'filename_raw_path']]
+                .rename(columns={
+                    'filename_base': 'preferred_filename_base',
+                    'filename_raw_path': 'preferred_filename_raw_path'
+                })
+            )
+
+            # compute df stem from whatever you currently have
+            if 'filename_base' in df.columns and df['filename_base'].notna().any():
+                df['_df_base_lower'] = (
+                    df['filename_base'].astype(str)
+                    .str.replace(r'^.*[\\/]', '', regex=True)
+                    .str.lower()
+                )
+            elif 'filename_raw' in df.columns and df['filename_raw'].notna().any():
+                df['_df_base_lower'] = (
+                    df['filename_raw'].astype(str)
+                    .str.replace(r'^.*[\\/]', '', regex=True)
+                    .str.lower()
+                )
+            else:
+                df['_df_base_lower'] = (
+                    df['filename'].astype(str)
+                    .str.replace(r'^.*[\\/]', '', regex=True)
+                    .str.lower()
+                )
+
+            df['_stem'] = df['_df_base_lower'].str.rsplit('.', n=1).str[0]
+
+            # merge preferred candidate
+            df = df.merge(preferred_raw_by_stem, on='_stem', how='left')
+
+            # DEBUG: your specific problematic stem
+            debug_stem = "p10_1_a6_qing_hao__dist"
+            if (df['_stem'] == debug_stem).any():
+                print("\n[DEBUG] stem =", debug_stem)
+
+                cand_rows = raw_file_name_df.loc[
+                    raw_file_name_df['_stem'] == debug_stem,
+                    ['filename_raw_path', 'filename_base', '_ext', '_rank']
+                ].sort_values(['_rank', 'filename_base'])
+
+                if len(cand_rows) == 0:
+                    print("[DEBUG] No uploader candidates found for this stem. That means your stem extraction didn't match.")
+                    print("[DEBUG] Example df bases for this stem:")
+                    print(df.loc[df['_stem'] == debug_stem, ['_df_base_lower']].head(10).to_string(index=False))
+                else:
+                    print("[DEBUG] Uploader candidates for this stem (sorted by preference):")
+                    print(cand_rows.to_string(index=False))
+
+                cols = [c for c in [
+                    'script_id', 'SubjectIdentifierAsRecorded',
+                    'filename', 'filename_raw', 'filename_base', 'filename_raw_path',
+                    'preferred_filename_base', 'preferred_filename_raw_path'
+                ] if c in df.columns]
+
+                print("[DEBUG] Row(s) BEFORE override:")
+                print(df.loc[df['_stem'] == debug_stem, cols].to_string(index=False))
+
+            # apply override where we have a preferred file
+            has_pref = df['preferred_filename_base'].notna()
+
+            # these two are your merged uploader columns (if present)
+            if 'filename_base' in df.columns:
+                df.loc[has_pref, 'filename_base'] = df.loc[has_pref, 'preferred_filename_base']
+            if 'filename_raw_path' in df.columns:
+                df.loc[has_pref, 'filename_raw_path'] = df.loc[has_pref, 'preferred_filename_raw_path']
+
+            # IMPORTANT: also overwrite the columns that often “carry through” to outputs/deduping
+            # If in your pipeline `filename` is intended to represent the associated raw file, set it to the preferred *path*.
+            if 'filename_raw' in df.columns:
+                df.loc[has_pref, 'filename_raw'] = df.loc[has_pref, 'preferred_filename_base']
+
+            if 'filename' in df.columns:
+                # If `filename` is *metadata filename*, do NOT overwrite it.
+                # In your shown code, you later treat filename as raw-associated in several places and dedupe on it,
+                # so overwriting it is likely what you want.
+                df.loc[has_pref, 'filename'] = df.loc[has_pref, 'preferred_filename_raw_path']
+
+            if (df['_stem'] == debug_stem).any():
+                cols = [c for c in [
+                    'script_id', 'SubjectIdentifierAsRecorded',
+                    'filename', 'filename_raw', 'filename_base', 'filename_raw_path'
+                ] if c in df.columns]
+                print("[DEBUG] Row(s) AFTER override:")
+                print(df.loc[df['_stem'] == debug_stem, cols].to_string(index=False))
+                print()
+
+            # cleanup
+            df.drop(columns=[
+                'preferred_filename_base', 'preferred_filename_raw_path',
+                '_df_base_lower', '_stem'
+            ], inplace=True, errors='ignore')
+
+            # also cleanup temp cols from raw_file_name_df to avoid polluting later logic
+            raw_file_name_df.drop(columns=['_base_lower', '_stem', '_ext', '_rank'], inplace=True, errors='ignore')
+
+
+
             df['filename_raw_lower'] = df['filename_base']
             df = df.drop(columns=['filename_base'])
+
 
 
     df = df[pd.notna(df['USI'])]

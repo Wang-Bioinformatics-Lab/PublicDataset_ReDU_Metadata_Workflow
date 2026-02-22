@@ -22,7 +22,8 @@ if __name__ == "__main__":
     df_merged = pd.concat([df_current, df_older])
 
     #unique by USI column
-    df_merged = df_merged.drop_duplicates(subset=['USI'])
+    df_merged["USI_noext"] = df_merged["USI"].str.replace(r"(\.[^.]+)+$", "", regex=True)
+    df_merged = df_merged.drop_duplicates(subset=["USI_noext"]).drop(columns=["USI_noext"])
 
 
     # make sure we have the dataset labels
