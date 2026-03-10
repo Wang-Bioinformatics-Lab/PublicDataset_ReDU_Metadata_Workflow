@@ -51,7 +51,9 @@
             "culture_fungal",
             "blank_analysis",
             "fungi",
-            "bacteria"
+            "bacteria",
+            "molecular_standards",
+            "combinatorial_synthesis"
         ]
     },
     "SampleTypeSub1": {
