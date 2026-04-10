@@ -39,7 +39,7 @@ def safe_api_request(url, retries=3, expected_codes={200}):
 
 
 def get_all_files(study_id, headers):
-    base_url = f'https://www.ebi.ac.uk:443/metabolights/ws/studies/{study_id}/data-files'
+    base_url = f'https://www.ebi.ac.uk:443/metabolights/ws/studies/{study_id}/public-data-files'
     search_patterns = [
         'FILES/**/*.*',
         'FILES/**/*.zip',
