@@ -202,6 +202,8 @@ process normanRun {
 
     publishDir "./nf_output", mode: 'copy'
 
+    errorStrategy 'ignore'
+
     input:
     path uberon_po_cl_csv_path
     path ENVO_bio_csv
@@ -221,7 +223,7 @@ process normanRun {
     --path_to_envo_biome_csv ${ENVO_bio_csv} \
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
-    --output NORMAN2REDU_ALL.tsv
+    --output NORMAN2REDU_ALL.tsv || touch NORMAN2REDU_ALL.tsv
     """
 }
 

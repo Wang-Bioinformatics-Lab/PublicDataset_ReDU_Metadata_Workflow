@@ -1,11 +1,23 @@
 
 from owlready2 import get_ontology
 import owlready2
+import owlready2.namespace as _owl_ns
 import pandas as pd
 import tqdm
 import os
 import argparse
 import json
+
+# owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
+# declares an IRI as both a property and a class/individual. Patch _load_properties
+# to skip those conflicting entries instead of crashing.
+_original_load_properties = _owl_ns.Ontology._load_properties
+def _patched_load_properties(self):
+    try:
+        _original_load_properties(self)
+    except TypeError:
+        pass
+_owl_ns.Ontology._load_properties = _patched_load_properties
 
 def get_uberon_table(owl_path):
     onto = get_ontology(owl_path).load()

@@ -306,13 +306,18 @@ def Metabolights2REDU(study_id, **kwargs):
                 #######
                 updated_species_dict = {}
 
+                envo_mat_labels_norm = ENVOEnvironmentMaterialIndex_table['Label'].str.replace(' ', '').str.lower()
+                envo_mat_synonyms_norm = ENVOEnvironmentMaterialIndex_table['Synonym'].str.replace(' ', '').str.lower()
+
                 for key, value in processed_organisms.items():
                     if value == 'None':
                         match = ENVOEnvironmentMaterialIndex_table[(ENVOEnvironmentMaterialIndex_table['Label'] == key) | (ENVOEnvironmentMaterialIndex_table['Synonym'] == key)]['Label'].values
                         if match.size > 0:
                             updated_species_dict[key] = match[0]
                         else:
-                            updated_species_dict[key] = 'missing value'
+                            key_norm = key.replace(' ', '').lower()
+                            match_norm = ENVOEnvironmentMaterialIndex_table[(envo_mat_labels_norm == key_norm) | (envo_mat_synonyms_norm == key_norm)]['Label'].values
+                            updated_species_dict[key] = match_norm[0] if match_norm.size > 0 else 'missing value'
 
                 df_study.loc[:, 'ENVOEnvironmentMaterial'] = df_study['Samples_Organism'].map(updated_species_dict)
 
@@ -321,13 +326,18 @@ def Metabolights2REDU(study_id, **kwargs):
                 #######
                 updated_species_dict = {}
 
+                envo_biome_labels_norm = ENVOEnvironmentBiomeIndex_table['Label'].str.replace(' ', '').str.lower()
+                envo_biome_synonyms_norm = ENVOEnvironmentBiomeIndex_table['Synonym'].str.replace(' ', '').str.lower()
+
                 for key, value in processed_organisms.items():
                     if value == 'None':
                         match = ENVOEnvironmentBiomeIndex_table[(ENVOEnvironmentBiomeIndex_table['Label'] == key) | (ENVOEnvironmentBiomeIndex_table['Synonym'] == key)]['Label'].values
                         if match.size > 0:
                             updated_species_dict[key] = match[0]
                         else:
-                            updated_species_dict[key] = 'missing value'
+                            key_norm = key.replace(' ', '').lower()
+                            match_norm = ENVOEnvironmentBiomeIndex_table[(envo_biome_labels_norm == key_norm) | (envo_biome_synonyms_norm == key_norm)]['Label'].values
+                            updated_species_dict[key] = match_norm[0] if match_norm.size > 0 else 'missing value'
 
                 df_study.loc[:, 'ENVOEnvironmentBiome'] = df_study['Samples_Organism'].map(updated_species_dict)
 
@@ -494,6 +504,35 @@ def Metabolights2REDU(study_id, **kwargs):
                 df_study.loc[df_study['Samples_gender'].str.lower().str.contains('female'), 'BiologicalSex'] = 'female'
                 df_study.loc[(df_study['Samples_gender'].str.lower().str.contains('male')) & (df_study['BiologicalSex'] != 'female'), 'BiologicalSex'] = 'male'
 
+
+            #add LatitudeandLongitude
+            #######
+            if 'Samples_Latitude' in df_study.columns and 'Samples_Longitude' in df_study.columns:
+                def combine_lat_lon(row):
+                    lat = str(row['Samples_Latitude']).strip()
+                    lon = str(row['Samples_Longitude']).strip()
+                    if lat and lon and lat not in ('nan', '') and lon not in ('nan', ''):
+                        try:
+                            float(lat)
+                            float(lon)
+                            return f"{lat}|{lon}"
+                        except ValueError:
+                            pass
+                    return 'missing value'
+                df_study['LatitudeandLongitude'] = df_study.apply(combine_lat_lon, axis=1)
+
+            #add DepthorAltitudeMeters
+            #######
+            if 'Samples_Nominal depth' in df_study.columns:
+                def get_depth(val):
+                    val = str(val).strip()
+                    if val and val not in ('nan', ''):
+                        try:
+                            return str(-abs(float(val)))
+                        except ValueError:
+                            pass
+                    return 'missing value'
+                df_study['DepthorAltitudeMeters'] = df_study['Samples_Nominal depth'].apply(get_depth)
 
             #add MassiveID and USIs
             #######

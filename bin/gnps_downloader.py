@@ -158,6 +158,7 @@ def main():
             continue
 
         download_url = download_link + link
+        print(download_url)
         r = requests.get(download_url, verify=False)
         file_name = os.path.join(args.output_metadata_folder, str(index) + "_gnps_metadata.tsv")
         file_paths["sys_name"].append(file_name)

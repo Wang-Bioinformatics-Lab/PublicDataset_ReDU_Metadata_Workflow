@@ -40,7 +40,10 @@ def main():
     metabo_df["DataSource"] = "MetaboLights"
 
     # read NORMAN metadata
-    norman_df = pd.read_csv(args.norman_metadata, sep='\t', dtype=str)
+    try:
+        norman_df = pd.read_csv(args.norman_metadata, sep='\t', dtype=str)
+    except pd.errors.EmptyDataError:
+        norman_df = pd.DataFrame()
     norman_df["DataSource"] = "NORMAN"
 
     # read MASST metadata
