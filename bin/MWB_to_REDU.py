@@ -676,18 +676,35 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
             df = df.merge(preferred_raw_by_stem, on='_stem', how='left', suffixes=('', '_preferred'))
 
-            # override only when a preferred file exists
-            if 'filename_raw_path' in df.columns:
-                df['filename_raw_path'] = df['filename_raw_path_preferred'].combine_first(df['filename_raw_path'])
-            else:
-                df['filename_raw_path'] = df['filename_raw_path_preferred']
+            # Guard the '_preferred' overrides: the preferred_raw_by_stem merged here
+            # only carries 'preferred_filename_base', so the 'filename_raw_path_preferred'
+            # / 'filename_base_preferred' columns the original code referenced never
+            # exist -> an unconditional reference raised KeyError and dropped the whole
+            # study (this is what silently lost ST001000 and other studies routed
+            # through the fuzzy-match branch). This early override is in any case
+            # superseded by the full mzML>mzXML>vendor preference block right below,
+            # so no-op'ing it here when the columns are absent is safe.
+            if 'filename_raw_path_preferred' in df.columns:
+                if 'filename_raw_path' in df.columns:
+                    df['filename_raw_path'] = df['filename_raw_path_preferred'].combine_first(df['filename_raw_path'])
+                else:
+                    df['filename_raw_path'] = df['filename_raw_path_preferred']
 
-            if 'filename_base' in df.columns:
-                df['filename_base'] = df['filename_base_preferred'].combine_first(df['filename_base'])
-            else:
-                df['filename_base'] = df['filename_base_preferred']
+            if 'filename_base_preferred' in df.columns:
+                if 'filename_base' in df.columns:
+                    df['filename_base'] = df['filename_base_preferred'].combine_first(df['filename_base'])
+                else:
+                    df['filename_base'] = df['filename_base_preferred']
 
-            df.drop(columns=['_stem', 'filename_base_preferred', 'filename_raw_path_preferred'], inplace=True)
+            # Drop every helper column this early-override block introduced (both the
+            # '_preferred'-suffixed names AND the un-suffixed 'preferred_*' columns that
+            # the merged preferred_raw_by_stem carries). Leaving 'preferred_filename_base'
+            # behind here made the *next* preferred_raw_by_stem merge below collide and
+            # rename to _x/_y, producing a 'preferred_filename_base' KeyError that again
+            # dropped the whole study.
+            df.drop(columns=['_stem', 'filename_base_preferred', 'filename_raw_path_preferred',
+                             'preferred_filename_base', 'preferred_filename_raw_path'],
+                    inplace=True, errors='ignore')
 
 
             # --- PREFER mzML > mzXML > others (and print debug for why it might not upgrade) ---
@@ -829,9 +846,21 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     try:
         df_update = pd.concat([df, df_additional], ignore_index=True)
 
-        # For each filename group: if a column's non-NA values are all the same, fill that value for the group; else set NA
+        # This consolidates *sample-level metadata* per sample: group by 'filename'
+        # (which at this stage is the MWB Sample ID) and, for each column, keep the
+        # single agreed value or blank it to NaN if the sample's rows disagree.
+        #
+        # File-association columns are EXEMPT: a single sample legitimately maps to
+        # several raw files (e.g. one measurement per chromatography/ionization
+        # method, all listed under the same Sample ID). Those distinct file paths
+        # are not a "discrepancy" to blank - blanking them destroys the file
+        # association and silently drops the sample entirely (this was losing whole
+        # multi-method studies like ST002470/ST002471). Exempting these columns is a
+        # no-op for the common one-file-per-sample case (a single value is kept
+        # either way), so it cannot change output for those studies.
+        file_assoc_cols = {c for c in df_update.columns if 'filename' in c} | {'USI', 'size_mb'}
         for col in df_update.columns:
-            if col in ['filename', 'Key', 'Value']:
+            if col in ['filename', 'Key', 'Value'] or col in file_assoc_cols:
                 continue
             df_update[col] = df_update.groupby('filename')[col].transform(
                 lambda s: s.dropna().iloc[0] if s.dropna().nunique() <= 1 else np.nan

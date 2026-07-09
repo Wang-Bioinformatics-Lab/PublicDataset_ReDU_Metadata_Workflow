@@ -17,9 +17,18 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     Returns:
     A DataFrame that has been filled with default values for missing columns,
-    with values replaced by the corresponding "missing" value from the dictionary 
+    with values replaced by the corresponding "missing" value from the dictionary
     if they are not in the allowed terms or are missing/empty, except for specific columns.
     """
+
+    if len(df) == 0:
+        # On an empty (0-row) input, pandas' .map({}).fillna(...) chain below
+        # produces float64-typed empty columns (no data to infer a dtype from),
+        # which then fails when merged against the ontology tables' object-typed
+        # 'Label' columns ("You are trying to merge on float64 and object
+        # columns"). There's nothing to process for an empty table anyway, so
+        # short-circuit before any of that logic runs.
+        return df
 
     #prepare UberonOntologyIndex
     if 'UBERONOntologyIndex_table' in kwargs.keys():
