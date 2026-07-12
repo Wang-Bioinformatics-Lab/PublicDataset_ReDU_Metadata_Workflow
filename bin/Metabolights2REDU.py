@@ -15,6 +15,7 @@ from REDU_conversion_functions import get_taxonomy_info
 from REDU_conversion_functions import merge_repeated_fileobservations
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
+from REDU_conversion_functions import map_instrument_to_allowed
 
 
 
@@ -447,6 +448,20 @@ def Metabolights2REDU(study_id, **kwargs):
                 ))
 
                 df_study["MassSpectrometer"] = df_study["Assay_Instrument"].map(allowed_values_map)
+
+                # Fallback: the exact map misses ~40% of instruments (Q-Exactive vs
+                # "Q Exactive", Agilent iFunnel Q-TOF, Synapt/maXis variants, ...). Map
+                # the (already prefix-stripped) instrument string onto the allowed
+                # vocabulary by token-subset match. Analysis-level, no over-assignment.
+                _allowed_ms = allowedTerm_dict["MassSpectrometer"]["allowed_values"]
+                _unres = df_study["MassSpectrometer"].isna()
+                if _unres.any():
+                    _ms_cache = {}
+                    def _resolve_ms(raw):
+                        if raw not in _ms_cache:
+                            _ms_cache[raw] = map_instrument_to_allowed(raw, _allowed_ms)
+                        return _ms_cache[raw]
+                    df_study.loc[_unres, "MassSpectrometer"] = df_study.loc[_unres, "Assay_Instrument"].map(_resolve_ms)
 
 
 

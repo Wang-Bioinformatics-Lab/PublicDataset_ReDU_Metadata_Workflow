@@ -12,6 +12,7 @@ from collections import Counter
 import traceback
 import time
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from REDU_conversion_functions import map_instrument_to_allowed
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
@@ -1128,38 +1129,6 @@ def _fill_uberon_from_other_keys(MWB_table, df_translations):
     filled = MWB_table['filename'].map(fill)
     MWB_table.loc[missing, 'UBERONBodyPartName'] = filled[missing].fillna(cur[missing])
     return MWB_table
-
-
-# Vendor / marketing words that carry no model information; dropped before matching an
-# instrument string against the allowed MassSpectrometer vocabulary.
-_MS_STOPWORDS = {
-    'thermo', 'abi', 'agilent', 'bruker', 'waters', 'sciex', 'leco', 'shimadzu', 'ab',
-    'daltonics', 'hybrid', 'series', 'system', 'lc', 'ms', 'lcms', 'msms', 'scientific',
-    'fisher', 'the', 'and', 'with', 'gc',
-}
-
-
-def _ms_tokens(s):
-    s = str(s).lower().replace('q-exactive', 'q exactive').replace('qexactive', 'q exactive')
-    s = re.sub(r'[^a-z0-9+]+', ' ', s)
-    return {t for t in s.split() if t and t not in _MS_STOPWORDS}
-
-
-def map_instrument_to_allowed(instrument, allowed_values):
-    """Map a free-text MWB instrument name (e.g. "Thermo Q Exactive HF hybrid Orbitrap")
-    onto an allowed MassSpectrometer vocabulary entry ("Q Exactive HF|MS:1002523") by
-    token-subset match: every (non-stopword) token of a vocab label must be present in
-    the instrument string. The most specific label wins (most tokens), so "HF" never
-    steals "HF-X". Returns the allowed value or None if nothing matches confidently."""
-    it = _ms_tokens(instrument)
-    if not it:
-        return None
-    best, best_n = None, 0
-    for val in allowed_values:
-        lab_tokens = _ms_tokens(str(val).split('|')[0])
-        if lab_tokens and lab_tokens.issubset(it) and len(lab_tokens) > best_n:
-            best, best_n = val, len(lab_tokens)
-    return best
 
 
 def translate_MWB_to_REDU_from_csv(MWB_table,

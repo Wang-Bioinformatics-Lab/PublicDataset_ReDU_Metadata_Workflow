@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import requests
 import time
 from bs4 import BeautifulSoup
@@ -183,6 +184,39 @@ def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
             return [None, None]
     else:
         return [None, None]
+
+# Vendor / marketing words that carry no model information; dropped before matching an
+# instrument string against the allowed MassSpectrometer vocabulary. Shared by the MWB
+# and MetaboLights converters.
+_MS_STOPWORDS = {
+    'thermo', 'abi', 'agilent', 'bruker', 'waters', 'sciex', 'leco', 'shimadzu', 'ab',
+    'daltonics', 'hybrid', 'series', 'system', 'lc', 'ms', 'lcms', 'msms', 'scientific',
+    'fisher', 'the', 'and', 'with', 'gc',
+}
+
+
+def _ms_tokens(s):
+    s = str(s).lower().replace('q-exactive', 'q exactive').replace('qexactive', 'q exactive')
+    s = re.sub(r'[^a-z0-9+]+', ' ', s)
+    return {t for t in s.split() if t and t not in _MS_STOPWORDS}
+
+
+def map_instrument_to_allowed(instrument, allowed_values):
+    """Map a free-text instrument name (e.g. "Thermo Scientific Q-Exactive") onto an
+    allowed MassSpectrometer vocabulary entry ("Q Exactive|MS:1001911") by token-subset
+    match: every (non-stopword) token of a vocab label must be present in the instrument
+    string. The most specific label wins (most tokens), so "HF" never steals "HF-X".
+    Returns the allowed value or None if nothing matches confidently."""
+    it = _ms_tokens(instrument)
+    if not it:
+        return None
+    best, best_n = None, 0
+    for val in allowed_values:
+        lab_tokens = _ms_tokens(str(val).split('|')[0])
+        if lab_tokens and lab_tokens.issubset(it) and len(lab_tokens) > best_n:
+            best, best_n = val, len(lab_tokens)
+    return best
+
 
 def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
 
