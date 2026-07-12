@@ -16,6 +16,7 @@ from REDU_conversion_functions import merge_repeated_fileobservations
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 from REDU_conversion_functions import map_instrument_to_allowed
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric
 
 
 
@@ -653,6 +654,30 @@ def Metabolights2REDU(study_id, **kwargs):
                     _mapped = df_study[_c].astype(str).str.strip().str.lower().map(_cvocab)
                     _need = df_study['Country'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & _mapped.notna()
                     df_study.loc[_need, 'Country'] = _mapped[_need]
+
+            #add SmokingStatus
+            #######
+            def _toks(col):
+                return set(re.split(r'[^a-z0-9]+', str(col).lower()))
+            _smoke_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and ('smoking' in _toks(c) or 'smoke' in _toks(c) or 'tobacco' in _toks(c))]
+            if _smoke_cols:
+                if 'SmokingStatus' not in df_study.columns:
+                    df_study['SmokingStatus'] = 'missing value'
+                for _c in _smoke_cols:
+                    _m = df_study[_c].apply(convert_smoking)
+                    _need = df_study['SmokingStatus'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
+                    df_study.loc[_need, 'SmokingStatus'] = _m[_need]
+
+            #add BodyMassIndex
+            #######
+            _bmi_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and ('bmi' in _toks(c) or {'body', 'mass', 'index'} <= _toks(c))]
+            if _bmi_cols:
+                if 'BodyMassIndex' not in df_study.columns:
+                    df_study['BodyMassIndex'] = 'missing value'
+                for _c in _bmi_cols:
+                    _m = df_study[_c].apply(bmi_to_numeric).astype(str)
+                    _need = df_study['BodyMassIndex'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
+                    df_study.loc[_need, 'BodyMassIndex'] = _m[_need]
 
             #add MassiveID and USIs
             #######

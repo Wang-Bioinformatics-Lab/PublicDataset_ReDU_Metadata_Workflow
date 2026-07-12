@@ -425,6 +425,30 @@
             "healthy"
         ]
     },
+    "SmokingStatus": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The tobacco smoking status of the subject at the time of sampling.",
+        "example": "never smoker",
+        "source": "-",
+        "allowed_values": [
+            "current smoker",
+            "former smoker",
+            "never smoker"
+        ]
+    },
+    "BodyMassIndex": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The body mass index (BMI) of the subject in kg/m^2.",
+        "example": "24.1",
+        "source": "-",
+        "allowed_values": [
+            "numeric"
+        ]
+    },
     "DOIDCommonName": {
         "generate": "False",
         "type": "biology/medicine",

@@ -201,6 +201,34 @@ def _ms_tokens(s):
     return {t for t in s.split() if t and t not in _MS_STOPWORDS}
 
 
+def convert_smoking(x):
+    """Normalize a free-text smoking value to the SmokingStatus vocabulary
+    (current/former/never smoker). Only unambiguous text is mapped; coded values
+    (0/1/yes/no) stay missing to avoid guessing polarity. Separators are normalized
+    to spaces first so word boundaries match (e.g. 'never_used')."""
+    x = re.sub(r'[^a-z0-9]+', ' ', str(x).strip().lower()).strip()
+    if re.search(r'\bnever\b', x) or re.search(r'\bnon smoker\b|\bnonsmoker\b', x):
+        return 'never smoker'
+    if re.search(r'\bformer\b|\bex smoker\b|\bprevious\b|\bpast\b|\bquit\b', x):
+        return 'former smoker'
+    if re.search(r'\bcurrent\b', x) or x == 'smoker':
+        return 'current smoker'
+    return 'missing value'
+
+
+def bmi_to_numeric(x):
+    """Extract a plausible BMI number (kg/m^2). Rejects z-scores, codes and other
+    non-BMI values by requiring a human-plausible range (8-100)."""
+    nums = re.findall(r'-?\d+\.?\d*', str(x))
+    if not nums:
+        return 'missing value'
+    try:
+        v = float(nums[0])
+    except ValueError:
+        return 'missing value'
+    return v if 8 <= v <= 100 else 'missing value'
+
+
 def map_instrument_to_allowed(instrument, allowed_values):
     """Map a free-text instrument name (e.g. "Thermo Scientific Q-Exactive") onto an
     allowed MassSpectrometer vocabulary entry ("Q Exactive|MS:1001911") by token-subset
