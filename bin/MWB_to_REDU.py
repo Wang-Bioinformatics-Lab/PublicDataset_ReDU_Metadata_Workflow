@@ -13,7 +13,7 @@ import traceback
 import time
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
 from REDU_conversion_functions import map_instrument_to_allowed
-from REDU_conversion_functions import convert_smoking, bmi_to_numeric
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
@@ -941,6 +941,9 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                                                "cigarette smoking"], new_col="MWB_smoking")
     df = get_key_info_into_outer(df, key_vars=["bmi", "body mass index", "body_mass_index",
                                                "bmi (kg/m2)", "bmi_kg_m2"], new_col="MWB_bmi")
+    df = get_key_info_into_outer(df, key_vars=["diet", "diet_type", "diet type", "diet group",
+                                               "dietary group", "dietary pattern", "feeding regime",
+                                               "diet_group"], new_col="MWB_diet")
     df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country", "site", "location", "country_of_origin"],
                                  new_col="Country")
     df = get_key_info_into_outer(df, key_vars=["latitude"], new_col="Latitude")
@@ -1297,6 +1300,8 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
         MWB_table['SmokingStatus'] = MWB_table['MWB_smoking'].map(convert_smoking)
     if 'MWB_bmi' in MWB_table.columns:
         MWB_table['BodyMassIndex'] = MWB_table['MWB_bmi'].apply(bmi_to_numeric)
+    if 'MWB_diet' in MWB_table.columns:
+        MWB_table['Diet'] = MWB_table['MWB_diet'].map(convert_diet)
 
     df_translations = pd.read_csv(path_to_csvs + "/biofluid_tissue_distinction.csv", encoding="ISO-8859-1", dtype=str)
 
@@ -1317,7 +1322,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
                         'InternalStandardsUsed', 'SubjectIdentifierAsRecorded', 'AgeInYears',
                         'BiologicalSex', 'UBERONBodyPartName', 'HealthStatus', 'DOIDCommonName',
                         'ComorbidityListDOIDIndex', 'Country', 'HumanPopulationDensity',
-                        'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex']
+                        'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
 
     # Iterate through each column in the list
     for column in columns_to_check:
@@ -1595,7 +1600,8 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                             "DepthorAltitudeMeters",
                             "qiita_sample_name",
                             "SmokingStatus",
-                            "BodyMassIndex"
+                            "BodyMassIndex",
+                            "Diet"
                             ]
     
     complete_df[missing_not_imported] = complete_df[missing_not_imported].replace(
@@ -1638,6 +1644,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                            "qiita_sample_name",
                            "SmokingStatus",
                            "BodyMassIndex",
+                           "Diet",
                            "UniqueSubjectID",
                            "LifeStage",
                            "UBERONOntologyIndex",

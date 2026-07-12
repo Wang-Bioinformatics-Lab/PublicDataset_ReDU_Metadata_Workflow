@@ -216,6 +216,51 @@ def convert_smoking(x):
     return 'missing value'
 
 
+def convert_diet(x):
+    """Normalize a free-text diet value (from a diet-named field) to the Diet
+    vocabulary. Human patterns and experimental/composition diet types; the input
+    is assumed to come from a diet field, so short codes (cd/hf/hsd) decode safely.
+    Bespoke study-specific formulas (e.g. 'ser/gly free') stay missing. Order is
+    significant: most specific compositions first."""
+    x = re.sub(r'[^a-z0-9]+', ' ', str(x).strip().lower()).strip()
+    if not x:
+        return 'missing value'
+    # human dietary patterns
+    if re.search(r'\bvegan\b', x):
+        return 'vegan'
+    if re.search(r'\bpesc[ae]tarian\b', x):
+        return 'pescatarian'
+    if re.search(r'\bvegetarian\b|lacto ovo|ovo vegetarian', x):
+        return 'vegetarian'
+    if re.search(r'\bomnivor', x):
+        return 'omnivore'
+    # experimental / composition diets (specific first)
+    if re.search(r'\bhfhs\b|\bhchf\b|high fat high (sugar|sucrose|carb)', x):
+        return 'high-fat high-sugar diet'
+    if re.search(r'\bhfd\b|\bhf\b|high[ _]?fat|highfat', x):
+        return 'high-fat diet'
+    if re.search(r'\bhsd\b|high[ _]?sugar|high[ _]?sucrose|\bh sucrose\b|high carb', x):
+        return 'high-sugar diet'
+    if re.search(r'\blfd\b|low[ _]?fat', x):
+        return 'low-fat diet'
+    if re.search(r'high[ _]?protein|\bh protein\b', x):
+        return 'high-protein diet'
+    if re.search(r'ketogenic|\bketo\b', x):
+        return 'ketogenic diet'
+    if re.search(r'mediterranean', x):
+        return 'Mediterranean diet'
+    if re.search(r'western|regular american', x):
+        return 'Western diet'
+    if re.search(r'prebiotic', x):
+        return 'prebiotic diet'
+    if re.search(r'calorie restrict|caloric restrict|calorie restricted|\brestricted\b', x):
+        return 'calorie-restricted diet'
+    # control / standard chow
+    if re.search(r'\bchow\b|\bnormal\b|\bcontrol\b|\bstandard\b|\bncd\b|\bcd\b|\bcon\b|\bctrl\b|ain ?76|regular chow|standard chow|\bsc\b|normal diet', x):
+        return 'control diet'
+    return 'missing value'
+
+
 def bmi_to_numeric(x):
     """Extract a plausible BMI number (kg/m^2). Rejects z-scores, codes and other
     non-BMI values by requiring a human-plausible range (8-100)."""

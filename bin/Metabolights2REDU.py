@@ -16,7 +16,7 @@ from REDU_conversion_functions import merge_repeated_fileobservations
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 from REDU_conversion_functions import map_instrument_to_allowed
-from REDU_conversion_functions import convert_smoking, bmi_to_numeric
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
 
 
 
@@ -678,6 +678,17 @@ def Metabolights2REDU(study_id, **kwargs):
                     _m = df_study[_c].apply(bmi_to_numeric).astype(str)
                     _need = df_study['BodyMassIndex'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
                     df_study.loc[_need, 'BodyMassIndex'] = _m[_need]
+
+            #add Diet
+            #######
+            _diet_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and ('diet' in _toks(c) or {'feeding', 'regime'} <= _toks(c) or {'dietary', 'group'} <= _toks(c))]
+            if _diet_cols:
+                if 'Diet' not in df_study.columns:
+                    df_study['Diet'] = 'missing value'
+                for _c in _diet_cols:
+                    _m = df_study[_c].apply(convert_diet)
+                    _need = df_study['Diet'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
+                    df_study.loc[_need, 'Diet'] = _m[_need]
 
             #add MassiveID and USIs
             #######
