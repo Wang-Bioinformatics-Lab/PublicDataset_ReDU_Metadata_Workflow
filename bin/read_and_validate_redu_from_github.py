@@ -139,7 +139,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     #Resolve contradictory fields
     if 'SampleType' in df.columns:
         mask = df['SampleType'].str.contains('blank', case=False)
-        df.loc[mask, ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'DOIDCommonName', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial']] = ''
+        df.loc[mask, ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'DOIDCommonName', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude']] = ''
 
     if 'filename' in df.columns and attempt_adding_file_extensions == True:
         df.loc[df['filename'].str.contains(r'^[^.]+$') & (df['filename'].str.len() >= 1), 'filename'] += '.mzML'
