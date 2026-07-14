@@ -40,8 +40,16 @@ def safe_api_request(url, retries=3, expected_codes={200}):
 
 def get_all_files(study_id, headers):
     base_url = f'https://www.ebi.ac.uk:443/metabolights/ws/studies/{study_id}/public-data-files'
-    search_patterns = [
-        'FILES/**/*.*',
+    # Two complementary broad patterns are BOTH required to list a study completely:
+    #   - 'FILES/*'     matches files that sit directly under FILES/
+    #   - 'FILES/**/*.*' matches files nested inside subdirectories of FILES/
+    # The recursive '**' glob does NOT match top-level files, so studies whose data
+    # lives directly in FILES/ return nothing from '**' alone (this silently dropped
+    # hundreds of studies). We union both and dedup by name.
+    broad_patterns = ['FILES/*', 'FILES/**/*.*']
+    # Extension-specific recursive fallbacks, only used when the recursive broad
+    # pattern times out (504) on very large studies.
+    fallback_patterns = [
         'FILES/**/*.zip',
         'FILES/**/*.raw',
         'FILES/**/*.RAW',
@@ -55,31 +63,50 @@ def get_all_files(study_id, headers):
         'FILES/**/*.wiff',
         'FILES/**/*.wiff.scan'
     ]
-    
-    all_files = []
-    initial_try = True
 
-    for pattern in search_patterns:
+    all_files = []
+    seen = set()
+
+    def _add(files):
+        for f in files:
+            name = f['name']
+            if name not in seen:
+                seen.add(name)
+                all_files.append(f)
+
+    def _query(pattern):
         url = f"{base_url}?search_pattern={pattern}&file_match=true&folder_match=true"
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # Raises HTTPError for 4XX/5XX responses
+        return response.json()['files']
+
+    recursive_timed_out = False
+    for pattern in broad_patterns:
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()  # Raises HTTPError for 4XX/5XX responses
-            files_data = response.json()
-            if files_data['files']:
-                all_files.extend(files_data['files'])
-                if initial_try:  # If initial broad pattern works, no need to try more specific patterns
-                    break
+            _add(_query(pattern))
         except requests.exceptions.HTTPError as http_err:
-            if response.status_code == 504 and initial_try:  # Gateway Timeout only matters on first try
+            status = getattr(http_err.response, 'status_code', None)
+            if status == 504 and pattern == 'FILES/**/*.*':  # only the recursive scan is slow
                 print(f"Timeout encountered in {study_id} with pattern: {pattern}. Trying more specific patterns.")
-                initial_try = False  # Subsequent attempts will not break after first success
+                recursive_timed_out = True
             else:
-                print(f"HTTP error occurred in {study_id} : {http_err} - Status code: {response.status_code}")
+                print(f"HTTP error occurred in {study_id} : {http_err} - Status code: {status}")
         except requests.RequestException as err:
-            print(f"Request failed: {err}")
+            print(f"Request failed for {study_id}: {err}")
         except ValueError as json_err:
             print(f"JSON decoding failed in {study_id}: {json_err}")
-            print("Response content:", response.text)  # Print the response text that was not JSON
+
+    if recursive_timed_out:
+        for pattern in fallback_patterns:
+            try:
+                _add(_query(pattern))
+            except requests.exceptions.HTTPError as http_err:
+                status = getattr(http_err.response, 'status_code', None)
+                print(f"HTTP error occurred in {study_id} : {http_err} - Status code: {status}")
+            except requests.RequestException as err:
+                print(f"Request failed for {study_id}: {err}")
+            except ValueError as json_err:
+                print(f"JSON decoding failed in {study_id}: {json_err}")
 
     if not all_files:
         print(f"No files found for study {study_id}.")
