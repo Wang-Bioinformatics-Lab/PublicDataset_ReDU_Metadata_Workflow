@@ -501,11 +501,11 @@
         "generate": "False",
         "type": "general",
         "missing": "missing value",
-        "description": "Enter time and date (month/day/year 24:00 time)",
-        "example": "7/2/2019 12:00",
+        "description": "Date (and optionally time) the sample was collected, normalised to precision-preserving ISO-8601 so the temporal resolution is explicit: year (2018), year-month (2018-07), date (2018-07-12) or date+time (2018-07-12T22:00); a collection period is an interval start/end (2022-06-14/2022-06-30). US M/D/Y, ISO Y-M-D, textual months (12 July 2018), 2-digit years and timezone-suffixed values are accepted. Ambiguous slash dates are resolved per dataset (a value proving an order wins; otherwise the dataset decides; default month-first, NORMAN day-first). Only the submitted precision is kept - days or times are never fabricated.",
+        "example": "2018-07-12T22:00",
         "source": "-",
         "allowed_values": [
-            "00"
+            "datetime"
         ]
     },
     "Country": {
@@ -863,7 +863,7 @@
             "subsection",
             "pathogroup"
         ]
-    },    
+    },
     "NCBIDivision": {
         "generate": "True",
         "type": "generated",
@@ -984,7 +984,7 @@
         "example": "GNPS",
         "source": "",
         "allowed_values": []
-    },        
+    },
     "USI": {
         "generate": "True",
         "type": "generated",
