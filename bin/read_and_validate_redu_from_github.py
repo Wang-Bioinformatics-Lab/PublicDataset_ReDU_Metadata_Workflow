@@ -281,8 +281,15 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 df[key] = out.fillna(missing_value).replace("", missing_value)
                 continue
             elif allowed_terms[0] == 'numeric':
-                # Numeric handling is kept as is
-                df[key] = pd.to_numeric(df[key], errors='coerce').fillna(missing_value).replace("", missing_value)
+                # Numeric handling; optionally clamp to a plausible [min, max] range so
+                # nonsensical values (e.g. an auto-miscalculated BMI) drop to missing.
+                nums = pd.to_numeric(df[key], errors='coerce')
+                lo, hi = value.get('min'), value.get('max')
+                if lo is not None:
+                    nums = nums.where(nums >= lo)
+                if hi is not None:
+                    nums = nums.where(nums <= hi)
+                df[key] = nums.fillna(missing_value).replace("", missing_value)
                 continue
             elif allowed_terms[0] == 'numeric|numeric':
                 # Handling for numeric ranges split by '|'
