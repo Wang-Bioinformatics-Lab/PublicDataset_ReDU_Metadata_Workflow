@@ -212,7 +212,12 @@
             "in vivo, head space solid phase microextraction",
             "swabs, moist (50% EtOH)",
             "solid material, dried",
-            "liquid, solid phase extraction (C18)"
+            "liquid, solid phase extraction (C18)",
+            "surface, solid-phase adsorption (C18)",
+            "surface, solvent dipping",
+            "whole organism",
+            "surface-removed (internal), after adsorption",
+            "surface-removed (internal), after dipping"
         ]
     },
     "SampleExtractionMethod": {
@@ -265,7 +270,9 @@
             "chloroform-methanol (1:2)",
             "methanol-water (4:1) + 0.1% formic acid",
             "methanol-water (1:3)",
-            "methanol-water (3:1)"
+            "methanol-water (3:1)",
+            "hexane-methanol (1:1)",
+            "accelerated solvent extraction (ASE)"
         ]
     },
     "InternalStandardsUsed": {
