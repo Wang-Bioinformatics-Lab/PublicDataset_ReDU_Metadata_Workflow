@@ -5,7 +5,7 @@ import re
 import os
 import json
 from io import StringIO
-from REDU_conversion_functions import age_category
+from REDU_conversion_functions import age_category, normalize_redu_datetime
 
 def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi = False, other_allowed_file_extensions = [], attempt_adding_file_extensions = False, **kwargs):
     """
@@ -240,6 +240,46 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             elif allowed_terms[0] == '00':
                 # Handling for terms where '00' indicates a placeholder for any value
                 value_map = {x: x if pd.notna(x) and x != "" else missing_value for x in unique_values}
+            elif allowed_terms[0] == 'datetime':
+                # Flexible date/time normalisation to precision-preserving ISO-8601
+                # (year / year-month / date / date+time / interval). Ambiguous slash
+                # dates (both fields <= 12) are disambiguated per dataset: a value that
+                # itself proves an order (a field > 12) always wins; otherwise the
+                # dataset's other dates decide; NORMAN (European, ISO) defaults to
+                # day-first, everything else (US MassIVE/Workbench) to month-first.
+                _slash = re.compile(r'\s*(\d{1,2})[/-](\d{1,2})[/-]\d')
+
+                def _infer_dayfirst(mid, values):
+                    if str(mid).startswith('NORMAN'):
+                        return True
+                    dmy = mdy = False
+                    for v in values:
+                        m = _slash.match(str(v))
+                        if not m:
+                            continue
+                        a, b = int(m.group(1)), int(m.group(2))
+                        if a > 12 and b <= 12:
+                            dmy = True
+                        elif b > 12 and a <= 12:
+                            mdy = True
+                    if dmy and not mdy:
+                        return True
+                    return False  # month-first: US platform default (also for conflicts)
+
+                out = df[key].copy()
+                gid = (df['MassiveID'] if 'MassiveID' in df.columns
+                       else pd.Series('', index=df.index)).fillna('')
+                for mid, idx in out.groupby(gid).groups.items():
+                    sub = df.loc[idx, key]
+                    dayfirst = _infer_dayfirst(mid, sub.unique())
+                    vmap = {
+                        x: (normalize_redu_datetime(x, dayfirst=dayfirst) or missing_value)
+                        if (pd.notna(x) and x != "") else missing_value
+                        for x in sub.unique()
+                    }
+                    out.loc[idx] = sub.map(vmap)
+                df[key] = out.fillna(missing_value).replace("", missing_value)
+                continue
             elif allowed_terms[0] == 'numeric':
                 # Numeric handling is kept as is
                 df[key] = pd.to_numeric(df[key], errors='coerce').fillna(missing_value).replace("", missing_value)

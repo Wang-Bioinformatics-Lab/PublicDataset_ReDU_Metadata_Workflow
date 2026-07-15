@@ -3,6 +3,7 @@ import os
 import re
 import requests
 import time
+from datetime import datetime
 from bs4 import BeautifulSoup
 from owlready2 import get_ontology
 import owlready2
@@ -469,6 +470,153 @@ def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_n
         df = df[df["Is Descendant"] == True]
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# SampleCollectionDateandTime normalisation
+# ---------------------------------------------------------------------------
+# Submitters use a wide diversity of date formats and precisions: year only,
+# year-month, full date, date+time, textual months, US M/D/Y, ISO Y-M-D, 2-digit
+# years, ISO with timezone, and ranges. normalize_redu_datetime() accepts all of
+# these and emits ISO-8601 at the SAME precision that was submitted (it never
+# fabricates a day or a time that was not given):
+#   2018 | 2018-07 | 2018-07-12 | 2018-07-12T22:00 | 2018-07-12T22:00:00
+# and intervals as "<start>/<end>" (e.g. 2022-06-14/2022-06-30). Junk / missing
+# markers / genuinely unparseable values return None so the caller can substitute
+# the column's missing value.
+
+_DATE_MONTHS = {}
+for _i, _names in enumerate(
+    [('jan', 'january'), ('feb', 'february'), ('mar', 'march'), ('apr', 'april'),
+     ('may',), ('jun', 'june'), ('jul', 'july'), ('aug', 'august'),
+     ('sep', 'sept', 'september'), ('oct', 'october'), ('nov', 'november'),
+     ('dec', 'december')], start=1):
+    for _n in _names:
+        _DATE_MONTHS[_n] = _i
+
+_DATE_MISSING_TOKENS = {
+    '', 'nan', 'nat', 'none', 'null', 'na', 'n/a', 'missing value', 'not applicable',
+    'not collected', 'not specified', 'not_applicable', 'ml import: not available',
+    'unknown', 'unspecified', 'not available', 'not known', 'not provided',
+    'not recorded', 'tbd',
+}
+
+
+def _date_yy(y):
+    """Expand a 2-digit year: 00-68 -> 2000-2068, 69-99 -> 1969-1999."""
+    y = int(y)
+    if y < 100:
+        y = 2000 + y if y <= 68 else 1900 + y
+    return y
+
+
+def _date_valid(y, m, d, H, M, S):
+    try:
+        datetime(y, m or 1, d or 1, H or 0, M or 0, S or 0)
+        return 1900 <= y <= 2099
+    except (ValueError, TypeError):
+        return False
+
+
+def _date_fmt(y, m, d, H, M, S, prec):
+    if prec == 'year':
+        return "%04d" % y
+    if prec == 'month':
+        return "%04d-%02d" % (y, m)
+    if prec == 'day':
+        return "%04d-%02d-%02d" % (y, m, d)
+    if prec == 'minute':
+        return "%04d-%02d-%02dT%02d:%02d" % (y, m, d, H, M)
+    if prec == 'second':
+        return "%04d-%02d-%02dT%02d:%02d:%02d" % (y, m, d, H, M, S)
+
+
+def _parse_single_date(s, dayfirst=False):
+    s = str(s).strip()
+    low = s.lower()
+    if low in _DATE_MISSING_TOKENS or not s or set(s) <= set('#?-/ .:'):
+        return None
+
+    # optional trailing time (':' or '.' separator), preceded by space/T/_, with an
+    # optional ISO timezone designator. The time prefix is required so a bare
+    # "04-04-2023" is never mistaken for a tz offset.
+    H = M = S = None
+    tm = re.search(r'[ T_](\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?(?:\s*(?:Z|[+-]\d{2}:?\d{2}))?\s*$', s)
+    if tm:
+        H = int(tm.group(1)); M = int(tm.group(2))
+        S = int(tm.group(3)) if tm.group(3) else None
+        if H > 23 or M > 59 or (S is not None and S > 59):
+            H = M = S = None
+        else:
+            s = s[:tm.start()].strip()
+
+    y = m = d = None
+    prec = None
+    mo = None
+    if re.fullmatch(r'\d{4}', s):
+        y = int(s); prec = 'year'
+    elif (mo := re.fullmatch(r'(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})', s)):
+        y, m, d = int(mo.group(1)), int(mo.group(2)), int(mo.group(3)); prec = 'day'
+    elif (mo := re.fullmatch(r'(\d{4})[-/.](\d{1,2})', s)):
+        y, m = int(mo.group(1)), int(mo.group(2)); prec = 'month'
+    elif (mo := re.fullmatch(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', s)):
+        a, b, c = int(mo.group(1)), int(mo.group(2)), _date_yy(mo.group(3))
+        if a > 12 and b <= 12:            # unambiguously D/M/Y
+            d, m = a, b
+        elif b > 12 and a <= 12:          # unambiguously M/D/Y
+            m, d = a, b
+        elif dayfirst:                     # ambiguous -> caller's derived preference
+            d, m = a, b
+        else:                              # ambiguous -> platform default (US M/D/Y)
+            m, d = a, b
+        y = c; prec = 'day'
+    elif (mo := re.fullmatch(r'(\d{1,2})[/-](\d{4})', s)):
+        m, y = int(mo.group(1)), int(mo.group(2)); prec = 'month'
+    elif (mo := re.fullmatch(r'(\d{1,2})[-\s]([A-Za-z]{3,})[-\s,]+(\d{2,4})', s)):
+        mon = _DATE_MONTHS.get(mo.group(2).lower()) or _DATE_MONTHS.get(mo.group(2).lower()[:3])
+        if mon:
+            d, m, y = int(mo.group(1)), mon, _date_yy(mo.group(3)); prec = 'day'
+    elif (mo := re.fullmatch(r'([A-Za-z]{3,})[-\s,]+(\d{1,2})[-\s,]+(\d{2,4})', s)):
+        mon = _DATE_MONTHS.get(mo.group(1).lower()) or _DATE_MONTHS.get(mo.group(1).lower()[:3])
+        if mon:
+            m, d, y = mon, int(mo.group(2)), _date_yy(mo.group(3)); prec = 'day'
+    elif (mo := re.fullmatch(r'([A-Za-z]{3,})[-\s,]+(\d{2,4})', s)):
+        mon = _DATE_MONTHS.get(mo.group(1).lower()) or _DATE_MONTHS.get(mo.group(1).lower()[:3])
+        if mon:
+            m, y = mon, _date_yy(mo.group(2)); prec = 'month'
+
+    if y is None:
+        return None
+    if H is not None and prec == 'day':
+        prec = 'second' if S is not None else 'minute'
+    if not _date_valid(y, m, d, H or 0, M or 0, S or 0):
+        return None
+    return _date_fmt(y, m, d, H or 0, M or 0, S or 0, prec)
+
+
+def normalize_redu_datetime(raw, dayfirst=False):
+    """Normalise a submitted collection date/time to precision-preserving ISO-8601,
+    or return None if it is missing / junk / unparseable.
+
+    dayfirst disambiguates ONLY genuinely ambiguous slash dates (both fields <= 12);
+    a value that itself proves an order (a field > 12) always wins over dayfirst.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    parts = re.split(r'\s+-\s+|\s+to\s+', s)
+    if len(parts) == 1:
+        mo = re.fullmatch(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})', s)
+        if mo:
+            parts = [mo.group(1), mo.group(2)]
+    if len(parts) == 2:
+        a, b = _parse_single_date(parts[0], dayfirst), _parse_single_date(parts[1], dayfirst)
+        if a and b:
+            return a + '/' + b
+        return a or b
+    return _parse_single_date(s, dayfirst)
 
 
 if __name__ == '__main__':

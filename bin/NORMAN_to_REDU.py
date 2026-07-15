@@ -127,9 +127,13 @@ def main(output_filename, study_id, **kwargs):
 
                         df_metadata_sheet = df_metadata_sheet.rename(columns={'ID': 'sample_id', 'Sample type': 'sample_type'})
 
-                        # in SampleCollectionDateandTime reformat 2014-12-31 22:00 to 7/2/2019 12:00 and save as string while taking care of missing values and values that cannot be parsed
+                        # Pass the raw sampling date through unchanged; the shared
+                        # validation (complete_and_fill_REDU_table, 'datetime' handling)
+                        # normalises it to precision-preserving ISO-8601. Pre-forcing a
+                        # full m/d/Y H:M here would fabricate a day/time for year-only
+                        # values and emit literal 'NaT' for unparseable ones.
                         if 'Sampling date' in df_metadata_sheet.columns:
-                            df_metadata_sheet['SampleCollectionDateandTime'] = pd.to_datetime(df_metadata_sheet['Sampling date'], errors='coerce').dt.strftime('%m/%d/%Y %H:%M').astype(str)
+                            df_metadata_sheet['SampleCollectionDateandTime'] = df_metadata_sheet['Sampling date'].astype(str)
 
                         # in YearOfAnalysis reformat 2014-12-31 22:00 to 2014
                         if 'Analysis date' in df_metadata_sheet.columns:
