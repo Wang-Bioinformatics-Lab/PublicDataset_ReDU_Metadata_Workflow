@@ -418,6 +418,7 @@ process saveOlderData {
     input:
     path merged_ch
     path old_redu
+    path ml_files
 
     output:
     path 'merged_with_old.tsv'
@@ -426,7 +427,8 @@ process saveOlderData {
     python $TOOL_FOLDER/save_older_data.py \
     ${merged_ch} \
     ${old_redu} \
-    merged_with_old.tsv
+    merged_with_old.tsv \
+    --metabolights_files ${ml_files}
     """
 }
 
@@ -492,7 +494,7 @@ workflow {
 
     // Make sure we dont loose older data
     old_redu_path_ch = Channel.fromPath(params.old_redu)
-    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch)
+    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch)
 
     // Enrich NCBI information
     merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch)
