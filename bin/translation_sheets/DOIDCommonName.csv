@@ -57,3 +57,78 @@ Alzheimers disease model,Alzheimer's disease,DOID:10652
 Alzheimer's disease dementia,Alzheimer's disease,DOID:10652
 Alzheimer patient,Alzheimer's disease,DOID:10652
 osteoarthritis,osteoarthritis,
+acute hepatitis,hepatitis,DOID:2237
+acute pancreatitis,acute pancreatitis,DOID:2913
+adenocarcinoma,adenocarcinoma,DOID:299
+adenoma,adenoma,DOID:657
+angioedema,angioedema,DOID:1558
+ankylosing spondylitis,ankylosing spondylitis,DOID:7147
+asthma,asthma,DOID:2841
+atopic dermatitis,atopic dermatitis,DOID:3310
+bacterial meningitis,bacterial meningitis,DOID:9470
+barrett's esophagus,Barrett's esophagus,DOID:9206
+bladder cancer,urinary bladder cancer,DOID:11054
+breast cancer,breast cancer,DOID:1612
+bronchiectasis,bronchiectasis,DOID:9563
+carcinoma,carcinoma,DOID:305
+cardiac arrest,cardiac arrest,DOID:0060319
+cervical cancer,cervical cancer,DOID:4362
+cholecystitis,cholecystitis,DOID:1949
+chondrosarcoma,chondrosarcoma,DOID:3371
+chronic pancreatitis,chronic pancreatitis,DOID:0051065
+cirrhosis,liver cirrhosis,DOID:5082
+colon cancer,colon cancer,DOID:219
+colorectal adenoma,colorectal adenoma,DOID:0050860
+colorectal cancer,colorectal cancer,DOID:9256
+cryptococcal meningitis,Cryptococcal meningitis,DOID:0080159
+cysrd,cystic renal dysplasia,DOID:0111682
+dementia with lewy bodies,Lewy body dementia,DOID:12217
+diabetic neuropathy,diabetic neuropathy,DOID:9743
+diverticulitis,diverticulitis,DOID:7475
+eczema,dermatitis,DOID:2723
+encephalopathy,brain disease,DOID:936
+endometriosis,endometriosis,DOID:289
+fibromyalgia,fibromyalgia,DOID:631
+gestational diabetes,gestational diabetes,DOID:11714
+glaucoma,glaucoma,DOID:1686
+hypersensitivity pneumonitis,extrinsic allergic alveolitis,DOID:841
+influenza,influenza,DOID:8469
+interstitial cystitis,interstitial cystitis,DOID:13949
+long covid,long COVID,DOID:0080848
+lung adenocarcinoma,lung adenocarcinoma,DOID:3910
+lung cancer,lung cancer,DOID:1324
+lymphedema,lymphedema,DOID:4977
+medulloblastoma,medulloblastoma,DOID:0050902
+melanoma,melanoma,DOID:1909
+mitral stenosis,mitral valve stenosis,DOID:1754
+mixed connective tissue disease,mixed connective tissue disease,DOID:3492
+mononucleosis,infectious mononucleosis,DOID:8568
+multiple myeloma,multiple myeloma,DOID:9538
+neuroblastoma,neuroblastoma,DOID:769
+neuropathy,neuropathy,DOID:870
+oncocytoma,oxyphilic adenoma,DOID:5389
+osteosarcoma,osteosarcoma,DOID:3347
+ovarian cancer,ovarian cancer,DOID:2394
+ovarian endometriosis,endometriosis of ovary,DOID:11432
+pancreatic adenocarcinoma,pancreatic adenocarcinoma,DOID:4074
+pancreatic ductal adenocarcinoma,pancreatic ductal adenocarcinoma,DOID:3498
+pancreatitis,pancreatitis,DOID:4989
+polycystic ovary syndrome,polycystic ovary syndrome,DOID:11612
+prediabetes,prediabetes syndrome,DOID:11716
+preeclampsia,pre-eclampsia,DOID:10591
+prostate cancer,prostate cancer,DOID:10283
+pulmonary hypertension,pulmonary hypertension,DOID:6432
+rectal cancer,rectum cancer,DOID:1993
+renal cell carcinoma,renal cell carcinoma,DOID:4450
+respiratory failure,respiratory failure,DOID:11162
+rheumatoid arthritis,rheumatoid arthritis,DOID:7148
+sarcoidosis,sarcoidosis,DOID:11335
+sarcoma,sarcoma,DOID:1115
+sjogren syndrome,Sjogren's syndrome,DOID:12894
+sleep apnea,sleep apnea,DOID:0050847
+small cell carcinoma,small cell carcinoma,DOID:0050685
+syphilis,syphilis,DOID:4166
+systemic lupus erythematosus,systemic lupus erythematosus,DOID:9074
+systemic sclerosis,systemic scleroderma,DOID:418
+urticaria,urticaria,DOID:1555
+wilson disease,Wilson disease,DOID:893

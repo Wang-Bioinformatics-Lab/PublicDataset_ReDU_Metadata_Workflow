@@ -425,6 +425,55 @@
             "healthy"
         ]
     },
+    "SmokingStatus": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The tobacco smoking status of the subject at the time of sampling.",
+        "example": "never smoker",
+        "source": "-",
+        "allowed_values": [
+            "current smoker",
+            "former smoker",
+            "never smoker"
+        ]
+    },
+    "BodyMassIndex": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The body mass index (BMI) of the subject in kg/m^2.",
+        "example": "24.1",
+        "source": "-",
+        "allowed_values": [
+            "numeric"
+        ]
+    },
+    "Diet": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The dietary regimen of the subject: a human dietary pattern or an experimental/composition diet type. Vocabulary aligned with the Ontology for Nutritional Studies (ONS).",
+        "example": "high-fat diet",
+        "source": "ONS",
+        "allowed_values": [
+            "omnivore",
+            "vegetarian",
+            "vegan",
+            "pescatarian",
+            "control diet",
+            "high-fat diet",
+            "high-sugar diet",
+            "high-fat high-sugar diet",
+            "low-fat diet",
+            "high-protein diet",
+            "Western diet",
+            "ketogenic diet",
+            "Mediterranean diet",
+            "prebiotic diet",
+            "calorie-restricted diet"
+        ]
+    },
     "DOIDCommonName": {
         "generate": "False",
         "type": "biology/medicine",

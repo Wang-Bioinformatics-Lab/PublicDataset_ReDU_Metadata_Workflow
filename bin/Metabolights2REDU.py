@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -14,6 +15,8 @@ from REDU_conversion_functions import get_taxonomy_info
 from REDU_conversion_functions import merge_repeated_fileobservations
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
+from REDU_conversion_functions import map_instrument_to_allowed
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
 
 
 
@@ -255,6 +258,22 @@ def Metabolights2REDU(study_id, **kwargs):
 
             #add NCBITaxonomy and Sampletype & SampleTypeSub1
             #######
+            # Coalesce the organism source: the block below is driven by
+            # 'Samples_Organism', so studies that record the organism under a
+            # different column (Species/Genus/Bacteria/Strain) would otherwise get no
+            # NCBITaxonomy at all. Fill 'Samples_Organism' per-sample from those
+            # aliases ONLY where it is blank, so an explicit Organism value always
+            # wins (no existing value is changed).
+            _tax_alias_cols = ['Samples_Species', 'Samples_species', 'Samples_Bacteria',
+                               'Samples_Genus', 'Samples_genus', 'Samples_organism']
+            if any(c in df_study.columns for c in _tax_alias_cols):
+                if 'Samples_Organism' not in df_study.columns:
+                    df_study['Samples_Organism'] = np.nan
+                for _c in _tax_alias_cols:
+                    if _c in df_study.columns:
+                        _blank = df_study['Samples_Organism'].isna() | df_study['Samples_Organism'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
+                        df_study.loc[_blank, 'Samples_Organism'] = df_study.loc[_blank, _c]
+
             if 'Samples_Organism' in df_study.columns:
                 processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict)) for org in df_study['Samples_Organism'].unique()}
 
@@ -344,6 +363,19 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 #add UBERON bodypart column
                 #######
+                # Coalesce the body-part source: only 'Samples_Organism part' was read,
+                # so organ/tissue/plant-part recorded under other columns was dropped.
+                # Fill it per-sample from those aliases where blank (Organism part wins).
+                _bp_alias_cols = ['Samples_Organ', 'Samples_organ', 'Samples_tissue type',
+                                  'Samples_Tissue', 'Samples_tissue', 'Samples_Plant part',
+                                  'Samples_Biospecimen Type', 'Samples_Cell type']
+                if 'Samples_Organism part' not in df_study.columns:
+                    df_study['Samples_Organism part'] = np.nan
+                for _c in _bp_alias_cols:
+                    if _c in df_study.columns:
+                        _blank = df_study['Samples_Organism part'].isna() | df_study['Samples_Organism part'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
+                        df_study.loc[_blank, 'Samples_Organism part'] = df_study.loc[_blank, _c]
+
                 df_study['UBERONBodyPartName'] = 'missing value'
 
                 labels_in_ontology_table = set(ontology_table['Label'])
@@ -418,6 +450,20 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study["MassSpectrometer"] = df_study["Assay_Instrument"].map(allowed_values_map)
 
+                # Fallback: the exact map misses ~40% of instruments (Q-Exactive vs
+                # "Q Exactive", Agilent iFunnel Q-TOF, Synapt/maXis variants, ...). Map
+                # the (already prefix-stripped) instrument string onto the allowed
+                # vocabulary by token-subset match. Analysis-level, no over-assignment.
+                _allowed_ms = allowedTerm_dict["MassSpectrometer"]["allowed_values"]
+                _unres = df_study["MassSpectrometer"].isna()
+                if _unres.any():
+                    _ms_cache = {}
+                    def _resolve_ms(raw):
+                        if raw not in _ms_cache:
+                            _ms_cache[raw] = map_instrument_to_allowed(raw, _allowed_ms)
+                        return _ms_cache[raw]
+                    df_study.loc[_unres, "MassSpectrometer"] = df_study.loc[_unres, "Assay_Instrument"].map(_resolve_ms)
+
 
 
             #add IonizationMethod/Polarity column
@@ -486,40 +532,94 @@ def Metabolights2REDU(study_id, **kwargs):
 
             #add Sex
             #######
-            if 'samples_sex' in df_study.columns.str.lower():
-                if 'Samples_Sex' in df_study.columns:
-                    df_study.rename(columns={'Samples_Sex': 'Samples_sex'}, inplace=True)
-                if 'Samples_SEX' in df_study.columns:
-                    df_study.rename(columns={'Samples_SEX': 'Samples_sex'}, inplace=True)
-            
-            if 'samples_gender' in df_study.columns.str.lower():
-                if 'Samples_Gender' in df_study.columns:
-                    df_study.rename(columns={'Samples_Gender': 'Samples_gender'}, inplace=True)
-                if 'Samples_GENDER' in df_study.columns:
-                    df_study.rename(columns={'Samples_GENDER': 'Samples_gender'}, inplace=True)
-            
-            if 'Samples_gender' in df_study.columns:
-
-                df_study["BiologicalSex"] = 'missing value'
-                df_study.loc[df_study['Samples_gender'].str.lower().str.contains('female'), 'BiologicalSex'] = 'female'
-                df_study.loc[(df_study['Samples_gender'].str.lower().str.contains('male')) & (df_study['BiologicalSex'] != 'female'), 'BiologicalSex'] = 'male'
+            # Consume any sex / gender / biological-sex column (the original only read
+            # 'Samples_gender', silently dropping 'Samples_sex' and 'Samples_Biological
+            # sex'). Exclude columns describing a DIFFERENT subject than the sample
+            # (baby/fetus/maternal/paternal/donor/partner/contact).
+            _sex_exclude = re.compile(r'baby|fetus|foetal|fetal|maternal|mother|paternal|father|donor|partner|contact|infant|neonat', re.I)
+            def _tokens(col):
+                return set(re.split(r'[^a-z0-9]+', str(col).lower()))
+            _sex_cols = [c for c in df_study.columns
+                         if str(c).startswith('Samples_')
+                         and ({'sex', 'gender'} & _tokens(c))
+                         and not _sex_exclude.search(str(c))]
+            if _sex_cols:
+                _sexsrc = pd.Series('', index=df_study.index, dtype=object)
+                for c in _sex_cols:
+                    _b = _sexsrc.astype(str).str.strip().str.lower().isin(['', 'nan', 'none'])
+                    _sexsrc.loc[_b] = df_study[c].astype(str).loc[_b]
+                _sl = _sexsrc.astype(str).str.lower()
+                if 'BiologicalSex' not in df_study.columns:
+                    df_study['BiologicalSex'] = 'missing value'
+                _blank = df_study['BiologicalSex'].astype(str).str.lower().isin(['', 'nan', 'missing value', 'none'])
+                df_study.loc[_blank & _sl.str.contains('female'), 'BiologicalSex'] = 'female'
+                df_study.loc[_blank & _sl.str.contains(r'\bmale\b') & (df_study['BiologicalSex'] != 'female'), 'BiologicalSex'] = 'male'
 
 
             #add LatitudeandLongitude
             #######
-            if 'Samples_Latitude' in df_study.columns and 'Samples_Longitude' in df_study.columns:
+            # Match latitude/longitude by column NAME (paired), covering MetaboLights
+            # variants like "Geographic Location Latitude" / "Geographic location
+            # (latitude)" - never by value (a bare number could be a plate/time).
+            _lat_cols = [c for c in df_study.columns if 'latitude' in str(c).lower()]
+            _lon_cols = [c for c in df_study.columns if 'longitude' in str(c).lower()]
+            if _lat_cols and _lon_cols:
+                _latc, _lonc = _lat_cols[0], _lon_cols[0]
                 def combine_lat_lon(row):
-                    lat = str(row['Samples_Latitude']).strip()
-                    lon = str(row['Samples_Longitude']).strip()
-                    if lat and lon and lat not in ('nan', '') and lon not in ('nan', ''):
+                    lat = str(row[_latc]).strip()
+                    lon = str(row[_lonc]).strip()
+                    if lat and lon and lat.lower() not in ('nan', '') and lon.lower() not in ('nan', ''):
                         try:
-                            float(lat)
-                            float(lon)
-                            return f"{lat}|{lon}"
+                            la = float(lat); lo = float(lon)
+                            if -90 <= la <= 90 and -180 <= lo <= 180 and not (la == 0 and lo == 0):
+                                return f"{lat}|{lon}"
                         except ValueError:
                             pass
                     return 'missing value'
-                df_study['LatitudeandLongitude'] = df_study.apply(combine_lat_lon, axis=1)
+                _ll = df_study.apply(combine_lat_lon, axis=1)
+                if 'LatitudeandLongitude' not in df_study.columns:
+                    df_study['LatitudeandLongitude'] = _ll
+                else:
+                    _blank = df_study['LatitudeandLongitude'].astype(str).str.lower().isin(['', 'nan', 'missing value', 'none'])
+                    df_study.loc[_blank, 'LatitudeandLongitude'] = _ll[_blank]
+
+            #add ENVOEnvironmentMaterial (value-matched from candidate columns)
+            #######
+            # Environmental studies record the material (soil/seawater/sediment/...) in
+            # dedicated substrate/material columns. Match values against the ENVO
+            # material vocabulary; fill only where currently missing. NOTE: we do NOT
+            # scan the organism column here (organism -> ENVO material is handled
+            # separately above via the ontology table) - matching organisms against the
+            # material vocab risks false hits (e.g. a stray taxon name in the vocab).
+            _envm_vocab = {str(v).strip().lower(): str(v).strip()
+                           for v in allowedTerm_dict.get('ENVOEnvironmentMaterial', {}).get('allowed_values', []) if str(v).strip()}
+            if _envm_vocab:
+                _mat_cols = [c for c in ['Samples_Onsite Substrate', 'Samples_Overlaying substrate',
+                                         'Samples_Material', 'Samples_material', 'Samples_Environmental material',
+                                         'Samples_environment_material', 'Samples_env_material', 'Samples_Substrate',
+                                         'Samples_Environment (material)'] if c in df_study.columns]
+                if _mat_cols:
+                    if 'ENVOEnvironmentMaterial' not in df_study.columns:
+                        df_study['ENVOEnvironmentMaterial'] = 'missing value'
+                    for _c in _mat_cols:
+                        _m = df_study[_c].astype(str).str.strip().str.lower().map(_envm_vocab)
+                        _need = df_study['ENVOEnvironmentMaterial'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & _m.notna()
+                        df_study.loc[_need, 'ENVOEnvironmentMaterial'] = _m[_need]
+
+            #add HealthStatus (value-matched)
+            #######
+            _hs_map = {'healthy': 'healthy', 'health': 'healthy', 'unhealthy': 'unhealthy (NOS)',
+                       'diseased': 'unhealthy (NOS)', 'chronic illness': 'chronic illness',
+                       'acute illness': 'acute illness'}
+            _hs_cols = [c for c in df_study.columns
+                        if str(c).startswith('Samples_') and re.search(r'health\s*status|health state', str(c), re.I)]
+            if _hs_cols:
+                if 'HealthStatus' not in df_study.columns:
+                    df_study['HealthStatus'] = 'missing value'
+                for _c in _hs_cols:
+                    _m = df_study[_c].astype(str).str.strip().str.lower().map(_hs_map)
+                    _need = df_study['HealthStatus'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & _m.notna()
+                    df_study.loc[_need, 'HealthStatus'] = _m[_need]
 
             #add DepthorAltitudeMeters
             #######
@@ -533,6 +633,62 @@ def Metabolights2REDU(study_id, **kwargs):
                             pass
                     return 'missing value'
                 df_study['DepthorAltitudeMeters'] = df_study['Samples_Nominal depth'].apply(get_depth)
+
+            #add Country
+            #######
+            # Country was never mapped from MetaboLights. Read geographic-origin
+            # columns and match their values against the Country vocabulary
+            # (case-insensitive). Sample-level; fills only where currently missing and
+            # the value is a recognized country (e.g. "Spain", "Japan").
+            _country_cols = ['Samples_Geographical origin', 'Samples_Geographic origin',
+                             'Samples_Geographical location', 'Samples_Geographic location',
+                             'Samples_Country', 'Samples_country', 'Samples_Country of origin',
+                             'Samples_Rice orign', 'Samples_Nationality', 'Samples_Birth country']
+            _cc_present = [c for c in _country_cols if c in df_study.columns]
+            if _cc_present:
+                _cvocab = {str(v).strip().lower(): str(v).strip()
+                           for v in allowedTerm_dict.get('Country', {}).get('allowed_values', []) if str(v).strip()}
+                if 'Country' not in df_study.columns:
+                    df_study['Country'] = 'missing value'
+                for _c in _cc_present:
+                    _mapped = df_study[_c].astype(str).str.strip().str.lower().map(_cvocab)
+                    _need = df_study['Country'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & _mapped.notna()
+                    df_study.loc[_need, 'Country'] = _mapped[_need]
+
+            #add SmokingStatus
+            #######
+            def _toks(col):
+                return set(re.split(r'[^a-z0-9]+', str(col).lower()))
+            _smoke_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and ('smoking' in _toks(c) or 'smoke' in _toks(c) or 'tobacco' in _toks(c))]
+            if _smoke_cols:
+                if 'SmokingStatus' not in df_study.columns:
+                    df_study['SmokingStatus'] = 'missing value'
+                for _c in _smoke_cols:
+                    _m = df_study[_c].apply(convert_smoking)
+                    _need = df_study['SmokingStatus'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
+                    df_study.loc[_need, 'SmokingStatus'] = _m[_need]
+
+            #add BodyMassIndex
+            #######
+            _bmi_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and ('bmi' in _toks(c) or {'body', 'mass', 'index'} <= _toks(c))]
+            if _bmi_cols:
+                if 'BodyMassIndex' not in df_study.columns:
+                    df_study['BodyMassIndex'] = 'missing value'
+                for _c in _bmi_cols:
+                    _m = df_study[_c].apply(bmi_to_numeric).astype(str)
+                    _need = df_study['BodyMassIndex'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
+                    df_study.loc[_need, 'BodyMassIndex'] = _m[_need]
+
+            #add Diet
+            #######
+            _diet_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and ('diet' in _toks(c) or {'feeding', 'regime'} <= _toks(c) or {'dietary', 'group'} <= _toks(c))]
+            if _diet_cols:
+                if 'Diet' not in df_study.columns:
+                    df_study['Diet'] = 'missing value'
+                for _c in _diet_cols:
+                    _m = df_study[_c].apply(convert_diet)
+                    _need = df_study['Diet'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
+                    df_study.loc[_need, 'Diet'] = _m[_need]
 
             #add MassiveID and USIs
             #######

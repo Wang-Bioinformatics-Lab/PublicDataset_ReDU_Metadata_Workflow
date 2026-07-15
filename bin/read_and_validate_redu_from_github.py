@@ -17,9 +17,18 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     Returns:
     A DataFrame that has been filled with default values for missing columns,
-    with values replaced by the corresponding "missing" value from the dictionary 
+    with values replaced by the corresponding "missing" value from the dictionary
     if they are not in the allowed terms or are missing/empty, except for specific columns.
     """
+
+    if len(df) == 0:
+        # On an empty (0-row) input, pandas' .map({}).fillna(...) chain below
+        # produces float64-typed empty columns (no data to infer a dtype from),
+        # which then fails when merged against the ontology tables' object-typed
+        # 'Label' columns ("You are trying to merge on float64 and object
+        # columns"). There's nothing to process for an empty table anyway, so
+        # short-circuit before any of that logic runs.
+        return df
 
     #prepare UberonOntologyIndex
     if 'UBERONOntologyIndex_table' in kwargs.keys():
@@ -130,7 +139,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     #Resolve contradictory fields
     if 'SampleType' in df.columns:
         mask = df['SampleType'].str.contains('blank', case=False)
-        df.loc[mask, ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'DOIDCommonName', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial']] = ''
+        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'DOIDCommonName', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
+        df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
 
     if 'filename' in df.columns and attempt_adding_file_extensions == True:
         df.loc[df['filename'].str.contains(r'^[^.]+$') & (df['filename'].str.len() >= 1), 'filename'] += '.mzML'

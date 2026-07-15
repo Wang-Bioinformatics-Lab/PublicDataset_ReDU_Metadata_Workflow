@@ -12,6 +12,8 @@ from collections import Counter
 import traceback
 import time
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from REDU_conversion_functions import map_instrument_to_allowed
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
@@ -203,6 +205,59 @@ def convert_to_years(age):
         return num
 
 
+# Age Factor keys that describe a DIFFERENT subject than the sampled one (mother,
+# fetus, household contact, index case, donor...) - never map these to the
+# sample's AgeInYears.
+AGE_EXCLUDE_RE = r'gestational|maternal|postnatal|postconceptional|foetal|\bfetal\b|\bmother\b|paternal|\bfather\b|\bdonor\b|contact|\bindex\b|\bbaby\b|neonat'
+_AGE_CANONICAL = {'age', 'age (years)', 'age(years)', 'age (year)'}
+
+
+def mwb_age_to_years(value, key):
+    """Convert an age Factor value to years. Unit is taken from the KEY name first
+    (e.g. 'age (months)', 'age in days'), falling back to any unit in the VALUE
+    string, else years. Number extraction matches convert_to_years exactly, so for
+    the previously-handled keys ('age', 'age (years)') the result is identical."""
+    value = '' if value is None else str(value)
+    nums = re.findall(r'\b\d+\b', value)
+    if not nums:
+        return None
+    num = int(nums[0])
+    src = str(key).lower()
+    if 'day' not in src and 'week' not in src and 'month' not in src and 'year' not in src:
+        src = value.lower()  # no unit in key -> use value (preserves old behavior)
+    if 'day' in src:
+        return num / 365
+    if 'week' in src:
+        return num / 52.1429
+    if 'month' in src:
+        return num / 12
+    return num  # years (default)
+
+
+def get_age_years_into_outer(df, new_col='MWB_age'):
+    """Per-sample AgeInYears (in years) from any age Factor whose key isn't an
+    excluded-subject one. Canonical 'age'/'age (years)' keys win over unit-named
+    variants so studies that already have them produce identical output; studies
+    that only have e.g. 'age (months)' now get a correctly-converted value."""
+    keyl = df['Key'].astype(str).str.lower()
+    is_age = keyl.str.contains(r'\bage\b', regex=True, na=False) & ~keyl.str.contains(AGE_EXCLUDE_RE, regex=True, na=False)
+    tmp = df.loc[is_age, ['filename', 'Key', 'Value']].copy()
+    if len(tmp) == 0:
+        df[new_col] = 'NA'
+        return df
+    tmp['_yr'] = tmp.apply(lambda r: mwb_age_to_years(r['Value'], r['Key']), axis=1)
+    tmp = tmp.dropna(subset=['_yr'])
+    if len(tmp) == 0:
+        df[new_col] = 'NA'
+        return df
+    tmp['_rank'] = tmp['Key'].astype(str).str.lower().apply(lambda k: 0 if k in _AGE_CANONICAL else 1)
+    tmp = tmp.sort_values(['filename', '_rank'])
+    best = tmp.drop_duplicates('filename', keep='first').set_index('filename')['_yr']
+    df[new_col] = df['filename'].map(best)
+    df[new_col] = df[new_col].fillna('NA')
+    return df
+
+
 def extract_years(dates):
     try:
         pattern = re.compile(r'\d{1,2}[-/.]\d{1,2}[-/.]\d{4}')
@@ -223,7 +278,13 @@ def extract_years(dates):
 
 
 def get_key_info_into_outer(df, key_vars, new_col):
-    df[new_col] = df.loc[df['Key'].isin(key_vars), 'Value']
+    # Match keys case-insensitively: MWB depositors use 'Sex'/'Gender'/'Age' etc.
+    # with varied capitalization, and the fixed key_vars lists are lowercase, so a
+    # case-sensitive match silently drops capitalized keys. Lower-casing both sides
+    # only ever matches MORE of the same semantic keys (never fewer), so it cannot
+    # remove a value we already capture.
+    key_set = {str(k).lower() for k in key_vars}
+    df[new_col] = df.loc[df['Key'].astype(str).str.lower().isin(key_set), 'Value']
     df[new_col] = df.groupby('filename')[new_col].transform('first')
     if new_col == 'Latitude' or new_col == 'Longitude':
         df[new_col] = pd.to_numeric(df[new_col], errors='coerce')
@@ -676,18 +737,35 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
             df = df.merge(preferred_raw_by_stem, on='_stem', how='left', suffixes=('', '_preferred'))
 
-            # override only when a preferred file exists
-            if 'filename_raw_path' in df.columns:
-                df['filename_raw_path'] = df['filename_raw_path_preferred'].combine_first(df['filename_raw_path'])
-            else:
-                df['filename_raw_path'] = df['filename_raw_path_preferred']
+            # Guard the '_preferred' overrides: the preferred_raw_by_stem merged here
+            # only carries 'preferred_filename_base', so the 'filename_raw_path_preferred'
+            # / 'filename_base_preferred' columns the original code referenced never
+            # exist -> an unconditional reference raised KeyError and dropped the whole
+            # study (this is what silently lost ST001000 and other studies routed
+            # through the fuzzy-match branch). This early override is in any case
+            # superseded by the full mzML>mzXML>vendor preference block right below,
+            # so no-op'ing it here when the columns are absent is safe.
+            if 'filename_raw_path_preferred' in df.columns:
+                if 'filename_raw_path' in df.columns:
+                    df['filename_raw_path'] = df['filename_raw_path_preferred'].combine_first(df['filename_raw_path'])
+                else:
+                    df['filename_raw_path'] = df['filename_raw_path_preferred']
 
-            if 'filename_base' in df.columns:
-                df['filename_base'] = df['filename_base_preferred'].combine_first(df['filename_base'])
-            else:
-                df['filename_base'] = df['filename_base_preferred']
+            if 'filename_base_preferred' in df.columns:
+                if 'filename_base' in df.columns:
+                    df['filename_base'] = df['filename_base_preferred'].combine_first(df['filename_base'])
+                else:
+                    df['filename_base'] = df['filename_base_preferred']
 
-            df.drop(columns=['_stem', 'filename_base_preferred', 'filename_raw_path_preferred'], inplace=True)
+            # Drop every helper column this early-override block introduced (both the
+            # '_preferred'-suffixed names AND the un-suffixed 'preferred_*' columns that
+            # the merged preferred_raw_by_stem carries). Leaving 'preferred_filename_base'
+            # behind here made the *next* preferred_raw_by_stem merge below collide and
+            # rename to _x/_y, producing a 'preferred_filename_base' KeyError that again
+            # dropped the whole study.
+            df.drop(columns=['_stem', 'filename_base_preferred', 'filename_raw_path_preferred',
+                             'preferred_filename_base', 'preferred_filename_raw_path'],
+                    inplace=True, errors='ignore')
 
 
             # --- PREFER mzML > mzXML > others (and print debug for why it might not upgrade) ---
@@ -829,9 +907,21 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     try:
         df_update = pd.concat([df, df_additional], ignore_index=True)
 
-        # For each filename group: if a column's non-NA values are all the same, fill that value for the group; else set NA
+        # This consolidates *sample-level metadata* per sample: group by 'filename'
+        # (which at this stage is the MWB Sample ID) and, for each column, keep the
+        # single agreed value or blank it to NaN if the sample's rows disagree.
+        #
+        # File-association columns are EXEMPT: a single sample legitimately maps to
+        # several raw files (e.g. one measurement per chromatography/ionization
+        # method, all listed under the same Sample ID). Those distinct file paths
+        # are not a "discrepancy" to blank - blanking them destroys the file
+        # association and silently drops the sample entirely (this was losing whole
+        # multi-method studies like ST002470/ST002471). Exempting these columns is a
+        # no-op for the common one-file-per-sample case (a single value is kept
+        # either way), so it cannot change output for those studies.
+        file_assoc_cols = {c for c in df_update.columns if 'filename' in c} | {'USI', 'size_mb'}
         for col in df_update.columns:
-            if col in ['filename', 'Key', 'Value']:
+            if col in ['filename', 'Key', 'Value'] or col in file_assoc_cols:
                 continue
             df_update[col] = df_update.groupby('filename')[col].transform(
                 lambda s: s.dropna().iloc[0] if s.dropna().nunique() <= 1 else np.nan
@@ -845,7 +935,15 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
     df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
     df = get_key_info_into_outer(df, key_vars=["gender", "sex", "gender (f/m)", "biological_sex"], new_col="MWB_sex")
-    df = get_key_info_into_outer(df, key_vars=["age", "age (years)"], new_col="MWB_age")
+    df = get_age_years_into_outer(df, new_col="MWB_age")
+    df = get_key_info_into_outer(df, key_vars=["smoking_status", "smoking status", "smokstatus",
+                                               "smoking", "smoke", "tobacco use", "smoking history",
+                                               "cigarette smoking"], new_col="MWB_smoking")
+    df = get_key_info_into_outer(df, key_vars=["bmi", "body mass index", "body_mass_index",
+                                               "bmi (kg/m2)", "bmi_kg_m2"], new_col="MWB_bmi")
+    df = get_key_info_into_outer(df, key_vars=["diet", "diet_type", "diet type", "diet group",
+                                               "dietary group", "dietary pattern", "feeding regime",
+                                               "diet_group"], new_col="MWB_diet")
     df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country", "site", "location", "country_of_origin"],
                                  new_col="Country")
     df = get_key_info_into_outer(df, key_vars=["latitude"], new_col="Latitude")
@@ -1009,6 +1107,39 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     return df_outer_inner
 
 
+# Per-sample Factor keys (besides "Sample Source") that commonly carry a body part /
+# tissue / biofluid. Their values are matched against UBERONBodyPartName.csv to fill a
+# body part when Sample Source didn't provide one. Environmental values (soil, water,
+# ...) simply don't match the sheet and are left untouched.
+UBERON_BODYPART_KEYS = {
+    'sample.matrix', 'sample matrix', 'client matrix', 'matrix', 'material',
+    'sample material', 'biological material', 'specimen_type', 'specimen type',
+    'specimen', 'tissue', 'tissues', 'tissue type', 'tissue location', 'organ',
+    'organism_part', 'organism part', 'body site', 'body_site', 'anatomical site',
+}
+
+
+def _fill_uberon_from_other_keys(MWB_table, df_translations):
+    """Fill-only-if-missing body part from UBERON_BODYPART_KEYS. Never changes a value
+    Sample Source already produced (so no loss); only adds where it was missing."""
+    if 'Key' not in MWB_table.columns or 'Value' not in MWB_table.columns:
+        return MWB_table
+    key_l = MWB_table['Key'].astype(str).str.lower()
+    cand = MWB_table.loc[key_l.isin(UBERON_BODYPART_KEYS), ['filename', 'Value']].copy()
+    if cand.empty:
+        return MWB_table
+    cand['_mkey'] = cand['Value'].astype(str).str.lower()
+    cand = cand.merge(df_translations[['MWB', 'REDU']], left_on='_mkey', right_on='MWB', how='left')
+    fill = cand.dropna(subset=['REDU']).groupby('filename')['REDU'].first()
+    if fill.empty:
+        return MWB_table
+    cur = MWB_table['UBERONBodyPartName']
+    missing = cur.isna() | cur.astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
+    filled = MWB_table['filename'].map(fill)
+    MWB_table.loc[missing, 'UBERONBodyPartName'] = filled[missing].fillna(cur[missing])
+    return MWB_table
+
+
 def translate_MWB_to_REDU_from_csv(MWB_table,
                                    column_and_csv_names_outer=['MassSpectrometer',
                                                                'ChromatographyAndPhase',
@@ -1059,10 +1190,27 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
             if col_csv_name == 'NCBITaxonomy' and 'NCBITaxonomy' in MWB_table.columns:
                 continue
 
+            if col_csv_name == 'MassSpectrometer':
+                MWB_table['_ms_raw'] = MWB_table[col_csv_name].astype(str)
             MWB_table[col_csv_name] = MWB_table[col_csv_name].str.lower()
             MWB_table = pd.merge(MWB_table, df_translations, left_on=col_csv_name, right_on='MWB', how='left')
             MWB_table = MWB_table.drop(columns=['MWB', col_csv_name])
             MWB_table = MWB_table.rename(columns={'REDU': col_csv_name})
+
+            if col_csv_name == 'MassSpectrometer':
+                # Fallback for the ~58% of instrument strings the curated sheet misses
+                # (Q Exactive HF-X, Orbitrap Exploris, Sciex QTrap, timsTOF, ...): map the
+                # raw instrument name onto the allowed vocabulary by token-subset match.
+                allowed_ms = (allowedTerm_dict.get('MassSpectrometer') or {}).get('allowed_values') or []
+                unresolved = MWB_table[col_csv_name].isna()
+                if allowed_ms and unresolved.any():
+                    _cache = {}
+                    def _resolve(raw):
+                        if raw not in _cache:
+                            _cache[raw] = map_instrument_to_allowed(raw, allowed_ms)
+                        return _cache[raw]
+                    MWB_table.loc[unresolved, col_csv_name] = MWB_table.loc[unresolved, '_ms_raw'].map(_resolve)
+                MWB_table = MWB_table.drop(columns=['_ms_raw'])
 
             print(f"Unique values in {col_csv_name}: {MWB_table[col_csv_name].nunique()}")
                
@@ -1073,9 +1221,18 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                     left = 'MWB_sampleSource'
                 else:
                     left = 'Value'
-                MWB_table = MWB_table.merge(df_translations, left_on=left, right_on='MWB', how='left')
+                # df_translations['MWB'] is lowercased at load; match the factor value
+                # case-insensitively so mixed-case values (e.g. "Crohn's disease",
+                # "Asthma") also hit the sheet instead of being silently dropped.
+                MWB_table['_mkey'] = MWB_table[left].astype(str).str.lower()
+                MWB_table = MWB_table.merge(df_translations, left_on='_mkey', right_on='MWB', how='left')
+                MWB_table = MWB_table.drop(columns=['_mkey'])
                 MWB_table[col_csv_name] = MWB_table.groupby('filename')['REDU'].transform('first')
                 if col_csv_name == 'UBERONBodyPartName':
+                    # Sample Source is not the only key carrying a body part. Where it
+                    # yielded nothing, fill from other per-sample body-part keys
+                    # (matrix/material/tissue/organ/specimen/organism_part/body site).
+                    MWB_table = _fill_uberon_from_other_keys(MWB_table, df_translations)
                     MWB_table = pd.merge(MWB_table, ontology_table, left_on='UBERONBodyPartName', right_on='Label', how='left')
                     MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
                 if col_csv_name == 'DOIDCommonName':
@@ -1132,9 +1289,19 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
 
 def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets'):
     if 'MWB_age' in MWB_table.columns:
-        MWB_table['AgeInYears'] = MWB_table['MWB_age'].apply(convert_to_years)
+        # MWB_age already holds AgeInYears (converted per-sample, unit-from-key) via
+        # get_age_years_into_outer; 'NA' where no usable age. Route the 'NA' through
+        # convert_to_years (-> None) but keep numeric years as-is.
+        MWB_table['AgeInYears'] = MWB_table['MWB_age'].apply(
+            lambda v: None if (isinstance(v, str) and not re.search(r'\d', v)) else v)
     if 'MWB_sex' in MWB_table.columns:
         MWB_table['BiologicalSex'] = MWB_table['MWB_sex'].map(convert_sex)
+    if 'MWB_smoking' in MWB_table.columns:
+        MWB_table['SmokingStatus'] = MWB_table['MWB_smoking'].map(convert_smoking)
+    if 'MWB_bmi' in MWB_table.columns:
+        MWB_table['BodyMassIndex'] = MWB_table['MWB_bmi'].apply(bmi_to_numeric)
+    if 'MWB_diet' in MWB_table.columns:
+        MWB_table['Diet'] = MWB_table['MWB_diet'].map(convert_diet)
 
     df_translations = pd.read_csv(path_to_csvs + "/biofluid_tissue_distinction.csv", encoding="ISO-8859-1", dtype=str)
 
@@ -1155,7 +1322,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
                         'InternalStandardsUsed', 'SubjectIdentifierAsRecorded', 'AgeInYears',
                         'BiologicalSex', 'UBERONBodyPartName', 'HealthStatus', 'DOIDCommonName',
                         'ComorbidityListDOIDIndex', 'Country', 'HumanPopulationDensity',
-                        'LatitudeandLongitude']
+                        'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
 
     # Iterate through each column in the list
     for column in columns_to_check:
@@ -1169,6 +1336,70 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
 
     return MWB_table
 
+
+
+# Tolerance for the sex-distribution guard: max |frac_female_output - frac_female_source|
+# before the per-file sex assignment is considered untrustworthy for a study.
+SEX_GUARD_TOLERANCE = 0.12
+
+
+def _study_source_sex_fracF(rest_response):
+    """Authoritative per-sample sex distribution from the study /factors response,
+    using the pipeline's own convert_sex (so 'F'/'M', German 'w'/'m' via the same
+    mapping the pipeline uses). Dedupe by sample id. Returns (n_with_sex, frac_female)
+    or (0, None) when the study carries no recognizable sex."""
+    recs = list(rest_response.values()) if isinstance(rest_response, dict) else rest_response
+    if not isinstance(recs, list):
+        return (0, None)
+    seen = {}
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        sid = rec.get('local_sample_id') or rec.get('mb_sample_id')
+        fac = rec.get('factors', '')
+        if sid is None or not isinstance(fac, str):
+            continue
+        for part in fac.split('|'):
+            if ':' not in part:
+                continue
+            k, v = part.split(':', 1)
+            if k.strip().lower() in ('sex', 'gender', 'biological_sex', 'biological sex'):
+                s = convert_sex(v.strip())
+                if s in ('male', 'female'):
+                    seen[sid] = s
+                break
+    if not seen:
+        return (0, None)
+    n = len(seen)
+    return (n, sum(1 for s in seen.values() if s == 'female') / n)
+
+
+def apply_sex_distribution_guard(redu_df_final, rest_response, study_id=''):
+    """Safety net against raw-file mis-attribution. The per-sample sex is attached to
+    raw files via (sometimes fuzzy) filename matching; when that matching collapses
+    many files onto few samples the per-file BiologicalSex comes out wrong (e.g. an
+    all-female study where the source is 50/50). If the output BiologicalSex
+    distribution disagrees with the authoritative per-sample distribution from the
+    study /factors response beyond SEX_GUARD_TOLERANCE, the file<->sample mapping can't
+    be trusted for sex, so BiologicalSex is suppressed for the whole study rather than
+    emit wrong values. Never removes rows and never touches any other field."""
+    if 'BiologicalSex' not in redu_df_final.columns or len(redu_df_final) == 0:
+        return redu_df_final
+    out = redu_df_final['BiologicalSex'].astype(str).str.lower()
+    out = out[out.isin(['male', 'female'])]
+    if len(out) == 0:
+        return redu_df_final
+    out_fracF = (out == 'female').mean()
+    src_n, src_fracF = _study_source_sex_fracF(rest_response)
+    if src_n == 0 or src_fracF is None:
+        return redu_df_final
+    if abs(src_fracF - out_fracF) > SEX_GUARD_TOLERANCE:
+        print(f"[sex-guard] {study_id}: output BiologicalSex (fracF={out_fracF:.2f}, "
+              f"n={len(out)}) disagrees with source (fracF={src_fracF:.2f}, n={src_n}); "
+              f"suppressing BiologicalSex for this study to avoid mis-attributed values.")
+        redu_df_final = redu_df_final.copy()
+        redu_df_final['BiologicalSex'] = 'missing value'
+    return redu_df_final
 
 
 def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
@@ -1269,6 +1500,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
                                                  NCBIRankDivision_table=NCBIRankDivision_table,
                                                  add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
 
+    redu_df_final = apply_sex_distribution_guard(redu_df_final, rest_response, study_id=str(study_id))
 
     if export_to_tsv == True:
         redu_df_final.to_csv('{}_REDU_from_MWB.tsv'.format(study_id), sep='\t', index=False, header=True)
@@ -1366,7 +1598,10 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                             "HumanPopulationDensity",
                             "LatitudeandLongitude",
                             "DepthorAltitudeMeters",
-                            "qiita_sample_name"
+                            "qiita_sample_name",
+                            "SmokingStatus",
+                            "BodyMassIndex",
+                            "Diet"
                             ]
     
     complete_df[missing_not_imported] = complete_df[missing_not_imported].replace(
@@ -1407,6 +1642,9 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                            "LatitudeandLongitude",
                            "DepthorAltitudeMeters",
                            "qiita_sample_name",
+                           "SmokingStatus",
+                           "BodyMassIndex",
+                           "Diet",
                            "UniqueSubjectID",
                            "LifeStage",
                            "UBERONOntologyIndex",

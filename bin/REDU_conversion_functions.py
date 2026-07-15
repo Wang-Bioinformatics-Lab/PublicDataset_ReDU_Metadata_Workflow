@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import requests
 import time
 from bs4 import BeautifulSoup
@@ -183,6 +184,112 @@ def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
             return [None, None]
     else:
         return [None, None]
+
+# Vendor / marketing words that carry no model information; dropped before matching an
+# instrument string against the allowed MassSpectrometer vocabulary. Shared by the MWB
+# and MetaboLights converters.
+_MS_STOPWORDS = {
+    'thermo', 'abi', 'agilent', 'bruker', 'waters', 'sciex', 'leco', 'shimadzu', 'ab',
+    'daltonics', 'hybrid', 'series', 'system', 'lc', 'ms', 'lcms', 'msms', 'scientific',
+    'fisher', 'the', 'and', 'with', 'gc',
+}
+
+
+def _ms_tokens(s):
+    s = str(s).lower().replace('q-exactive', 'q exactive').replace('qexactive', 'q exactive')
+    s = re.sub(r'[^a-z0-9+]+', ' ', s)
+    return {t for t in s.split() if t and t not in _MS_STOPWORDS}
+
+
+def convert_smoking(x):
+    """Normalize a free-text smoking value to the SmokingStatus vocabulary
+    (current/former/never smoker). Only unambiguous text is mapped; coded values
+    (0/1/yes/no) stay missing to avoid guessing polarity. Separators are normalized
+    to spaces first so word boundaries match (e.g. 'never_used')."""
+    x = re.sub(r'[^a-z0-9]+', ' ', str(x).strip().lower()).strip()
+    if re.search(r'\bnever\b', x) or re.search(r'\bnon smoker\b|\bnonsmoker\b', x):
+        return 'never smoker'
+    if re.search(r'\bformer\b|\bex smoker\b|\bprevious\b|\bpast\b|\bquit\b', x):
+        return 'former smoker'
+    if re.search(r'\bcurrent\b', x) or x == 'smoker':
+        return 'current smoker'
+    return 'missing value'
+
+
+def convert_diet(x):
+    """Normalize a free-text diet value (from a diet-named field) to the Diet
+    vocabulary. Human patterns and experimental/composition diet types; the input
+    is assumed to come from a diet field, so short codes (cd/hf/hsd) decode safely.
+    Bespoke study-specific formulas (e.g. 'ser/gly free') stay missing. Order is
+    significant: most specific compositions first."""
+    x = re.sub(r'[^a-z0-9]+', ' ', str(x).strip().lower()).strip()
+    if not x:
+        return 'missing value'
+    # human dietary patterns
+    if re.search(r'\bvegan\b', x):
+        return 'vegan'
+    if re.search(r'\bpesc[ae]tarian\b', x):
+        return 'pescatarian'
+    if re.search(r'\bvegetarian\b|lacto ovo|ovo vegetarian', x):
+        return 'vegetarian'
+    if re.search(r'\bomnivor', x):
+        return 'omnivore'
+    # experimental / composition diets (specific first)
+    if re.search(r'\bhfhs\b|\bhchf\b|high fat high (sugar|sucrose|carb)', x):
+        return 'high-fat high-sugar diet'
+    if re.search(r'\bhfd\b|\bhf\b|high[ _]?fat|highfat', x):
+        return 'high-fat diet'
+    if re.search(r'\bhsd\b|high[ _]?sugar|high[ _]?sucrose|\bh sucrose\b|high carb', x):
+        return 'high-sugar diet'
+    if re.search(r'\blfd\b|low[ _]?fat', x):
+        return 'low-fat diet'
+    if re.search(r'high[ _]?protein|\bh protein\b', x):
+        return 'high-protein diet'
+    if re.search(r'ketogenic|\bketo\b', x):
+        return 'ketogenic diet'
+    if re.search(r'mediterranean', x):
+        return 'Mediterranean diet'
+    if re.search(r'western|regular american', x):
+        return 'Western diet'
+    if re.search(r'prebiotic', x):
+        return 'prebiotic diet'
+    if re.search(r'calorie restrict|caloric restrict|calorie restricted|\brestricted\b', x):
+        return 'calorie-restricted diet'
+    # control / standard chow
+    if re.search(r'\bchow\b|\bnormal\b|\bcontrol\b|\bstandard\b|\bncd\b|\bcd\b|\bcon\b|\bctrl\b|ain ?76|regular chow|standard chow|\bsc\b|normal diet', x):
+        return 'control diet'
+    return 'missing value'
+
+
+def bmi_to_numeric(x):
+    """Extract a plausible BMI number (kg/m^2). Rejects z-scores, codes and other
+    non-BMI values by requiring a human-plausible range (8-100)."""
+    nums = re.findall(r'-?\d+\.?\d*', str(x))
+    if not nums:
+        return 'missing value'
+    try:
+        v = float(nums[0])
+    except ValueError:
+        return 'missing value'
+    return v if 8 <= v <= 100 else 'missing value'
+
+
+def map_instrument_to_allowed(instrument, allowed_values):
+    """Map a free-text instrument name (e.g. "Thermo Scientific Q-Exactive") onto an
+    allowed MassSpectrometer vocabulary entry ("Q Exactive|MS:1001911") by token-subset
+    match: every (non-stopword) token of a vocab label must be present in the instrument
+    string. The most specific label wins (most tokens), so "HF" never steals "HF-X".
+    Returns the allowed value or None if nothing matches confidently."""
+    it = _ms_tokens(instrument)
+    if not it:
+        return None
+    best, best_n = None, 0
+    for val in allowed_values:
+        lab_tokens = _ms_tokens(str(val).split('|')[0])
+        if lab_tokens and lab_tokens.issubset(it) and len(lab_tokens) > best_n:
+            best, best_n = val, len(lab_tokens)
+    return best
+
 
 def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
 

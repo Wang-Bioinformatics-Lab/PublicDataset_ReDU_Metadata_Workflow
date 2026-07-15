@@ -11,4 +11,4 @@ dependencies:
       - vladiate
       - bs4
       - tqdm
-      - owlready2
+      - owlready2==0.46

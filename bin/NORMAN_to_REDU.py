@@ -8,6 +8,7 @@ import re
 from urllib.parse import unquote
 import numpy as np
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from REDU_conversion_functions import map_instrument_to_allowed
 import json
 import traceback
 from getAllNORMAN_file_paths import process_dataset_files
@@ -358,6 +359,16 @@ def main(output_filename, study_id, **kwargs):
                             .apply(norm)
                             .map(allowed_values_map)
                         )
+
+                        # Fallback: the exact map misses ~half the instruments
+                        # (Q-Exactive, Exploris, iFunnel Q-TOF, TripleTOF, Fusion Lumos,
+                        # ...). Map the instrument string onto the allowed vocabulary by
+                        # token-subset match.
+                        _allowed_ms = allowedTerm_dict["MassSpectrometer"]["allowed_values"]
+                        _unres = instrumentinfo_sheet["MassSpectrometer"].isna()
+                        if _unres.any():
+                            instrumentinfo_sheet.loc[_unres, "MassSpectrometer"] = instrumentinfo_sheet.loc[_unres, "instrument_model"].apply(
+                                lambda x: map_instrument_to_allowed(x, _allowed_ms))
 
 
                         nomran_sheets_for_single_dataset_sheets['Instrument info'].append(instrumentinfo_sheet)
