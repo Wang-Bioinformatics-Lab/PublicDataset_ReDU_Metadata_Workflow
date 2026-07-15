@@ -235,6 +235,42 @@ def convert_diet(x):
         return 'vegetarian'
     if re.search(r'\bomnivor', x):
         return 'omnivore'
+    # infant feeding regimens (breast milk / formula / solids); check before the
+    # experimental diets so "formula" is not misread as a composition diet
+    _bm = re.search(r'breast ?milk|breast ?fed|breast ?feed', x)
+    _formula = re.search(r'formula', x)
+    if re.search(r'\bno breast|without breast|never breast', x):
+        return 'formula-fed'
+    if re.search(r'solid', x) and _bm and _formula:
+        return 'breastmilk and formula with solids'
+    if re.search(r'solid', x) and _bm:
+        return 'breastmilk with solids'
+    if (_bm and _formula) or re.search(r'\bmixed (fed|feed|feeding|milk)\b', x):
+        return 'mixed breastmilk and formula'
+    if re.search(r'not\s+exclusive', x) and _bm:
+        return 'not exclusively breastfed'
+    if re.search(r'exclusive', x) and _bm:
+        return 'exclusively breastfed'
+    if _bm:
+        return 'breastfed (NOS)'
+    if _formula:
+        return 'formula-fed'
+    # deficiency / supplementation / fiber diets (common in rodent studies)
+    if re.search(r'choline def|methionine choline|\bmcd\b|\bcdaa\b|\bcdahfd\b', x):
+        return 'choline-deficient diet'
+    if re.search(r'iron def|low iron|iron deficient', x):
+        return 'iron-deficient diet'
+    if re.search(r'iron suppl|iron fortif|iron enrich|high iron', x):
+        return 'iron-supplemented diet'
+    if re.search(r'high fib(er|re)', x):
+        return 'high-fiber diet'
+    if re.search(r'low fib(er|re)', x):
+        return 'low-fiber diet'
+    # feeding schedule (check time-restricted before calorie-restricted)
+    if re.search(r'time restricted|\btrf\b|\btre\b', x):
+        return 'time-restricted diet'
+    if re.search(r'intermittent fasting|alternate day fasting|\badf\b|\bfasting\b', x):
+        return 'intermittent fasting'
     # experimental / composition diets (specific first)
     if re.search(r'\bhfhs\b|\bhchf\b|high fat high (sugar|sucrose|carb)', x):
         return 'high-fat high-sugar diet'
@@ -254,11 +290,15 @@ def convert_diet(x):
         return 'Western diet'
     if re.search(r'prebiotic', x):
         return 'prebiotic diet'
-    if re.search(r'calorie restrict|caloric restrict|calorie restricted|\brestricted\b', x):
+    if re.search(r'calorie restrict|caloric restrict|energy restrict', x):
         return 'calorie-restricted diet'
-    # control / standard chow
-    if re.search(r'\bchow\b|\bnormal\b|\bcontrol\b|\bstandard\b|\bncd\b|\bcd\b|\bcon\b|\bctrl\b|ain ?76|regular chow|standard chow|\bsc\b|normal diet', x):
-        return 'control diet'
+    # purified/defined vs standard chow vs generic control
+    if re.search(r'purified|\bdefined\b|ain ?76|ain ?93|ain76|ain93', x):
+        return 'purified diet'
+    if re.search(r'\bchow\b|regular chow|standard chow|\bncd\b', x):
+        return 'chow diet'
+    if re.search(r'\bcontrol\b|\bnormal\b|\bstandard\b|\bcd\b|\bcon\b|\bctrl\b|\bsc\b|normal diet', x):
+        return 'control diet (NOS)'
     return 'missing value'
 
 

@@ -462,7 +462,7 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The dietary regimen of the subject: a human dietary pattern or an experimental/composition diet type. Vocabulary aligned with the Ontology for Nutritional Studies (ONS).",
+        "description": "The dietary regimen of the subject, for human OR animal (e.g. mouse) subjects: a human dietary pattern, an experimental/composition or deficiency diet (common in rodent studies), an infant-feeding regimen, or a feeding-schedule. Vocabulary aligned with the Ontology for Nutritional Studies (ONS) where applicable.",
         "example": "high-fat diet",
         "source": "ONS",
         "allowed_values": [
@@ -470,7 +470,7 @@
             "vegetarian",
             "vegan",
             "pescatarian",
-            "control diet",
+            "control diet (NOS)",
             "high-fat diet",
             "high-sugar diet",
             "high-fat high-sugar diet",
@@ -480,7 +480,23 @@
             "ketogenic diet",
             "Mediterranean diet",
             "prebiotic diet",
-            "calorie-restricted diet"
+            "calorie-restricted diet",
+            "chow diet",
+            "purified diet",
+            "high-fiber diet",
+            "low-fiber diet",
+            "time-restricted diet",
+            "intermittent fasting",
+            "choline-deficient diet",
+            "iron-deficient diet",
+            "iron-supplemented diet",
+            "breastfed (NOS)",
+            "exclusively breastfed",
+            "not exclusively breastfed",
+            "mixed breastmilk and formula",
+            "formula-fed",
+            "breastmilk with solids",
+            "breastmilk and formula with solids"
         ]
     },
     "DOIDCommonName": {
