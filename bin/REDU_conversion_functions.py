@@ -262,6 +262,25 @@ def convert_diet(x):
     return 'missing value'
 
 
+def packyears_to_numeric(x):
+    """Extract cumulative smoking exposure in pack-years (packs/day x years smoked).
+    Binned or threshold entries ('<70', '>=70') are rejected: they are not point
+    values and taking the bound would fabricate a number. Plausible range 0-200
+    (4 packs/day for 50 years); the same range is enforced centrally in
+    complete_and_fill_REDU_table."""
+    s = str(x)
+    if re.search(r'[<>≤≥]|less than|greater than|more than|at least', s, re.I):
+        return 'missing value'
+    nums = re.findall(r'-?\d+\.?\d*', s)
+    if not nums:
+        return 'missing value'
+    try:
+        v = float(nums[0])
+    except ValueError:
+        return 'missing value'
+    return v if 0 <= v <= 200 else 'missing value'
+
+
 def bmi_to_numeric(x):
     """Extract a plausible BMI number (kg/m^2). Rejects z-scores, codes and other
     non-BMI values by requiring a human-plausible range (10-60); the same range is

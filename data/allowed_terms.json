@@ -445,6 +445,19 @@
             "never smoker"
         ]
     },
+    "SmokingPackYears": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "Cumulative tobacco exposure in pack-years (packs smoked per day multiplied by years smoked); the measure clinicians generally use alongside smoking status. Values outside 0-200 are rejected as missing, as are binned/threshold entries (e.g. '<70') which are not point values.",
+        "example": "30",
+        "source": "-",
+        "allowed_values": [
+            "numeric"
+        ],
+        "min": 0,
+        "max": 200
+    },
     "BodyMassIndex": {
         "generate": "False",
         "type": "biology/medicine",
