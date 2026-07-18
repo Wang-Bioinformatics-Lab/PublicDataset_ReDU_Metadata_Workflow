@@ -264,7 +264,7 @@ def convert_diet(x):
 
 def bmi_to_numeric(x):
     """Extract a plausible BMI number (kg/m^2). Rejects z-scores, codes and other
-    non-BMI values by requiring a human-plausible range (10-60); the same range is
+    non-BMI values by requiring a human-plausible range (10-120); the same range is
     enforced centrally in complete_and_fill_REDU_table for all sources."""
     nums = re.findall(r'-?\d+\.?\d*', str(x))
     if not nums:
@@ -273,7 +273,7 @@ def bmi_to_numeric(x):
         v = float(nums[0])
     except ValueError:
         return 'missing value'
-    return v if 10 <= v <= 60 else 'missing value'
+    return v if 10 <= v <= 120 else 'missing value'
 
 
 def map_instrument_to_allowed(instrument, allowed_values):

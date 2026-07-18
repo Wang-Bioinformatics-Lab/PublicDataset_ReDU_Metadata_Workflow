@@ -449,14 +449,14 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The body mass index (BMI) of the subject in kg/m^2. Values outside 10-60 (implausible extremes, e.g. auto-miscalculated BMIs) are rejected as missing.",
+        "description": "The body mass index (BMI) of the subject in kg/m^2. Values outside 10-120 are rejected as missing (implausible extremes / auto-miscalculated BMIs). The upper bound accommodates clinically routine BMIs above 60 and documented extremes near 100.",
         "example": "24.1",
         "source": "-",
         "allowed_values": [
             "numeric"
         ],
         "min": 10,
-        "max": 60
+        "max": 120
     },
     "Diet": {
         "generate": "False",
