@@ -491,12 +491,19 @@
             "iron-deficient diet",
             "iron-supplemented diet",
             "breastfed (NOS)",
-            "exclusively breastfed",
+            "exclusively breastmilk",
             "not exclusively breastfed",
             "mixed breastmilk and formula",
-            "formula-fed",
+            "exclusively formula",
             "breastmilk with solids",
-            "breastmilk and formula with solids"
+            "breastmilk and formula with solids",
+            "low FODMAP diet",
+            "gluten-free diet",
+            "DASH diet",
+            "MIND diet",
+            "BRAT diet",
+            "ultra-processed diet",
+            "minimally-processed diet"
         ]
     },
     "DOIDCommonName": {

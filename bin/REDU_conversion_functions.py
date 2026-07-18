@@ -235,12 +235,28 @@ def convert_diet(x):
         return 'vegetarian'
     if re.search(r'\bomnivor', x):
         return 'omnivore'
+    # named clinical / nutrition dietary patterns (MIND before DASH so the
+    # MIND-DASH hybrid resolves to MIND, its standard name)
+    if re.search(r'low fodmap|\bfodmap\b', x):
+        return 'low FODMAP diet'
+    if re.search(r'gluten free|\bgluten\b free', x):
+        return 'gluten-free diet'
+    if re.search(r'\bmind\b', x):
+        return 'MIND diet'
+    if re.search(r'\bdash\b', x):
+        return 'DASH diet'
+    if re.search(r'\bbrat\b', x):
+        return 'BRAT diet'
+    if re.search(r'ultra ?processed|\bupf\b', x):
+        return 'ultra-processed diet'
+    if re.search(r'minimally processed|minimal(ly)? process', x):
+        return 'minimally-processed diet'
     # infant feeding regimens (breast milk / formula / solids); check before the
     # experimental diets so "formula" is not misread as a composition diet
     _bm = re.search(r'breast ?milk|breast ?fed|breast ?feed', x)
     _formula = re.search(r'formula', x)
     if re.search(r'\bno breast|without breast|never breast', x):
-        return 'formula-fed'
+        return 'exclusively formula'
     if re.search(r'solid', x) and _bm and _formula:
         return 'breastmilk and formula with solids'
     if re.search(r'solid', x) and _bm:
@@ -250,11 +266,11 @@ def convert_diet(x):
     if re.search(r'not\s+exclusive', x) and _bm:
         return 'not exclusively breastfed'
     if re.search(r'exclusive', x) and _bm:
-        return 'exclusively breastfed'
+        return 'exclusively breastmilk'
     if _bm:
         return 'breastfed (NOS)'
     if _formula:
-        return 'formula-fed'
+        return 'exclusively formula'
     # deficiency / supplementation / fiber diets (common in rodent studies)
     if re.search(r'choline def|methionine choline|\bmcd\b|\bcdaa\b|\bcdahfd\b', x):
         return 'choline-deficient diet'
