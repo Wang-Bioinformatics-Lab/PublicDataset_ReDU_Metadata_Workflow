@@ -462,7 +462,7 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The dietary regimen of the subject, for human OR animal (e.g. mouse) subjects: a human dietary pattern, an experimental/composition or deficiency diet (common in rodent studies), an infant-feeding regimen, or a feeding-schedule. Vocabulary aligned with the Ontology for Nutritional Studies (ONS) where applicable.",
+        "description": "The dietary regimen of the subject, for human OR animal (e.g. mouse) subjects: a human dietary pattern, an experimental/composition or deficiency diet (common in rodent studies), an infant-feeding regimen, or a feeding-schedule. Vocabulary aligned with the Ontology for Nutritional Studies (ONS) where applicable. Processing-level terms: definitions of ultra-processed food (UPF) vary by classification system (NOVA, IFIC, UNC), so use these operationally - 'ultra-processed diet' for diets deriving >80% of calories from UPF (the threshold used in controlled studies) and 'minimally-processed diet' for <15-20% of calories from UPF. Note the US population average is ~55% of calories from UPF (NHANES), so a typical free-living/Western diet falls between the two and should be recorded as 'Western diet' rather than either processing-level term.",
         "example": "high-fat diet",
         "source": "ONS",
         "allowed_values": [
