@@ -52,7 +52,8 @@
             "blank_analysis",
             "fungi",
             "bacteria",
-            "molecular_standards"
+            "molecular_standards",
+            "coral"
         ]
     },
     "SampleTypeSub1": {
@@ -118,7 +119,10 @@
             "keys",
             "dissolvedorganicmatter_water_freshwater",
             "defined_standards",
-            "combinatorial_synthesis"
+            "combinatorial_synthesis",
+            "marine_algae",
+            "marine_coralrubble",
+            "culture_organoid"
         ]
     },
     "NCBITaxonomy": {
@@ -358,7 +362,8 @@
             "mixed mode (Scherzo SM-C18)",
             "reverse phase (C18)",
             "reverse phase (C30)",
-            "gas chromatography (NOS)"
+            "gas chromatography (NOS)",
+            "mixed mode (Scherzo SS-C18)"
         ]
     },
     "SubjectIdentifierAsRecorded": {
