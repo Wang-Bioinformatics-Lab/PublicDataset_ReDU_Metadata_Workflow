@@ -121,8 +121,17 @@
             "defined_standards",
             "combinatorial_synthesis",
             "marine_algae",
-            "marine_coralrubble",
-            "culture_organoid"
+            "marine_coral_rubble",
+            "culture_organoid",
+            "marine_algae_crustose_coralline",
+            "marine_algae_turf",
+            "marine_algae_fleshy",
+            "marine_algae_macrocalcifier",
+            "marine_coral_mounds",
+            "marine_coral_branching",
+            "marine_coral_plating",
+            "marine_coral_encrusting",
+            "marine_fungal"
         ]
     },
     "NCBITaxonomy": {
@@ -276,7 +285,8 @@
             "methanol-water (1:3)",
             "methanol-water (3:1)",
             "hexane-methanol (1:1)",
-            "accelerated solvent extraction (ASE)"
+            "accelerated solvent extraction (ASE)",
+            "acetonitrile-water (1:1) + 0.1% formic acid"
         ]
     },
     "InternalStandardsUsed": {
@@ -313,7 +323,8 @@
             "decahydroquinoline",
             "1-O-hexadecyl-2-acetyl-snglycero-3-phosphocholine",
             "cocaine-d3",
-            "Sulfadimethoxine-d6"
+            "Sulfadimethoxine-d6",
+            "glycocholic acid"
         ]
     },
     "MassSpectrometer": {
