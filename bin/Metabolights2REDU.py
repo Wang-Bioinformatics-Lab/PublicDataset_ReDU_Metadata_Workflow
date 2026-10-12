@@ -66,21 +66,29 @@ def get_blanks(x):
         return [None, None]
 
 
+class StudyNotAvailable(Exception):
+    """The study exists but is not public (MetaboLights returns no content for it)."""
+
+
 def safe_api_request(url, retries=3, expected_codes={200}):
 
   for _ in range(retries):
     try:
-      response = requests.get(url)
+      response = requests.get(url, timeout=(10, 300))
       print(f"Requested: {url}")
       if response.status_code in expected_codes:
         data = response.json()
         print("Request successful!")
         return data
+      elif response.status_code in {401, 403, 404}:
+        # private or unknown study: retrying will not help
+        print(f"Error: status code {response.status_code}, not retrying")
+        return {'content': None, 'message': f'HTTP {response.status_code}'}
       else:
         print(f"Error: Unexpected status code {response.status_code}")
-        time.sleep(10)
     except Exception as e:
       print(f"Error requesting data: {e}")
+    time.sleep(10)
   print(f"All retries failed for {url}.")
   return None
 
@@ -121,6 +129,10 @@ def Metabolights2REDU(study_id, **kwargs):
     """
     study_url = "https://www.ebi.ac.uk:443/metabolights/ws/studies/public/study/" + study_id
     study_details = safe_api_request(study_url)
+    if study_details is None:
+        raise RuntimeError(f"Could not retrieve study details for {study_id}")
+    if study_details.get('content') is None:
+        raise StudyNotAvailable(study_details.get('message', ''))
 
     study_assays = study_details['content']['assays']
 
@@ -176,6 +188,13 @@ def Metabolights2REDU(study_id, **kwargs):
         df_samples = rename_duplicated_column_names(df_samples)
         df_samples.columns = headers
     
+        # Sample names are typed by hand in both sheets; ignore surrounding whitespace
+        df_assays['Assay_Sample Name'] = df_assays['Assay_Sample Name'].astype(str).str.strip()
+        df_samples['Samples_Sample Name'] = df_samples['Samples_Sample Name'].astype(str).str.strip()
+        n_unmatched = (~df_assays['Assay_Sample Name'].isin(df_samples['Samples_Sample Name'])).sum()
+        if n_unmatched > 0:
+            print(f'{n_unmatched} of {len(df_assays)} assay rows have no matching sample in the sample table and are dropped.')
+
         df_study = df_assays.merge(df_samples, left_on='Assay_Sample Name', right_on='Samples_Sample Name', how='inner')
         df_study['row_id'] = range(1, len(df_study) + 1)
 
@@ -728,7 +747,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.study_id == 'ALL':
-        public_metabolights_studies = safe_api_request('https://www.ebi.ac.uk:443/metabolights/ws/studies', retries = 1)
+        public_metabolights_studies = safe_api_request('https://www.ebi.ac.uk:443/metabolights/ws/studies', retries = 5)
+        if not public_metabolights_studies or not public_metabolights_studies.get('content'):
+            raise RuntimeError("Could not retrieve the list of MetaboLights studies.")
         public_metabolights_studies = public_metabolights_studies['content']
     else:
         public_metabolights_studies = [args.study_id]
@@ -767,20 +788,34 @@ if __name__ == "__main__":
 
     REDU_dataframes = []
     redu_table_single = pd.DataFrame()
+    not_public_studies = []
+    no_data_studies = []
+    failed_studies = []
     for study_id in tqdm(public_metabolights_studies):
         try:
             print(f'Processing study {study_id}...')
             redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                   ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table)
+        except StudyNotAvailable as e:
+            print(f"Study {study_id} is not available: {e}")
+            not_public_studies.append(study_id)
+            continue
         except Exception as e:
             traceback_info = traceback.format_exc()
             print(f"An error occurred with study_id {study_id}: {e}\nTraceback:\n{traceback_info}")
+            failed_studies.append(study_id)
             continue
         if redu_table_single is not None and len(redu_table_single) > 0:
             print(f'Added {len(redu_table_single)} samples.')
             REDU_dataframes.append(redu_table_single)
         else:
             print(f'Added {0} samples.')
+            no_data_studies.append(study_id)
+
+    print(f'\nStudies with samples: {len(REDU_dataframes)}, without MS samples: {len(no_data_studies)}, '
+          f'not public: {len(not_public_studies)}, failed: {len(failed_studies)} (of {len(public_metabolights_studies)})')
+    if failed_studies:
+        print('Failed studies: ' + ' '.join(failed_studies))
 
     if len(REDU_dataframes) > 0:
         redu_tables_all = pd.concat(REDU_dataframes, ignore_index=True)

@@ -10,7 +10,7 @@ import argparse
 import time
 
 
-def download_gnps_metadata(out_path="gnps_metadata.tsv", page_size=1000, max_pages=None, max_retries=3):
+def download_gnps_metadata(out_path="gnps_metadata.tsv", page_size=1000, max_pages=None, max_retries=5):
     """
     Downloads all GNPS metadata ending with 'gnps_metadata.tsv' via the Datasette API,
     paginating with _next and writing results incrementally as TSV.
@@ -55,17 +55,17 @@ def download_gnps_metadata(out_path="gnps_metadata.tsv", page_size=1000, max_pag
                 r = requests.get(base_url, params=params, timeout=120)
                 if r.status_code != 200:
                     print(f"[page {page}] Attempt {attempt} bad status {r.status_code}", file=sys.stderr)
-                    time.sleep(2)
+                    time.sleep(2 ** attempt)
                     continue
                 payload = r.json()
                 success = True
             except Exception as e:
                 print(f"[page {page}] Attempt {attempt} failed: {e}", file=sys.stderr)
-                time.sleep(2)
+                time.sleep(2 ** attempt)
 
         if not success:
-            print(f"[page {page}] ❌ All {max_retries} attempts failed; aborting.", file=sys.stderr)
-            break
+            # A partial listing would silently drop every dataset on the missing pages
+            raise RuntimeError(f"[page {page}] All {max_retries} attempts failed; aborting.")
 
         rows = payload.get("rows", [])
         next_token = payload.get("next")
@@ -145,8 +145,9 @@ def main():
     gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'], errors='coerce')
 
 
-    # Sort the DataFrame by the create time column
-    gnps_df = gnps_df.sort_values(by='create_time')
+    # Sort the DataFrame by the create time column (missing times first, so they are
+    # only selected when a dataset has no file with a valid create time)
+    gnps_df = gnps_df.sort_values(by='create_time', na_position='first')
 
     # Group the DataFrame by the dataset column
     groups = gnps_df.groupby('dataset')
@@ -154,8 +155,7 @@ def main():
     # Select the row with the highest create time value for each group
     selected_rows = []
     for name, group in groups:
-        idx = group['create_time'].idxmax()
-        selected_rows.append(group.loc[idx])
+        selected_rows.append(group.iloc[-1])
 
     # Names of GNPS Files, as dataset-relative paths prefixed with the dataset accession
     # (the cache's filepath column no longer carries the MSV prefix, but the MassIVE

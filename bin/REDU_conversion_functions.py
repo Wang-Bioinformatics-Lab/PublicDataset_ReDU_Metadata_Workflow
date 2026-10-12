@@ -3,6 +3,7 @@ import os
 import re
 import requests
 import time
+import functools
 from datetime import datetime
 from bs4 import BeautifulSoup
 from owlready2 import get_ontology
@@ -83,6 +84,60 @@ def age_category(age):
         return ''
     
 
+# NCBI allows 3 requests/s without an API key; going faster returns HTTP 429
+_NCBI_MIN_INTERVAL = 0.4
+_ncbi_last_request = [0.0]
+NCBI_TIMEOUT = (10, 60)
+
+
+def _ncbi_throttle():
+    wait = _NCBI_MIN_INTERVAL - (time.time() - _ncbi_last_request[0])
+    if wait > 0:
+        time.sleep(wait)
+    _ncbi_last_request[0] = time.time()
+
+
+def _ncbi_get(url, retries=4):
+    """GET an NCBI URL, throttled, retrying on throttling, server and connection errors.
+
+    Returns the response if it has status 200, raises otherwise.
+    """
+    for attempt in range(1, retries + 1):
+        _ncbi_throttle()
+        try:
+            response = requests.get(url, timeout=NCBI_TIMEOUT)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt == retries:
+                raise
+            print(f"NCBI request failed (attempt {attempt}/{retries}): {e}")
+        else:
+            if response.status_code == 200:
+                return response
+            if attempt == retries or (response.status_code != 429 and response.status_code < 500):
+                response.raise_for_status()
+            print(f"NCBI responded with status {response.status_code} (attempt {attempt}/{retries})")
+        time.sleep(min(2 ** attempt, 30))
+
+
+@functools.lru_cache(maxsize=None)
+def _get_ncbi_lineage(ncbi_id, retries=3):
+    """Returns the lowercased lineage of an NCBI taxon id, or None if NCBI has no lineage for it.
+
+    Cached, as the same ids recur across studies. Network errors propagate (and are not cached).
+    """
+    for attempt in range(1, retries + 1):
+        response = _ncbi_get(f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=taxonomy&id={ncbi_id}")
+        soup = BeautifulSoup(response.text, "xml")
+        taxon = soup.find("Taxon")
+        lineage = taxon.find("Lineage") if taxon is not None else None
+        if lineage is not None:
+            return tuple(s.lower() for s in lineage.text.split("; "))
+        # NCBI occasionally answers 200 with an error document; retry before giving up
+        print(f"No lineage in NCBI response for {ncbi_id} (attempt {attempt}/{retries})")
+        time.sleep(2)
+    return None
+
+
 def get_taxonomic_name_from_id(ncbi_id):
     url = f"https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?id={ncbi_id}"
     attempts = 0
@@ -90,7 +145,8 @@ def get_taxonomic_name_from_id(ncbi_id):
 
     while attempts < max_attempts:
         try:
-            response = requests.get(url)
+            _ncbi_throttle()
+            response = requests.get(url, timeout=NCBI_TIMEOUT)
             response.raise_for_status()  # Check for HTTP errors.
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -124,21 +180,9 @@ def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
         cell_culture_key_words = ["cell", "media", "culture"]
         try:
             #try to get taxa via API
-            for attempt in range(3):
-                try:
-                    response = requests.get(
-                        f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=taxonomy&id={ncbi_id}")
-                    soup = BeautifulSoup(response.text, "xml")
-                    classification = [s.lower() for s in soup.find("Taxon").find("Lineage").text.split("; ")]
-                    break
-
-                except requests.exceptions.RequestException as e:
-                    print(f"Taxonomy request failed. Retrying (attempt {attempt + 1}/3): {e}")
-                    time.sleep(10)
-
-            else:
-                # If the loop completes without breaking, raise an exception
-                raise Exception("All retries failed. Unable to fetch taxonomy data.")
+            classification = _get_ncbi_lineage(str(ncbi_id))
+            if classification is None:
+                raise Exception(f"No lineage found for NCBI id {ncbi_id}.")
 
             SampleType = None
             SampleTypeSub1 = None
@@ -181,7 +225,8 @@ def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
                 SampleType = "culture_bacterial"
                 SampleTypeSub1 = "culture_bacterial"
             return [SampleType, SampleTypeSub1]
-        except Exception:
+        except Exception as e:
+            print(f"Could not get taxonomy info for {ncbi_id}: {e}")
             return [None, None]
     else:
         return [None, None]
@@ -349,8 +394,10 @@ def get_taxonomy_id_from_name(species_name, retries=3):
     attempts = 0
     while attempts < retries:
         try:
+            _ncbi_throttle()
             response = requests.get(
-                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}&retmode=xml"
+                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}&retmode=xml",
+                timeout=NCBI_TIMEOUT
             )
 
             if response.status_code == 200:

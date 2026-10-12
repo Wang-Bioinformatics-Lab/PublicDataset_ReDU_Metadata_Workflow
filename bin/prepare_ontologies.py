@@ -10,13 +10,26 @@ import json
 
 # owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
 # declares an IRI as both a property and a class/individual. Patch _load_properties
-# to skip those conflicting entries instead of crashing.
-_original_load_properties = _owl_ns.Ontology._load_properties
+# to skip only those conflicting entries instead of crashing. (Catching the TypeError
+# around the original method would also skip loading every property after the
+# conflicting one.) Mirrors Ontology._load_properties of owlready2 0.46.
 def _patched_load_properties(self):
-    try:
-        _original_load_properties(self)
-    except TypeError:
-        pass
+    # Update props from other ontologies, if needed
+    for prop in list(self.world._props.values()):
+        if prop.namespace.world is _owl_ns.owl_world: continue
+        prop._check_update(self)
+
+    # Loads new props
+    for prop_storid in _owl_ns.itertools.chain(self._get_obj_triples_po_s(_owl_ns.rdf_type, _owl_ns.owl_object_property),
+                                               self._get_obj_triples_po_s(_owl_ns.rdf_type, _owl_ns.owl_data_property),
+                                               self._get_obj_triples_po_s(_owl_ns.rdf_type, _owl_ns.owl_annotation_property)):
+        Prop = self.world._get_by_storid(prop_storid)
+        if not isinstance(Prop, _owl_ns.PropertyClass):
+            print(f"Skipping '{Prop.iri}': it is both a property and a class/an individual")
+            continue
+        python_name_d = self.world._get_data_triple_sp_od(prop_storid, _owl_ns.owlready_python_name)
+        if python_name_d is not None:
+            with _owl_ns.LOADING: Prop.python_name = python_name_d[0]
 _owl_ns.Ontology._load_properties = _patched_load_properties
 
 def get_uberon_table(owl_path):

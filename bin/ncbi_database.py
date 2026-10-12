@@ -15,7 +15,8 @@ def get_lineage_as_dict(ncbi, tax_ids, pbar=True):
         try:
             lineage = ncbi.get_lineage(tid)
             names = ncbi.get_taxid_translator(lineage)
-            ranks = ncbi.get_rank(lineage)
+            # NCBI renamed the 'superkingdom' rank to 'domain' (2025); keep the old column filled
+            ranks = {t: ('superkingdom' if r == 'domain' else r) for t, r in ncbi.get_rank(lineage).items()}
             lineage_by_rank = {ranks[t]: names[t] for t in lineage if ranks[t] in desired_ranks}
             row = {rank: lineage_by_rank.get(rank) for rank in desired_ranks}
             results[str(tid)] = row  # <- keep keys as strings
@@ -102,9 +103,12 @@ def update_sampletype(df):
         "Bacillati": "bacteria",
         "Pseudomonadati": "bacteria",
         "Fusobacteriati": "bacteria",
-        "Thermoproteati": "bacteria",
         "Thermotogati": "bacteria",
-        "Methanobacteriati": "bacteria"
+        # archaeal kingdoms
+        "Thermoproteati": "archaea",
+        "Methanobacteriati": "archaea",
+        "Nanobdellati": "archaea",
+        "Promethearchaeati": "archaea"
     }
 
     # Update SampleType only if it's "missing value"
@@ -144,6 +148,11 @@ if __name__ == "__main__":
 
     except FileNotFoundError:
         print("sparql_oto_ncbi.tsv not found, skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)
+    except (KeyError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
+        # e.g. the SPARQL endpoint returned an error page instead of the TSV
+        print(f"WARNING: sparql_oto_ncbi.tsv is not a valid NCBI/OTT table ({type(e).__name__}: {e}), "
+              "skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)
+        annotated_df = annotated_df.drop(columns=['NCBI'], errors='ignore')
 
 
 

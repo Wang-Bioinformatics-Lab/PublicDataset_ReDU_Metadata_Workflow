@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Get the directory where the script is located
 SCRIPT_DIR="$(dirname "$0")"
@@ -12,7 +13,15 @@ download_file() {
     else
         echo "$(basename "$path") does not exist. Downloading..."
     fi
-    curl -o "$path" "$url"
+    # Download to a temporary file first so a failed download (HTTP error page,
+    # interrupted transfer) never replaces a good existing file
+    curl -fsSL --retry 3 -o "${path}.part" "$url"
+    if [ ! -s "${path}.part" ]; then
+        echo "ERROR: $(basename "$path") is empty" >&2
+        rm -f "${path}.part"
+        exit 1
+    fi
+    mv "${path}.part" "$path"
     echo "$(basename "$path") has been downloaded to $(dirname "$path")"
 }
 
@@ -32,6 +41,7 @@ download_file "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip" "${SCRIPT_D
 # Unzip taxdmp.zip if it has been downloaded
 if [ -f "${SCRIPT_DIR}/taxdmp.zip" ]; then
     echo "Unzipping taxdmp.zip..."
+    unzip -tq "${SCRIPT_DIR}/taxdmp.zip"
     unzip -o -j "${SCRIPT_DIR}/taxdmp.zip" "names.dmp" -d "${SCRIPT_DIR}"
     echo "names.dmp has been extracted."
     unzip -o -j "${SCRIPT_DIR}/taxdmp.zip" "nodes.dmp" -d "${SCRIPT_DIR}"

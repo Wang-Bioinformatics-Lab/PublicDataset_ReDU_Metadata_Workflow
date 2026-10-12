@@ -1,11 +1,30 @@
 #!/usr/bin/env python3
 import argparse
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import pandas as pd
 from io import StringIO
 from tqdm import tqdm
 import re
 from urllib.parse import unquote, quote
+
+# (connect, read) timeout in seconds for every NORMAN request
+HTTP_TIMEOUT = (10, 120)
+
+
+def make_session():
+    """requests Session that retries on connection errors, throttling and server errors."""
+    session = requests.Session()
+    retry = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504],
+                  allowed_methods=["GET"], raise_on_status=False)
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    return session
+
+
+SESSION = make_session()
+
 
 def create_usi(row):
     return f"mzspec:NORMAN-{row['uuid']}:{row['file_paths']}"
@@ -13,11 +32,10 @@ def create_usi(row):
 
 def _get_existing_datasets(path_to_file):
     try:
-        existing_datasets = pd.read_csv(path_to_file, sep="\t")
-        existing_datasets = set(existing_datasets['datasets'])
-        return existing_datasets
-    except:
+        existing_datasets = pd.read_csv(path_to_file, sep="\t", dtype=str)
+    except (FileNotFoundError, pd.errors.EmptyDataError):
         return set()
+    return set(existing_datasets['datasets'])
     
 def process_dataset_files(
     df_files,
@@ -27,10 +45,10 @@ def process_dataset_files(
     filter_extensions=True,
 ):
     file_cols = ["data_independent", "data_dependent", "data_fullscan"]
-    missing_cols = [c for c in file_cols if c not in df_files.columns]
+    missing_cols = [c for c in ["sample_id"] + file_cols if c not in df_files.columns]
     if missing_cols:
         print(f"Dataset {internal_id or '(unknown)'} missing columns: {missing_cols}. Skipping.")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["sample_id", "variable", "file_urls", "file_names", "file_paths", "USI"])
 
     # reshape → one file per row
     df = (
@@ -58,8 +76,8 @@ def process_dataset_files(
         exts = (".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d")
         df = df[df["file_names"].str.lower().str.endswith(exts)]
 
-    # USI
-    df["USI"] = df.apply(create_usi, axis=1)
+    # USI (apply on an empty frame returns a DataFrame, not a Series)
+    df["USI"] = df.apply(create_usi, axis=1) if len(df) > 0 else pd.Series(dtype=str)
 
     return df
 
@@ -97,7 +115,7 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
     # Step 1: Fetch the list of datasets
     datasets_url = "https://dsfp.norman-data.eu/api/1/metastore/schemas/dataset/all"
     print(f"Fetching datasets from {datasets_url}", flush = True)
-    response = requests.get(datasets_url)
+    response = SESSION.get(datasets_url, timeout=HTTP_TIMEOUT)
     response.raise_for_status()  # Raise an error for bad status codes
     datasets = response.json()
     print(f"Fetched {len(datasets)} datasets", flush = True)
@@ -114,6 +132,7 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
 
     # Process each dataset with a progress bar
     for ds in tqdm(datasets, desc="Processing datasets", unit="dataset"):
+        internal_id = ds.get('internal_id')
         try:
             uuid = ds['uuid']
             internal_id = ds['internal_id']
@@ -127,12 +146,12 @@ def main(output_filename, study_id, filter_extensions, existing_datasets):
             # Build URL to get the CSV with file info
             file_url = f"https://dsfp.norman-data.eu/data/{internal_id}/files.csv"
             print(f"Fetching file data from {file_url}", flush = True)
-            file_response = requests.get(file_url)
+            file_response = SESSION.get(file_url, timeout=HTTP_TIMEOUT)
 
             if file_response.status_code == 200:
                 # Read CSV data into DataFrame
                 csv_data = StringIO(file_response.text)
-                df_files = pd.read_csv(csv_data)
+                df_files = pd.read_csv(csv_data, dtype=str)
                 print(f"Fetched file data for dataset {internal_id}", flush = True)
 
                 # Process the DataFrame
@@ -212,4 +231,7 @@ if __name__ == "__main__":
 
     existing_datasets = _get_existing_datasets(args.existing_datasets)
 
-    main(args.output, args.study_id, args.filter_extensions, existing_datasets)
+    # argparse gives a string; 'False' would otherwise be truthy
+    filter_extensions = args.filter_extensions.strip().lower() in ("true", "1", "yes")
+
+    main(args.output, args.study_id, filter_extensions, existing_datasets)

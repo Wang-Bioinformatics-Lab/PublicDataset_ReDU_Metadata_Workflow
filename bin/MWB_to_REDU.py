@@ -17,13 +17,27 @@ from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_d
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
-def clean_path(path):
-    if path.startswith("__MACOSX/") and '/._' in path:
-        # Remove the __MACOSX part and the ._ prefix from the filename
-        return path.replace("__MACOSX/", "").replace("/._", "/")
-    return path
+# Shared session for Metabolomics Workbench: retries throttling/server errors with backoff
+mwb_session = requests.Session()
+mwb_session.mount("https://", HTTPAdapter(max_retries=Retry(total=5, backoff_factor=2,
+                                                             status_forcelist=[429, 500, 502, 503, 504],
+                                                             allowed_methods=["GET"])))
+MWB_TIMEOUT = (10, 300)
+
+
+def _mwb_get(url):
+    response = mwb_session.get(url, timeout=MWB_TIMEOUT)
+    response.raise_for_status()
+    return response
+
+
+def is_apple_double(path):
+    # macOS resource-fork copies (__MACOSX/.../._x.mzML) are not data files
+    return "__MACOSX/" in path or os.path.basename(path).startswith("._")
 
 
 def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
@@ -95,25 +109,18 @@ def handle_duplicates(ordered_pairs):
 
 
 def _get_metabolomicsworkbench_files(dataset_accession):
-    # Lets see if it is in massive
-    try:
-        msv_accession = _accession_to_msv_accession(dataset_accession)
-        files_df = _get_massive_files(msv_accession)
-    except:
-        msv_accession = None
-        files_df = pd.DataFrame()
     try:
         dataset_list_url = "https://www.metabolomicsworkbench.org/data/show_archive_contents_json.php?STUDY_ID={}".format(
             dataset_accession)
-        mw_file_list = requests.get(dataset_list_url).json()
+        mw_file_list = _mwb_get(dataset_list_url).json()
 
         acceptable_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
 
         mw_file_list = [file_obj for file_obj in mw_file_list if
-                        file_obj["FILENAME"].lower().endswith(tuple(acceptable_extensions))]
+                        file_obj["FILENAME"].lower().endswith(tuple(acceptable_extensions)) and
+                        not is_apple_double(file_obj["FILENAME"])]
         workbench_df = pd.DataFrame(mw_file_list)
         workbench_df["filename"] = workbench_df["FILENAME"]
-        workbench_df['filename'] = workbench_df['filename'].apply(clean_path)
         workbench_df["size_mb"] = (workbench_df["FILESIZE"].astype(int) / 1024 / 1024).astype(int)
         workbench_df["URL"] = workbench_df["URL"]        
 
@@ -126,12 +133,11 @@ def _get_metabolomicsworkbench_files(dataset_accession):
         )
 
         workbench_df = workbench_df[["filename", "size_mb", "USI"]]
-    except:
+    except Exception as e:
+        print(f"Failed to list files for {dataset_accession}: {type(e).__name__}: {e}")
         workbench_df = pd.DataFrame()
 
-    merged_df = pd.concat([files_df, workbench_df])
-
-    return merged_df, msv_accession
+    return workbench_df
 
 
 
@@ -469,12 +475,14 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                     'Local Sample ID': row['filename'],
                     'Factor Name': row['Key'],
                     'Factor Value': row['Value'],
-                    'script_id': row['script_id'],
                     'raw_data_source': 'mwTab'
                 }
                 new_rows.append(new_row)
     if new_rows:
         df_rest = pd.concat([df_rest, pd.DataFrame(new_rows)], ignore_index=True)
+        # Re-number by Local Sample ID: mwTab rows carry their list position as id, which
+        # does not match the REST numbering and would attach their raw file to another sample
+        df_rest['script_id'] = df_rest.groupby('Local Sample ID').ngroup()
 
     df_rest['SubjectIdentifierAsRecorded'] = ""
 
@@ -510,7 +518,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         # ---------- BEGIN: keep only preferred uploader file per stem (mzML > mzXML > others) ----------
         # This modifies raw_file_name_df so downstream matching will prefer mzML/mzXML automatically.
 
-        RAWFILE_PREF_DEBUG_STEM = "p10_1_a6_qing_hao__dist"  # e.g. "p10_1_a6_qing_hao__dist" ; empty disables debug prints
+        RAWFILE_PREF_DEBUG_STEM = ""  # e.g. "p10_1_a6_qing_hao__dist" ; empty disables debug prints
 
         def _basename_lower(x):
             s = "" if pd.isna(x) else str(x)
@@ -585,7 +593,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         # --- Prefer mzML > mzXML > others BEFORE matching/merging ---
 
         # Set to {} to silence stem-specific debug
-        DEBUG_STEMS = {"p10_1_a6_qing_hao__dist"}  # lowercase stem WITHOUT extension
+        DEBUG_STEMS = set()  # e.g. {"p10_1_a6_qing_hao__dist"}, lowercase stem WITHOUT extension
 
         def _basename_lower(s: str) -> str:
             # remove folder parts (handles / and \), lowercase
@@ -830,8 +838,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             df = df.merge(preferred_raw_by_stem, on='_stem', how='left')
 
             # DEBUG: your specific problematic stem
-            debug_stem = "p10_1_a6_qing_hao__dist"
-            if (df['_stem'] == debug_stem).any():
+            debug_stem = ""  # e.g. "p10_1_a6_qing_hao__dist"
+            if debug_stem and (df['_stem'] == debug_stem).any():
                 print("\n[DEBUG] stem =", debug_stem)
 
                 cand_rows = raw_file_name_df.loc[
@@ -1074,7 +1082,7 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
 
 
     df_outer[['SampleType', 'SampleTypeSub1']] = df_outer.apply(
-        lambda x: get_enviromental_water(x['SAMPLE_TYPE'] + x['SUBJECT_TYPE']) 
+        lambda x: get_enviromental_water(str(x['SAMPLE_TYPE'] or '') + str(x['SUBJECT_TYPE'] or '')) 
         if pd.isnull(x['SampleType']) and pd.isnull(x['SampleTypeSub1']) 
         else (x['SampleType'], x['SampleTypeSub1']), axis=1, result_type='expand'
     )
@@ -1237,7 +1245,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                     # yielded nothing, fill from other per-sample body-part keys
                     # (matrix/material/tissue/organ/specimen/organism_part/body site).
                     MWB_table = _fill_uberon_from_other_keys(MWB_table, df_translations)
-                    MWB_table = pd.merge(MWB_table, ontology_table, left_on='UBERONBodyPartName', right_on='Label', how='left')
+                    # ontology_table has one row per synonym; merge on unique labels so rows are not multiplied
+                    MWB_table = pd.merge(MWB_table, ontology_table.drop_duplicates(subset=['Label']), left_on='UBERONBodyPartName', right_on='Label', how='left')
                     MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
                 if col_csv_name == 'DOIDCommonName':
                     MWB_table['DOIDOntologyIndex'] = MWB_table.groupby('filename')['REDU_DOIDOntologyIndex'].transform('first')
@@ -1311,11 +1320,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
 
     MWB_table = MWB_table.merge(df_translations, left_on='UBERONBodyPartName', right_on='sampletype', how='left')
     
-    # Convert both columns to string type before filling NA values
-    MWB_table['SampleTypeSub1'] = MWB_table['SampleTypeSub1'].astype(str)
-    MWB_table['tissue_vs_biofluid'] = MWB_table['tissue_vs_biofluid'].astype(str)
-
-    # Now you can fill NA values without worrying about datatype issues
+    # Fill NA values before any string conversion (astype(str) turns NaN into 'nan', which fillna cannot see)
     MWB_table['SampleTypeSub1'] = MWB_table['SampleTypeSub1'].fillna(MWB_table['tissue_vs_biofluid'])
 
     MWB_table = MWB_table.drop(columns=['sampletype', 'tissue_vs_biofluid'])
@@ -1416,23 +1421,21 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     ENVOEnvironmentMaterialIndex_table = kwargs['ENVOEnvironmentMaterialIndex_table']
     NCBIRankDivision_table = kwargs['NCBIRankDivision_table']
 
-    raw_file_name_tupple = _get_metabolomicsworkbench_files(study_id)
-
-    raw_file_name_df = pd.DataFrame(raw_file_name_tupple[0])
+    raw_file_name_df = _get_metabolomicsworkbench_files(study_id)
     if len(raw_file_name_df) == 0:
         print('No raw data detected. Ignoring {}'.format(str(study_id)))
         return None
 
     raw_file_name_df['filename_base'] = raw_file_name_df['filename'].apply(lambda x: os.path.basename(x))
 
-    stdy_info_req = requests.get(
+    stdy_info_req = _mwb_get(
         'https://www.metabolomicsworkbench.org/rest/study/study_id/{}/analysis'.format(str(study_id)))
     stdy_info = stdy_info_req.json()
 
     if not isinstance(next(iter(stdy_info.values())), dict):
         stdy_info = {'1': stdy_info}
 
-    response = requests.get(f'https://www.metabolomicsworkbench.org/rest/study/study_id/{str(study_id)}/factors')
+    response = _mwb_get(f'https://www.metabolomicsworkbench.org/rest/study/study_id/{str(study_id)}/factors')
     rest_response = response.json()
 
     redu_dfs = []
@@ -1522,7 +1525,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
         raise SystemExit("Only mwTab_json OR MWB_analysis_ID should be provided!")
 
     if MWB_analysis_ID is not None:
-        mwb_anlysis_req = requests.get(
+        mwb_anlysis_req = _mwb_get(
             "https://www.metabolomicsworkbench.org/rest/study/analysis_id/{}/mwtab".format(str(MWB_analysis_ID)))
 
         try:
@@ -1700,7 +1703,7 @@ if __name__ == '__main__':
     if study_id == "ALL":
         # Getting all files
         url = "https://www.metabolomicsworkbench.org/rest/study/study_id/ST/available"
-        studies_dict = requests.get(url).json()
+        studies_dict = _mwb_get(url).json()
 
         study_list = []
         for key in studies_dict.keys():

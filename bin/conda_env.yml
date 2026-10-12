@@ -10,5 +10,6 @@ dependencies:
       - requests
       - vladiate
       - bs4
+      - lxml
       - tqdm
       - owlready2==0.46

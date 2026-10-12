@@ -14,23 +14,32 @@ process updateAllowedTerms {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
+    // Declared as inputs (not plain strings) so that updating them invalidates the cache
     input:
-    val x
+    path allowed_terms_seed, stageAs: 'allowed_terms_seed.json'
+    path names_dmp
+    path uberon_owl
+    path po_owl
+    path cl_owl
+    path doid_owl
+    path ms_owl
+    path material_owl
+    path biome_owl
 
     output:
     file 'allowed_terms.json'
 
     """
     python $TOOL_FOLDER/update_allowed_terms_from_ontologies.py  \
-    $DATA_FOLDER/allowed_terms.json \
-    --path_to_ncbi_dump $DATA_FOLDER/names.dmp \
-    --path_to_uberon_owl $DATA_FOLDER/uberon.owl \
-    --path_to_po_owl $DATA_FOLDER/po.owl \
-    --path_to_cl_owl $DATA_FOLDER/cl.owl \
-    --path_to_doid_owl $DATA_FOLDER/doid.owl \
-    --path_to_ms_owl $DATA_FOLDER/ms.owl \
-    --path_to_material_envs_owl $DATA_FOLDER/material-hierarchy.owl \
-    --path_to_biome_envs_owl $DATA_FOLDER/biome-hierarchy.owl
+    ${allowed_terms_seed} \
+    --path_to_ncbi_dump ${names_dmp} \
+    --path_to_uberon_owl ${uberon_owl} \
+    --path_to_po_owl ${po_owl} \
+    --path_to_cl_owl ${cl_owl} \
+    --path_to_doid_owl ${doid_owl} \
+    --path_to_ms_owl ${ms_owl} \
+    --path_to_material_envs_owl ${material_owl} \
+    --path_to_biome_envs_owl ${biome_owl}
     """
 }
 
@@ -258,7 +267,14 @@ process prepare_ontologies {
     conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
-    val x
+    path uberon_owl
+    path cl_owl
+    path po_owl
+    path doid_owl
+    path biome_owl
+    path material_owl
+    path nodes_dmp
+    path division_dmp
 
     output:
     path 'UBERON_CL_PO_ontology.csv'
@@ -269,14 +285,14 @@ process prepare_ontologies {
 
     """
     python $TOOL_FOLDER/prepare_ontologies.py \
-    --path_to_uberon_owl $DATA_FOLDER/uberon.owl \
-    --path_to_cl_owl $DATA_FOLDER/cl.owl \
-    --path_to_po_owl $DATA_FOLDER/po.owl \
-    --path_to_doid_owl $DATA_FOLDER/doid.owl \
-    --path_to_biome_envs_owl $DATA_FOLDER/biome-hierarchy.owl \
-    --path_to_material_envs_owl $DATA_FOLDER/material-hierarchy.owl \
-    --path_to_ncbi_nodes_dmp $DATA_FOLDER/nodes.dmp \
-    --path_to_ncbi_division_dmp $DATA_FOLDER/division.dmp
+    --path_to_uberon_owl ${uberon_owl} \
+    --path_to_cl_owl ${cl_owl} \
+    --path_to_po_owl ${po_owl} \
+    --path_to_doid_owl ${doid_owl} \
+    --path_to_biome_envs_owl ${biome_owl} \
+    --path_to_material_envs_owl ${material_owl} \
+    --path_to_ncbi_nodes_dmp ${nodes_dmp} \
+    --path_to_ncbi_division_dmp ${division_dmp}
     """
 }
 
@@ -347,6 +363,8 @@ process MASST_to_REDU {
     path redu_table
     path ncbi_rank_division
     path allowed_terms
+    path microbe_masst_table
+    path plant_masst_table
 
     output:
     file 'adjusted_metadata_folder'
@@ -356,8 +374,8 @@ process MASST_to_REDU {
     python $TOOL_FOLDER/MASST_to_REDU.py \
     ${redu_table} \
     adjusted_metadata_folder \
-    --path_microbeMASST $DATA_FOLDER/microbe_masst_table.csv \
-    --path_plantMASST $DATA_FOLDER/plant_masst_table.csv \
+    --path_microbeMASST ${microbe_masst_table} \
+    --path_plantMASST ${plant_masst_table} \
     --path_ncbiRanksDivisions ${ncbi_rank_division} \
     --AllowedTermJson_path ${allowed_terms}
     """
@@ -387,7 +405,8 @@ process gnpsmatchName_masst {
 }
 
 process add_cache_columns {
-    publishDir "./nf_output", mode: 'copy'
+    // move (a rename within this filesystem) so the web app never reads a half-copied file
+    publishDir "./nf_output", mode: 'move'
 
     cache false
 
@@ -444,11 +463,11 @@ process enrich_ncbi_information {
 
     //https://qlever.dev/wikidata/adgYjs
     """
-    curl -s https://qlever.dev/api/wikidata \
+    curl -sS --fail --max-time 600 https://qlever.dev/api/wikidata \
     -H "Accept: text/tab-separated-values" \
     -H "Content-type: application/sparql-query" \
     --data "PREFIX wd: <http://www.wikidata.org/entity/> PREFIX wdt: <http://www.wikidata.org/prop/direct/> PREFIX bd: <http://www.bigdata.com/rdf#> PREFIX wikibase: <http://wikiba.se/ontology#> SELECT ?ncbi_id ?ott_id WHERE { ?item wdt:P685 ?ncbi_id . OPTIONAL { ?item wdt:P9157 ?ott_id } ?item wdt:P31 wd:Q16521 }" \
-    -o sparql_oto_ncbi.tsv || :
+    -o sparql_oto_ncbi.tsv || rm -f sparql_oto_ncbi.tsv
 
     python $TOOL_FOLDER/ncbi_database.py \
     ${merged_ch}  \
@@ -457,11 +476,22 @@ process enrich_ncbi_information {
 }
 
 
+// Reference data fetched by data/get_data.sh; fail early with a clear message if it is missing
+def dataFile(name) {
+    file("$DATA_FOLDER/$name", checkIfExists: true)
+}
+
 workflow {
 
     //  Prepare ontologies
-    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division) = prepare_ontologies(1)
-    allowed_terms = updateAllowedTerms(1)
+    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division) = prepare_ontologies(
+        dataFile('uberon.owl'), dataFile('cl.owl'), dataFile('po.owl'), dataFile('doid.owl'),
+        dataFile('biome-hierarchy.owl'), dataFile('material-hierarchy.owl'),
+        dataFile('nodes.dmp'), dataFile('division.dmp'))
+    allowed_terms = updateAllowedTerms(
+        dataFile('allowed_terms.json'), dataFile('names.dmp'), dataFile('uberon.owl'), dataFile('po.owl'),
+        dataFile('cl.owl'), dataFile('doid.owl'), dataFile('ms.owl'),
+        dataFile('material-hierarchy.owl'), dataFile('biome-hierarchy.owl'))
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
@@ -469,7 +499,8 @@ workflow {
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
 
     // MicrobeMASST and PlantMASST
-    masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms)
+    masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
+        dataFile('microbe_masst_table.csv'), dataFile('plant_masst_table.csv'))
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench

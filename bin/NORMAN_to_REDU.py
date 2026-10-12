@@ -10,21 +10,32 @@ import numpy as np
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
 from REDU_conversion_functions import map_instrument_to_allowed
 import json
+import sys
 import traceback
-from getAllNORMAN_file_paths import process_dataset_files
+from getAllNORMAN_file_paths import process_dataset_files, SESSION, HTTP_TIMEOUT
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
+
+
+def norm(s):
+    """Lower-case and keep only letters/digits, used to match instrument names."""
+    return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
 def create_usi(row):
     return f"mzspec:DSFP_{row['uuid']}:{row['file_names']}"
 
 def get_metadata_sheet(url):
     print(f"Fetching file data from {url}")
-    file_response = requests.get(url)
+    file_response = SESSION.get(url, timeout=HTTP_TIMEOUT)
 
     if file_response.status_code == 200:
         
         csv_data = StringIO(file_response.text)
-        df_files = pd.read_csv(csv_data)
+        # read as str so ids (sample_id, instrument_id) join consistently across sheets
+        try:
+            df_files = pd.read_csv(csv_data, dtype=str)
+        except pd.errors.EmptyDataError:
+            print(f"Empty sheet at {url}")
+            return pd.DataFrame()
         return df_files
     else:
         error_message = f"Failed to download files for {url}. Status code: {file_response.status_code}"
@@ -40,6 +51,29 @@ def str_contains(series, pattern):
               .str.replace(' ', '', regex=True)
               .str.contains(pattern, case=False, regex=True)
     )
+
+def collapse_conflicting_rows(df, key, missing_value='missing value'):
+    """One row per key; columns whose values disagree within a key are set to missing_value.
+
+    Used for instrument setups: NORMAN does not link a raw file to one setup, so when a
+    sample has several setups we cannot tell which file used which polarity/column.
+    """
+    if not df[key].duplicated().any():
+        return df
+
+    def _collapse(series):
+        values = series.dropna().unique()
+        if len(values) == 0:
+            return np.nan
+        if len(values) == 1:
+            return values[0]
+        return missing_value
+
+    n_before = len(df)
+    df = df.groupby(key, as_index=False, sort=False).agg(_collapse)
+    print(f"Collapsed {n_before} instrument setup rows into {len(df)} (one per {key})")
+    return df
+
 
 def clean(series):
     """Lower-case, drop spaces, tolerate NaNs/numbers → always returns a string Series."""
@@ -64,7 +98,7 @@ def main(output_filename, study_id, **kwargs):
     # Fetch the list of datasets
     datasets_url = "https://dsfp.norman-data.eu/api/1/metastore/schemas/dataset/all"
     print(f"Fetching datasets from {datasets_url}", flush = True)
-    response = requests.get(datasets_url)
+    response = SESSION.get(datasets_url, timeout=HTTP_TIMEOUT)
     response.raise_for_status() 
     datasets = response.json()
     print(f"Fetched {len(datasets)} datasets", flush = True)
@@ -78,9 +112,11 @@ def main(output_filename, study_id, **kwargs):
 
     dfs = [] 
     errors = [] 
+    skipped = []
 
 
     for ds in tqdm(datasets, desc="Processing datasets", unit="dataset"):
+        internal_id = ds.get('internal_id')
         try:
             uuid = ds['uuid']
             internal_id = ds['internal_id']
@@ -90,7 +126,7 @@ def main(output_filename, study_id, **kwargs):
             # Build URL to get the CSV with file info
             metadata_collection_url = f"https://dsfp.norman-data.eu/api/1/metastore/schemas/dataset/items/{uuid}"
             print(f"Fetching file data from {metadata_collection_url}", flush = True)
-            metadata_collection_response = requests.get(metadata_collection_url)
+            metadata_collection_response = SESSION.get(metadata_collection_url, timeout=HTTP_TIMEOUT)
 
             if metadata_collection_response.status_code == 200:
                 
@@ -356,7 +392,7 @@ def main(output_filename, study_id, **kwargs):
 
 
                         instrumentinfo_sheet['instrument_model'] = instrumentinfo_sheet['instrument_model'].apply(
-                            lambda x: ' '.join(x.split()) if not x.startswith((' ',)) else x)
+                            lambda x: ' '.join(x.split()) if isinstance(x, str) and not x.startswith((' ',)) else x)
                         
                         instrumentinfo_sheet["MassSpectrometer"] = (
                             instrumentinfo_sheet["instrument_model"]
@@ -488,16 +524,27 @@ def main(output_filename, study_id, **kwargs):
                                 )
 
                         
-                            nomran_sheets_for_single_dataset_sheets['Instrument setup'].append(instrumentsetup_sheet)
+                        nomran_sheets_for_single_dataset_sheets['Instrument setup'].append(instrumentsetup_sheet)
 
                         
 
                 
-                # Combine individual sheet types
+                # Without samples, file info and raw files there is nothing to index for this dataset
+                missing_sheets = [name for name in ['Sample info', 'File info', 'Spectral raw files']
+                                  if len(nomran_sheets_for_single_dataset_sheets[name]) == 0]
+                if missing_sheets:
+                    message = f"Skipping dataset {internal_id}: no usable {', '.join(missing_sheets)}"
+                    print(message)
+                    skipped.append(message)
+                    continue
+
+                # Combine individual sheet types (instrument sheets are optional)
                 combined_sample_info = pd.concat(nomran_sheets_for_single_dataset_sheets['Sample info'], ignore_index=True)
                 combined_file_info = pd.concat(nomran_sheets_for_single_dataset_sheets['File info'], ignore_index=True)
-                combined_instrument_info = pd.concat(nomran_sheets_for_single_dataset_sheets['Instrument info'], ignore_index=True)
-                combined_instrument_setup_info = pd.concat(nomran_sheets_for_single_dataset_sheets['Instrument setup'], ignore_index=True)
+                combined_instrument_info = (pd.concat(nomran_sheets_for_single_dataset_sheets['Instrument info'], ignore_index=True)
+                                            if nomran_sheets_for_single_dataset_sheets['Instrument info'] else None)
+                combined_instrument_setup_info = (pd.concat(nomran_sheets_for_single_dataset_sheets['Instrument setup'], ignore_index=True)
+                                                  if nomran_sheets_for_single_dataset_sheets['Instrument setup'] else None)
 
 
                 # Combine sample info and file info
@@ -505,23 +552,22 @@ def main(output_filename, study_id, **kwargs):
                 columns_to_drop = [col for col in combined_sample_info.columns if col in combined_file_info.columns and col != 'sample_id']
                 combined_sample_info = combined_sample_info.drop(columns=columns_to_drop)
                 merged_df = pd.merge(combined_sample_info, combined_file_info, on='sample_id', how='inner')
+                print(f"Dataset {internal_id}: {len(combined_sample_info)} samples, {len(combined_file_info)} file info rows, {len(merged_df)} matched")
 
-                # Gain most specific values
+                # Gain most specific values; empty or missing overwrites (NaN when only some
+                # sample sheets have the column) keep the original value
                 for column in merged_df.columns:
                     if column.endswith('_overwrite'):
                         original_column = column.replace('_overwrite', '')
                         if original_column in merged_df.columns:
-                            merged_df[original_column] = merged_df.apply(
-                                lambda row: row[column] if row[column] != '' else row[original_column],
-                                axis=1
-                            )
+                            merged_df[original_column] = merged_df[column].replace('', np.nan).fillna(merged_df[original_column])
                 
                 # Drop the overwrite columns
                 merged_df = merged_df.drop(columns=[col for col in merged_df.columns if col.endswith('_overwrite')])
 
                 # If ENVOEnvironmentMaterial has values other than "" or NA set SampleType to environmental if sample_type is "Real Sample"
                 merged_df['SampleType'] = np.where(
-                    merged_df['ENVOEnvironmentMaterial'] != '' ,
+                    merged_df['ENVOEnvironmentMaterial'].notna() & (merged_df['ENVOEnvironmentMaterial'] != ''),
                     np.where(merged_df['sample_type'] == 'Real Sample', 'environmental', merged_df['SampleType']),
                     merged_df['SampleType']
                 )
@@ -535,16 +581,24 @@ def main(output_filename, study_id, **kwargs):
 
                 # Merge with the main DataFrame
                 merged_df = pd.merge(merged_df, spectral_raw_files_df, on='sample_id', how='inner')
+                print(f"Dataset {internal_id}: {len(spectral_raw_files_df)} raw files, {len(merged_df)} rows after matching raw files")
 
                 # Combine instrument info and instrument setup info
                 ########
-                 
-                columns_to_drop = [col for col in combined_instrument_info.columns if col in combined_instrument_setup_info.columns and col != 'instrument_id']
-                combined_instrument_info = combined_instrument_info.drop(columns=columns_to_drop)
-                instrument_and_setup_df = pd.merge(combined_instrument_info, combined_instrument_setup_info, on='instrument_id', how='inner')
+                instrument_and_setup_df = None
+                if combined_instrument_setup_info is not None:
+                    if combined_instrument_info is not None and 'instrument_id' in combined_instrument_setup_info.columns:
+                        columns_to_drop = [col for col in combined_instrument_info.columns if col in combined_instrument_setup_info.columns and col != 'instrument_id']
+                        combined_instrument_info = combined_instrument_info.drop(columns=columns_to_drop)
+                        instrument_and_setup_df = pd.merge(combined_instrument_info, combined_instrument_setup_info, on='instrument_id', how='inner')
+                    else:
+                        print(f"Dataset {internal_id}: no instrument info to join, using instrument setups only")
+                        instrument_and_setup_df = combined_instrument_setup_info
 
-                # Merge with the main DataFrame
-                merged_df = pd.merge(merged_df, instrument_and_setup_df, on='sample_id', how='left')                
+                # Merge with the main DataFrame (one setup row per sample, so files are not duplicated)
+                if instrument_and_setup_df is not None:
+                    instrument_and_setup_df = collapse_conflicting_rows(instrument_and_setup_df, 'sample_id')
+                    merged_df = pd.merge(merged_df, instrument_and_setup_df, on='sample_id', how='left')
 
                 # Add dataset identifiers
                 merged_df['MassiveID'] = 'NORMAN-' + uuid
@@ -588,11 +642,22 @@ def main(output_filename, study_id, **kwargs):
         print("No file data found across datasets.")
         open(output_filename, 'w').close()
 
-    # Print errors 
+    # Print skipped datasets and errors
+    if skipped:
+        print(f"\nSkipped {len(skipped)} datasets without usable sheets:")
+        for message in skipped:
+            print(message)
+
     if errors:
         print("\nErrors encountered during processing:")
         for error in errors:
             print(error)
+
+    print(f"\n{len(dfs)} datasets processed, {len(skipped)} skipped, {len(errors)} failed out of {len(datasets)}")
+
+    # Signal a total failure (the output file has already been written)
+    if datasets and len(errors) == len(datasets):
+        sys.exit(1)
 
 
 
@@ -646,7 +711,6 @@ if __name__ == "__main__":
     with open(path_to_allowed_term_json, 'r') as file:
         allowedTerm_dict = json.load(file)
 
-    norm = lambda s: re.sub(r'[^a-z0-9]', '', str(s).lower())
     allowed_values = allowedTerm_dict["MassSpectrometer"]["allowed_values"]
     allowedTerm_dict["MassSpectrometer"]["allowed_values_matching_0"] = [
     norm(v.split('|')[0]) for v in allowed_values]

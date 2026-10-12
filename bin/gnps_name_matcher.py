@@ -20,11 +20,12 @@ def _make_usi_from_filename(filename, dataset_id):
         # Replace the first "/" with ":"
         first_slash_index = usi.find('/')
         if first_slash_index != -1:
-            usi = filename[:first_slash_index] + ':' + filename[first_slash_index+1:]
+            usi = usi[:first_slash_index] + ':' + usi[first_slash_index+1:]
     elif filename.startswith("f."):
         usi = "mzspec:" + dataset_id + ':' + filename[2:]
     else:
         print('Do filenames not start with f. anymore?')
+        usi = "mzspec:" + dataset_id + ':' + filename
 
     return usi
 
@@ -48,18 +49,24 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
 
     # Request URL and retry 3 times after waiting 5 seconds if ccms_df does not have a column named 'filepath'
     retry_attempts = 3
+    ccms_df = None
     for attempt in range(retry_attempts):
         print(f"Checking dataset {dataset} by going to the dataset cache")
-        dataset_files_response = requests.get(url_f)
+        try:
+            dataset_files_response = requests.get(url_f, timeout=300)
+            dataset_files_response.raise_for_status()
+            attempt_df = pd.read_csv(StringIO(dataset_files_response.text))
+            if 'filepath' in attempt_df.columns:
+                ccms_df = attempt_df
+                break
+        except (requests.RequestException, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+            print(f"Attempt {attempt + 1} error: {e}")
+        print(f"Attempt {attempt + 1} failed. Retrying in 5 seconds...")
+        sleep(5)
 
-        csvStringIO = StringIO(dataset_files_response.text)
-        ccms_df = pd.read_csv(csvStringIO)
-        
-        if 'filepath' in ccms_df.columns:
-            break
-        else:
-            print(f"Attempt {attempt + 1} failed. Retrying in 5 seconds...")
-            sleep(5)
+    if ccms_df is None:
+        print(f"Error: could not fetch the file list for dataset {dataset}, skipping it")
+        return None
 
     if len(ccms_df) > 0:
         print("Received a dataframe with {} rows.".format(len(ccms_df)))
@@ -90,55 +97,36 @@ def _match_filenames_and_add_usi(dataset_metadata_df):
         cand_mask = (ccms_df["query_path"] == meta_basename) | (ccms_df["query_path"] == meta_basename2)
         candidates = ccms_df.loc[cand_mask, ["filepath", "_dir_parts", "query_path"]].copy()
 
-        if candidates.empty:
-            found_file_paths = []
-            print(f"Found file paths: {found_file_paths}")
-        else:
-            if len(candidates) == 1:
-                # single candidate → just use it
-                found_file_paths = candidates["filepath"].tolist()
-                print(f"Found file paths: {found_file_paths}")
-            else:
-                if len(meta_dir_parts) == 0:
-                    # multiple candidates but no directory info in metadata → keep all for preference filter
-                    found_file_paths = candidates["filepath"].tolist()
-                    print(f"Found file paths (no dir context): {found_file_paths}")
-                else:
-                    # 2) Score candidates by longest common directory suffix with the metadata path
-                    candidates["_dir_score"] = candidates["_dir_parts"].apply(
-                        lambda dp: longest_common_dir_suffix_score(meta_dir_parts, dp)
-                    )
-                    # 3) Keep only the best-scoring candidate(s)
-                    best_score = candidates["_dir_score"].max()
-                    found_file_paths = candidates.loc[candidates["_dir_score"] == best_score, "filepath"].tolist()
-                    print(f"Found file paths (scored): {found_file_paths}")
-
-
         # 2) Score candidates by longest common directory suffix with the metadata path
+        #    (all score 0 when the metadata has no directory info)
         candidates["_dir_score"] = candidates["_dir_parts"].apply(
             lambda dp: longest_common_dir_suffix_score(meta_dir_parts, dp)
         )
 
         # 3) Keep only the best-scoring candidate(s)
         best_score = candidates["_dir_score"].max()
-        best = candidates.loc[candidates["_dir_score"] == best_score, "filepath"].tolist()
-
-        found_file_paths = best
+        found_file_paths = candidates.loc[candidates["_dir_score"] == best_score, "filepath"].tolist()
 
         print(f"Found file paths: {found_file_paths}")
 
         if len(found_file_paths) > 0:
+            # The same file can be present in several top-level folders (e.g. the
+            # converted ccms_peak copy and the uploaded peak/raw copy); prefer them in
+            # this order. Folders are compared as whole path segments.
             preferred_directories = ['ccms_peak', 'peak', 'raw']
-            selected_path = None
+            selected_paths = found_file_paths
             for preferred_dir in preferred_directories:
-                for path in found_file_paths:
-                    if preferred_dir in path:
-                        selected_path = path
-                        break
-                if selected_path:
+                in_dir = [path for path in found_file_paths if preferred_dir in Path(path).parts[:-1]]
+                if in_dir:
+                    selected_paths = in_dir
                     break
-            if not selected_path:
-                selected_path = found_file_paths[0]
+
+            if len(selected_paths) > 1:
+                # Several distinct files fit equally well (e.g. pos/s1.mzML and
+                # neg/s1.mzML for metadata 's1.mzML'); do not guess
+                print(f"Ambiguous match for {meta_path}, skipping: {selected_paths}")
+                continue
+            selected_path = selected_paths[0]
 
             print("Found match", selected_path)
             metadata_row["filename"] = "f." + selected_path
@@ -200,8 +188,8 @@ def main():
         dataset_metadata_df = dataset_metadata_df.loc[:, common_cols]
         try:
             dataset_metadata_df = dataset_metadata_df[gnps_column_names]
-        except KeyError:
-            print(f"Skipping file {file} due to a TypeError.")
+        except KeyError as e:
+            print(f"Skipping file {file} due to missing columns: {e}")
             continue
 
         # Matching the metadata
@@ -212,8 +200,13 @@ def main():
 
             all_metadata_list.append(enriched_metadata_df)
 
-    # Create a DataFrame from the list with headers
-    merged_metadata_df = pd.concat(all_metadata_list)
+    # Create a DataFrame from the list with headers (header only if nothing matched,
+    # e.g. no new MASST rows)
+    if all_metadata_list:
+        merged_metadata_df = pd.concat(all_metadata_list)
+    else:
+        print("No metadata rows matched to files")
+        merged_metadata_df = pd.DataFrame(columns=gnps_column_names + gnps_column_names_added)
     merged_metadata_df = merged_metadata_df[gnps_column_names + gnps_column_names_added]
 
     # Save the DataFrame to a TSV file without column names

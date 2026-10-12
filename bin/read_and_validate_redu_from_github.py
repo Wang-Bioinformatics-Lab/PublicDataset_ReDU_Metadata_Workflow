@@ -110,8 +110,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     NCBIRankDivision_table['NCBIRank'] = NCBIRankDivision_table['NCBIRank'].astype(str)
     NCBIRankDivision_table['NCBIDivision'] = NCBIRankDivision_table['NCBIDivision'].astype(str)
 
-    # Convert all columns to String
-    df = df.astype(str)
+    # Convert all columns to String (missing values become '' rather than the string 'nan')
+    df = df.fillna('').astype(str)
 
     def _split_id_name(term: str):
         term = "" if term is None else str(term)
@@ -169,8 +169,9 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             unique_values = df[key].unique()
             
             # Initialize value_map for each condition
-            if key not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) > 1:
-                # General case for non-specific keys with multiple allowed terms
+            if key not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) >= 1 \
+                    and allowed_terms[0] not in ['00', 'datetime', 'numeric', 'numeric|numeric']:
+                # General case for non-specific keys with a list of allowed terms
                 value_map = {
                     observed_value: next((allowed for allowed in allowed_terms if allowed.replace(" ", "") == str(observed_value).replace(" ", "")), missing_value)
                     for observed_value in unique_values
@@ -183,13 +184,33 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                     allowed_set = set(allowed_terms)
                     allowed_by_id = {}
                     allowed_by_name_ci = {}
+                    # Names are not unique in NCBI (e.g. Bacillus the bacterium and the stick
+                    # insect), so a shared name only resolves when the provided ID disambiguates it
+                    shared_names_ci = {}
                     for t in allowed_terms:
                         if "|" in t:
                             tid, tname = t.split("|", 1)
                             tid = tid.strip()
-                            tname = tname.strip()
+                            tname = tname.strip().lower()
                             allowed_by_id[tid] = t
-                            allowed_by_name_ci[tname.lower()] = t
+                            first = allowed_by_name_ci.setdefault(tname, t)
+                            if first != t:
+                                shared_names_ci.setdefault(tname, {first}).add(t)
+                    division_by_id = {}
+
+                    def name_hit(name, oid):
+                        terms = shared_names_ci.get(name.lower())
+                        if terms is None:
+                            return allowed_by_name_ci.get(name.lower())
+                        # Shared name: use the NCBI division of the provided ID to pick one
+                        # (e.g. '1409|Bacillus sp.' is in Bacteria -> 1386|Bacillus, not the insect)
+                        if not oid:
+                            return None
+                        if not division_by_id:
+                            division_by_id.update(zip(NCBIRankDivision_table['TaxonID'], NCBIRankDivision_table['NCBIDivision']))
+                        division = division_by_id.get(oid)
+                        same_division = [t for t in terms if division and division_by_id.get(t.split("|", 1)[0].strip()) == division]
+                        return same_division[0] if len(same_division) == 1 else None
 
                     def resolve_ncbi(observed_value: str) -> str:
                         # observed_value like '1931|Streptomyces sp.' or '1883|Streptomyces' or just 'Streptomyces sp.'
@@ -198,7 +219,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         # 1) Prefer genus mapping if looks like 'Genus sp.' / 'Genus spp.' (even if exact value is allowed)
                         if oname and _is_sp_or_spp(oname):
                             genus = _genus_from_name(oname)
-                            hit = allowed_by_name_ci.get(genus.lower())
+                            hit = name_hit(genus, oid)
                             if hit:
                                 return hit  # e.g., '1883|Streptomyces'
 
@@ -212,7 +233,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
                         # 4) Same Name (case-insensitive) → allowed term
                         if oname:
-                            hit = allowed_by_name_ci.get(oname.lower())
+                            hit = name_hit(oname, oid)
                             if hit:
                                 return hit
 
@@ -237,6 +258,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         for observed_value in unique_values
                     }
                 
+            elif not allowed_terms:
+                raise ValueError(f"No allowed values for {key}; was the allowed terms json updated from the ontologies?")
             elif allowed_terms[0] == '00':
                 # Handling for terms where '00' indicates a placeholder for any value
                 value_map = {x: x if pd.notna(x) and x != "" else missing_value for x in unique_values}
@@ -304,6 +327,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                     else missing_value 
                     for x in unique_values
                 }
+            else:
+                raise ValueError(f"No validation rule for {key} with allowed values {allowed_terms}")
             # Apply the mapping for columns, except 'numeric' which is handled separately
             if key != 'numeric':
                 df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
@@ -482,7 +507,9 @@ if __name__ == '__main__':
 
             print(f"Processing: {file_path}")
 
-            df = pd.read_csv(file_path, sep='\t')
+            # Read as strings so e.g. a YearOfAnalysis column with blanks is not parsed as
+            # float ('2019.0' would not match the allowed '2019')
+            df = pd.read_csv(file_path, sep='\t', dtype=str)
 
             if 'ATTRIBUTE_MassiveID' in df.columns:
                 df.rename(columns={'ATTRIBUTE_MassiveID': 'MassiveID'}, inplace=True)

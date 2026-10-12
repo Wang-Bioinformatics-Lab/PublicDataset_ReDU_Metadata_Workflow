@@ -22,12 +22,16 @@ if __name__ == "__main__":
 
     # Request URL and retry 3 times after waiting 5 seconds if ccms_df does not have a column named 'filepath'
     retry_attempts = 3
+    cache_df = pd.DataFrame()
     for attempt in range(retry_attempts):
         print(f"Attempt {attempt + 1} to fetch the dataset cache")
-        dataset_files_response = requests.get(url_cache_datasette)
-
-        csvStringIO = StringIO(dataset_files_response.text)
-        cache_df = pd.read_csv(csvStringIO)
+        try:
+            dataset_files_response = requests.get(url_cache_datasette, timeout=1800)
+            dataset_files_response.raise_for_status()
+            cache_df = pd.read_csv(StringIO(dataset_files_response.text))
+        except (requests.RequestException, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+            print(f"Attempt {attempt + 1} failed: {e}")
+            cache_df = pd.DataFrame()
 
         if 'usi' in cache_df.columns:
             break
@@ -36,8 +40,8 @@ if __name__ == "__main__":
             sleep(5)
 
 
-    if len(cache_df) == 0:
-        print("Cache dataframe is empty. Exiting...")
+    if 'usi' not in cache_df.columns or len(cache_df) == 0:
+        print("Could not fetch the dataset cache. Exiting...")
         exit(1)
 
     

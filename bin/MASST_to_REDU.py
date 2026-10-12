@@ -21,18 +21,24 @@ if __name__ == '__main__':
 
 
 
-    df_redu = pd.read_csv(args.path_REDUtable, sep = '\t')
+    df_redu = pd.read_csv(args.path_REDUtable, sep = '\t', dtype=str)
     df_redu['filename'] = df_redu['filename'].str.slice(2)
+    # Files already described by GNPS metadata, identified by dataset + path (the same
+    # relative path, e.g. ccms_peak/Blank.mzML, exists in many datasets)
+    redu_files = set(zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename']))
+
+    def _masst_files_not_in_redu(df):
+        df = df.dropna(subset=['Filepath', 'MassIVE']).copy()
+        df['filename'] = df['Filepath'].apply(lambda x: '/'.join(x.split('/')[1:]))
+        return df[[(m, f) not in redu_files for m, f in zip(df['MassIVE'], df['filename'])]]
 
     df_mm = pd.read_csv(args.path_microbeMASST, dtype=str)
     print(df_mm)
-    df_mm['filename'] = df_mm['Filepath'].apply(lambda x: '/'.join(x.split('/')[1:]))
-    df_mm = df_mm[~df_mm['filename'].isin(df_redu['filename'])]
+    df_mm = _masst_files_not_in_redu(df_mm)
 
     df_pm = pd.read_csv(args.path_plantMASST, dtype=str)
     print(df_pm)
-    df_pm['filename'] = df_pm['Filepath'].apply(lambda x: '/'.join(x.split('/')[1:]))
-    df_pm = df_pm[~df_pm['filename'].isin(df_redu['filename'])]
+    df_pm = _masst_files_not_in_redu(df_pm)
 
 
     with open(args.AllowedTermJson_path, 'r') as json_file:

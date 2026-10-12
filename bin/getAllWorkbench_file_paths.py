@@ -4,13 +4,28 @@ import requests
 import argparse
 import tqdm
 from urllib.parse import urlparse, parse_qs
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
-def clean_mac_path(path):
-    if "__MACOSX/" in path and '/._' in path:
-        # Remove the __MACOSX part and the ._ prefix from the filename
-        return path.replace("__MACOSX/", "").replace("/._", "/")
-    return path
+# Shared session: retries throttling/server errors with backoff instead of losing the study
+session = requests.Session()
+session.mount("https://", HTTPAdapter(max_retries=Retry(total=5, backoff_factor=2,
+                                                         status_forcelist=[429, 500, 502, 503, 504],
+                                                         allowed_methods=["GET"])))
+REQUEST_TIMEOUT = (10, 300)
+
+
+def _get_json(url):
+    response = session.get(url, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+
+def is_apple_double(path):
+    # macOS resource-fork copies (__MACOSX/.../._x.mzML) are not data files
+    return "__MACOSX/" in path or os.path.basename(path).startswith("._")
 
 # Define a function to extract the first folder with an extension in order to not get the individual files in e.g. agilent "files"
 def extract_first_folder_with_extension(url):
@@ -31,8 +46,11 @@ def _get_metabolomicsworkbench_filepaths(study_id):
     try:
         dataset_list_url = "https://www.metabolomicsworkbench.org/data/show_archive_contents_json.php?STUDY_ID={}".format(
             study_id)
-        mw_file_list = requests.get(dataset_list_url).json()
+        mw_file_list = _get_json(dataset_list_url)
         workbench_df = pd.DataFrame(mw_file_list)
+        if len(workbench_df) == 0:
+            return workbench_df
+        workbench_df = workbench_df[~workbench_df['FILENAME'].apply(is_apple_double)]
 
         workbench_df['raw_sample_name'] = workbench_df['URL'].apply(extract_first_folder_with_extension)
 
@@ -53,7 +71,8 @@ def _get_metabolomicsworkbench_filepaths(study_id):
         
     except KeyboardInterrupt:
         raise
-    except:
+    except Exception as e:
+        print(f"Failed to list files for {study_id}: {type(e).__name__}: {e}")
         workbench_df = pd.DataFrame()
 
     return workbench_df
@@ -61,8 +80,7 @@ def _get_metabolomicsworkbench_filepaths(study_id):
 def process_filename(filename):
     path_parts = filename.split('/')
     for part in path_parts:
-        print(part)
-        if part.endswith('.d'):
+        if part.lower().endswith('.d'):
             return '/'.join(path_parts[:path_parts.index(part)+1])
     return filename
 
@@ -89,7 +107,7 @@ if __name__ == '__main__':
     if args.study_id == "ALL":
         # Getting all files
         url = "https://www.metabolomicsworkbench.org/rest/study/study_id/ST/available"
-        studies_dict = requests.get(url).json()
+        studies_dict = _get_json(url)
 
         study_list = []
         for key in studies_dict.keys():
@@ -104,13 +122,8 @@ if __name__ == '__main__':
                 print("Skipping", study_id, "Already indexed")
                 continue
 
-            try:
-                temp_result_df = _get_metabolomicsworkbench_filepaths(study_id=study_id)
-                all_results_list.append(temp_result_df)
-            except KeyboardInterrupt:
-                raise
-            except:
-                pass
+            temp_result_df = _get_metabolomicsworkbench_filepaths(study_id=study_id)
+            all_results_list.append(temp_result_df)
 
         result_df = pd.concat(all_results_list, axis=0)
 
@@ -119,12 +132,8 @@ if __name__ == '__main__':
 
     result_df['study_id'] = result_df['STUDY_ID']
     result_df['file_path'] = result_df['FILENAME'].apply(process_filename)
-    result_df['file_path'] = result_df['file_path'].apply(clean_mac_path)
     
     result_df['USI'] = result_df['USI_file'].apply(process_filename)
-    result_df['USI'] = result_df['USI'].apply(clean_mac_path)
-
-    result_df = result_df.drop_duplicates(keep='first')
 
     if args.filter_extensions == 'True':
         extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
@@ -132,6 +141,9 @@ if __name__ == '__main__':
 
 
     result_df = result_df[['study_id', 'file_path', 'USI']]
+
+    # one row per file; .d folders collapse many listed files into one path
+    result_df = result_df.drop_duplicates(subset=['study_id', 'file_path'], keep='first')
      
 
     result_df.to_csv(args.output_path, sep='\t', index=False, header=True)

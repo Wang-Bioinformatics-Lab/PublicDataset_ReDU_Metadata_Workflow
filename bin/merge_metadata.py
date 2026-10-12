@@ -24,7 +24,7 @@ def main():
     columns_to_use = [col.replace("MassiveID", "ATTRIBUTE_DatasetAccession") for col in columns_to_use]
 
     # read GNPS metadata
-    gnps_df = pd.read_csv(args.gnps_metadata, sep='\t')
+    gnps_df = pd.read_csv(args.gnps_metadata, sep='\t', dtype=str)
     gnps_df["DataSource"] = "GNPS"
 
     #drop duplicated files
@@ -53,8 +53,12 @@ def main():
     # merge GNPS and ReDU metadata
     merged_df = pd.concat([gnps_df, mwb_df, metabo_df, masst_df, norman_df], ignore_index=True)
 
-    # include only columns from gnps
-    merged_df = merged_df[columns_to_use]
+    # include only columns from gnps; a column no source provides is added empty
+    # instead of failing the whole merge
+    missing_columns = [col for col in columns_to_use if col not in merged_df.columns]
+    if missing_columns:
+        print(f"Columns missing from all sources, adding them empty: {missing_columns}")
+    merged_df = merged_df.reindex(columns=columns_to_use)
 
     # drop eventual duplicates (could happen with MASST/GNPS and also for a different reason with MWB) MWB has duplicates across all rows GNPS/MASST we should keep the first entry (from GNPS)
     merged_df = merged_df.drop_duplicates(subset='USI')

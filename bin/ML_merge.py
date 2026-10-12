@@ -54,8 +54,10 @@ def main():
         bn_to_path = dict(zip(f_unique.index, f_unique["file_path"]))
 
         unmatched_df["basename"] = unmatched_df["filename"].apply(_basename)
-        # unambiguous on the metadata side too
-        m_counts = unmatched_df.groupby(["MassiveID", "basename"]).size()
+        # unambiguous on the metadata side too, counted over ALL metadata rows: a basename
+        # that also appears on an exactly matched row is ambiguous
+        all_basenames = metadata_df["filename"].apply(_basename)
+        m_counts = all_basenames.groupby([metadata_df["MassiveID"], all_basenames]).size()
         m_unique_idx = set(m_counts[m_counts == 1].index)
 
         lookup_key = list(zip(unmatched_df["MassiveID"], unmatched_df["basename"]))
@@ -64,7 +66,9 @@ def main():
         is_unique_meta = [k in m_unique_idx for k in lookup_key]
 
         import numpy as np
-        keep = unmatched_df["USI"].notna().to_numpy() & np.array(is_unique_meta, dtype=bool)
+        # never recover onto a file that an exact match already claimed
+        not_claimed = ~unmatched_df["USI"].isin(set(exact_df["USI"])).to_numpy()
+        keep = unmatched_df["USI"].notna().to_numpy() & np.array(is_unique_meta, dtype=bool) & not_claimed
         recovered_df = unmatched_df[keep].copy()
         # align filename to the real (subdirectory) path so it is consistent with USI
         recovered_df["filename"] = [p for p, k in zip(real_path, keep) if k]
