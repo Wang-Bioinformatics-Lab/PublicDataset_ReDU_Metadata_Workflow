@@ -982,10 +982,17 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
     df = get_key_info_into_outer(df, key_vars=["gender", "sex", "gender (f/m)", "biological_sex"], new_col="MWB_sex")
     df = get_age_years_into_outer(df, new_col="MWB_age")
-    df = get_key_info_into_outer(df, key_vars=["smoking_status", "smoking status", "smokstatus",
-                                               "smoking", "smoke", "tobacco use", "smoking history",
-                                               "cigarette smoking", "smoker", "smokingstatus",
-                                               "smoker status", "smoking_history"], new_col="MWB_smoking")
+    smoking_keys = ["smoking_status", "smoking status", "smokstatus",
+                    "smoking", "smoke", "tobacco use", "smoking history",
+                    "cigarette smoking", "smoker", "smokingstatus",
+                    "smoker status", "smoking_history", "subject_smoker",
+                    "ever smoked", "ever_smoked", "current smoker", "current_smoker"]
+    # yes/no answers only have a meaning together with the key ('Smoker: No' vs
+    # 'Ever smoked: No'), so convert them here while the key is still known
+    _is_smoking = df['Key'].astype(str).str.lower().isin(smoking_keys)
+    _converted = [convert_smoking(v, key=k) for k, v in zip(df.loc[_is_smoking, 'Key'], df.loc[_is_smoking, 'Value'])]
+    df.loc[_is_smoking, 'Value'] = [c if c != 'missing value' else v for c, v in zip(_converted, df.loc[_is_smoking, 'Value'])]
+    df = get_key_info_into_outer(df, key_vars=smoking_keys, new_col="MWB_smoking")
     df = get_key_info_into_outer(df, key_vars=["bmi", "body mass index", "body_mass_index",
                                                "bmi (kg/m2)", "bmi_kg_m2"], new_col="MWB_bmi")
     df = get_key_info_into_outer(df, key_vars=["diet", "diet_type", "diet type", "diet group",

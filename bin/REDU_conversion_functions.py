@@ -255,18 +255,37 @@ def _ms_tokens(s):
     return {t for t in s.split() if t and t not in _MS_STOPWORDS}
 
 
-def convert_smoking(x):
-    """Normalize a free-text smoking value to the SmokingStatus vocabulary
-    (current/former/never smoker). Only unambiguous text is mapped; coded values
-    (0/1/yes/no) stay missing to avoid guessing polarity. Separators are normalized
-    to spaces first so word boundaries match (e.g. 'never_used')."""
+_YES = {'yes', 'y', 'true'}
+_NO = {'no', 'n', 'false'}
+
+
+def convert_smoking(x, key=None):
+    """Normalize a smoking value to the SmokingStatus vocabulary
+    (current/former/never smoker, non-smoker). Only unambiguous text is mapped.
+
+    Yes/no answers are only mapped when the key (column / factor name) says what was
+    asked: 'Smoker: no' means not a current smoker ('non-smoker'), 'Ever smoked: no'
+    means 'never smoker'. Numeric codes (0/1/2) stay missing because their polarity
+    differs between studies, and keys about someone else's or passive exposure
+    (prenatal, maternal, pregnancy, second-hand) are ignored. Separators are
+    normalized to spaces first so word boundaries match (e.g. 'never_used')."""
     x = re.sub(r'[^a-z0-9]+', ' ', str(x).strip().lower()).strip()
-    if re.search(r'\bnever\b', x) or re.search(r'\bnon smoker\b|\bnonsmoker\b', x):
+    k = re.sub(r'[^a-z0-9]+', ' ', str(key).strip().lower()).strip() if key is not None else ''
+    if re.search(r'prenatal|maternal|mother|pregnan|passive|second hand|secondhand|exposure|exposed', k):
+        return 'missing value'
+    if re.search(r'\bnever\b', x):
         return 'never smoker'
+    if re.search(r'\bnon smoker\b|\bnonsmoker\b|\bnon smoking\b|\bnot smoking\b', x):
+        return 'non-smoker'
     if re.search(r'\bformer\b|\bex smoker\b|\bprevious\b|\bpast\b|\bquit\b', x):
         return 'former smoker'
     if re.search(r'\bcurrent\b', x) or x == 'smoker':
         return 'current smoker'
+    if k and (x in _YES or x in _NO):
+        if re.search(r'\bever\b|histor', k):
+            return 'never smoker' if x in _NO else 'missing value'
+        if re.search(r'smok|tobacco|cigar', k):
+            return 'current smoker' if x in _YES else 'non-smoker'
     return 'missing value'
 
 

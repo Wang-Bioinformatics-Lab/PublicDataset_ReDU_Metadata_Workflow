@@ -679,12 +679,12 @@ def Metabolights2REDU(study_id, **kwargs):
             #######
             def _toks(col):
                 return set(re.split(r'[^a-z0-9]+', str(col).lower()))
-            _smoke_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and ('smoking' in _toks(c) or 'smoke' in _toks(c) or 'tobacco' in _toks(c))]
+            _smoke_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and _toks(c) & {'smoking', 'smoke', 'smoker', 'smokingstatus', 'tobacco'}]
             if _smoke_cols:
                 if 'SmokingStatus' not in df_study.columns:
                     df_study['SmokingStatus'] = 'missing value'
                 for _c in _smoke_cols:
-                    _m = df_study[_c].apply(convert_smoking)
+                    _m = df_study[_c].apply(convert_smoking, key=_c)
                     _need = df_study['SmokingStatus'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
                     df_study.loc[_need, 'SmokingStatus'] = _m[_need]
 

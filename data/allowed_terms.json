@@ -452,13 +452,14 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The tobacco smoking status of the subject at the time of sampling.",
+        "description": "The tobacco smoking status of the subject at the time of sampling. 'non-smoker' is used when the source only states that the subject does not currently smoke, without saying whether they never or formerly smoked.",
         "example": "never smoker",
         "source": "-",
         "allowed_values": [
             "current smoker",
             "former smoker",
-            "never smoker"
+            "never smoker",
+            "non-smoker"
         ]
     },
     "BodyMassIndex": {
