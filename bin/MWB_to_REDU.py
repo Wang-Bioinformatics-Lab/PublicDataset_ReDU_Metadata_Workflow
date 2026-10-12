@@ -108,6 +108,25 @@ def handle_duplicates(ordered_pairs):
     return d
 
 
+# Some archive listings carry raw 7z listing columns in front of the path,
+# e.g. '2014-10-05 10:45:02 ..H.A           80               MX183900 .../x.d'
+_7Z_LISTING_PREFIX = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \S{5} +\d+ +(?:\d+ +)?')
+
+
+def clean_listing_path(path):
+    return _7Z_LISTING_PREFIX.sub('', path)
+
+
+def collapse_d_folder(path):
+    """Agilent/Bruker .d raw data are folders, listed only as the files inside them;
+    represent them by the .d folder (as getAllWorkbench_file_paths.py does)."""
+    parts = path.split('/')
+    for i, part in enumerate(parts):
+        if part.lower().endswith('.d'):
+            return '/'.join(parts[:i + 1])
+    return path
+
+
 def _get_metabolomicsworkbench_files(dataset_accession):
     try:
         dataset_list_url = "https://www.metabolomicsworkbench.org/data/show_archive_contents_json.php?STUDY_ID={}".format(
@@ -116,21 +135,24 @@ def _get_metabolomicsworkbench_files(dataset_accession):
 
         acceptable_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
 
-        mw_file_list = [file_obj for file_obj in mw_file_list if
-                        file_obj["FILENAME"].lower().endswith(tuple(acceptable_extensions)) and
-                        not is_apple_double(file_obj["FILENAME"])]
-        workbench_df = pd.DataFrame(mw_file_list)
-        workbench_df["filename"] = workbench_df["FILENAME"]
-        workbench_df["size_mb"] = (workbench_df["FILESIZE"].astype(int) / 1024 / 1024).astype(int)
-        workbench_df["URL"] = workbench_df["URL"]        
+        mw_file_list = [file_obj for file_obj in mw_file_list if not is_apple_double(file_obj["FILENAME"])]
+        workbench_df = pd.DataFrame(mw_file_list, columns=["FILENAME", "FILESIZE", "URL"])
+        workbench_df["filename"] = workbench_df["FILENAME"].apply(clean_listing_path).apply(collapse_d_folder)
+        workbench_df = workbench_df[workbench_df["filename"].str.lower().str.endswith(tuple(acceptable_extensions))]
+        workbench_df["FILESIZE"] = pd.to_numeric(workbench_df["FILESIZE"], errors='coerce').fillna(0)
 
         # Generate USI column
         workbench_df["USI"] = workbench_df["URL"].apply(
             lambda url: "mzspec:{}:{}".format(
                 dataset_accession,
-                parse_qs(urlparse(url).query).get('F', [None])[0]
+                collapse_d_folder(clean_listing_path(parse_qs(urlparse(url).query).get('F', [''])[0]))
             )
         )
+
+        # one row per file / .d folder (summing the sizes of the files inside a folder)
+        workbench_df = workbench_df.groupby("filename", as_index=False, sort=False).agg(
+            FILESIZE=("FILESIZE", "sum"), USI=("USI", "first"))
+        workbench_df["size_mb"] = (workbench_df["FILESIZE"] / 1024 / 1024).astype(int)
 
         workbench_df = workbench_df[["filename", "size_mb", "USI"]]
     except Exception as e:
@@ -492,6 +514,10 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         'Factor Name': 'Key',
         'Factor Value': 'Value'
     })
+    # 'filename' holds the MWB Sample ID here but is overwritten with raw file paths by
+    # some of the matching branches below; keep the Sample ID so the sample-level
+    # metadata can still be joined back per sample afterwards
+    df['_sample_id'] = df['filename']
 
 
     if not any(key in df['Key'].values for key in expected_raw_file_keys):
@@ -697,7 +723,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                 potential_matches = set(df[match_df]).intersection(set(raw_file_name_df[match_raw_file_name_df]))
 
             if potential_matches:
-                df = df[['script_id', 'SubjectIdentifierAsRecorded', 'filename', 'Key', 'Value', match_df]]
+                df = df[['script_id', 'SubjectIdentifierAsRecorded', 'filename', '_sample_id', 'Key', 'Value', match_df]]
                 df = df.merge(raw_file_name_df, left_on=match_df, right_on=match_raw_file_name_df, how='left')
             else:
                 # here we try to find raw file names which are represented as substrings oif actual file names in the uploader provided raw file names
@@ -915,6 +941,12 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         raise ValueError("No raw data could be associated with metadata. Stopping!")
     
 
+    # Group the sample-level metadata by Sample ID again (the final filename is taken
+    # from filename_raw_path below, so this only affects the grouping in between)
+    if '_sample_id' in df.columns:
+        df['filename'] = df['_sample_id'].where(df['_sample_id'].notna(), df['filename'])
+        df = df.drop(columns=['_sample_id'])
+
     # appending the additional data again to make sure we have all metadata
     try:
         df_update = pd.concat([df, df_additional], ignore_index=True)
@@ -935,8 +967,10 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         for col in df_update.columns:
             if col in ['filename', 'Key', 'Value'] or col in file_assoc_cols:
                 continue
+            # a sample with no value at all in this column (e.g. one listed only in the
+            # mwTab additional data) stays NaN instead of raising on an empty group
             df_update[col] = df_update.groupby('filename')[col].transform(
-                lambda s: s.dropna().iloc[0] if s.dropna().nunique() <= 1 else np.nan
+                lambda s: s.dropna().iloc[0] if s.dropna().nunique() == 1 else np.nan
             )
         df = df_update.copy()
     except Exception as e:
@@ -950,7 +984,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df = get_age_years_into_outer(df, new_col="MWB_age")
     df = get_key_info_into_outer(df, key_vars=["smoking_status", "smoking status", "smokstatus",
                                                "smoking", "smoke", "tobacco use", "smoking history",
-                                               "cigarette smoking"], new_col="MWB_smoking")
+                                               "cigarette smoking", "smoker", "smokingstatus",
+                                               "smoker status", "smoking_history"], new_col="MWB_smoking")
     df = get_key_info_into_outer(df, key_vars=["bmi", "body mass index", "body_mass_index",
                                                "bmi (kg/m2)", "bmi_kg_m2"], new_col="MWB_bmi")
     df = get_key_info_into_outer(df, key_vars=["diet", "diet_type", "diet type", "diet group",

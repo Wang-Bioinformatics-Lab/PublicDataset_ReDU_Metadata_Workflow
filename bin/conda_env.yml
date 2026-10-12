@@ -3,7 +3,7 @@ channels:
   - defaults
 dependencies:
   - python=3.8.8
-  - pandas
+  - pandas=2.0.3
   - pip
   - pip:
       - xmltodict

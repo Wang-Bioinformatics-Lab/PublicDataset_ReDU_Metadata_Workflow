@@ -13,6 +13,9 @@ if __name__ == "__main__":
                         help='Current MetaboLights file listing (study_id, file_path, USI). Used to drop '
                              'stale MetaboLights paths carried in from the older data when MetaboLights has '
                              'reorganised its folder layout (e.g. FILES/FILES/x -> FILES/DERIVED_FILES/x).')
+    parser.add_argument('--summary_output', default=None,
+                        help='Writes per-source counts of rows from this run vs. carried from earlier runs, '
+                             'so a source that failed (0 rows this run) is visible.')
     args = parser.parse_args()
 
     df_current = pd.read_csv(args.input_new_data, dtype=str, sep = '\t')
@@ -28,7 +31,8 @@ if __name__ == "__main__":
         is_norman = df_older['DataSource'] == 'NORMAN'
         df_older.loc[is_norman, 'USI'] = df_older.loc[is_norman, 'USI'].str.replace(r'\?VersionId.*', '', regex=True)
 
-    df_merged = pd.concat([df_current, df_older], ignore_index=True)
+    df_merged = pd.concat([df_current.assign(_origin='this_run'), df_older.assign(_origin='earlier_runs')],
+                          ignore_index=True)
 
     # --- Resolve stale MetaboLights paths against the current file listing ---
     # MetaboLights occasionally reorganises where a study's files live (e.g. the same
@@ -72,6 +76,14 @@ if __name__ == "__main__":
     df_merged.loc[df_merged['USI'].str.startswith('mzspec:ST', na=False), 'DataSource'] = 'Workbench'
 
 
+
+    if args.summary_output:
+        summary = (df_merged.groupby(['DataSource', '_origin'], dropna=False).size()
+                   .unstack(fill_value=0).reindex(columns=['this_run', 'earlier_runs'], fill_value=0))
+        summary['total'] = summary.sum(axis=1)
+        summary.to_csv(args.summary_output, sep='\t')
+        print(summary.to_string())
+    df_merged = df_merged.drop(columns=['_origin'])
 
     #reindex
     df_merged.reset_index(drop=True, inplace=True)

@@ -40,11 +40,13 @@ if __name__ == "__main__":
             sleep(5)
 
 
-    if 'usi' not in cache_df.columns or len(cache_df) == 0:
-        print("Could not fetch the dataset cache. Exiting...")
-        exit(1)
+    # Without the cache, rows keep the classification/MS2 counts they already carry
+    # (rows from earlier runs) instead of blocking the whole update
+    cache_available = 'usi' in cache_df.columns and len(cache_df) > 0
+    if not cache_available:
+        print("WARNING: could not fetch the dataset cache; keeping existing cache columns")
+        cache_df = pd.DataFrame(columns=['usi', 'classification', 'spectra_ms2'])
 
-    
     # subset the cache dataframe to only the columns we need
     cache_df = cache_df[['usi', 'classification', 'spectra_ms2']]
 
@@ -68,16 +70,19 @@ if __name__ == "__main__":
     metadata_df = pd.read_csv(args.merged_metadata_path, sep='\t')
 
 
-    if 'classification' in metadata_df.columns:
-        metadata_df = metadata_df.drop(columns=['classification'])
+    if cache_available:
+        if 'classification' in metadata_df.columns:
+            metadata_df = metadata_df.drop(columns=['classification'])
 
-    if 'MS2spectra_count' in metadata_df.columns:
-        metadata_df = metadata_df.drop(columns=['MS2spectra_count'])       
-    
+        if 'MS2spectra_count' in metadata_df.columns:
+            metadata_df = metadata_df.drop(columns=['MS2spectra_count'])
 
-
-    # merge the metadata with the cache dataframe keeping all metadata rows
-    metadata_df = metadata_df.merge(cache_df, on='USI', how='left')
+        # merge the metadata with the cache dataframe keeping all metadata rows
+        metadata_df = metadata_df.merge(cache_df, on='USI', how='left')
+    else:
+        for column in ['classification', 'MS2spectra_count']:
+            if column not in metadata_df.columns:
+                metadata_df[column] = np.nan
 
 
     # fill NA value in classification with Unclassified

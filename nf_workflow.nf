@@ -8,6 +8,13 @@ DATA_FOLDER = "$baseDir/data"
 //This is default empty file, we will overwrite this in web application
 params.old_redu = './data/empty_redu.tsv'
 
+// Each source (MassIVE/GitHub, Workbench, MetaboLights, NORMAN, MASST) is retrieved
+// independently. If one fails or exceeds this limit, its step emits an empty result and
+// saveOlderData keeps that source's rows from earlier runs, so a problem with one
+// repository or dataset never blocks the update of the others. The limit stays below
+// the 23.5 h celery time limit so the merge steps still run.
+params.source_timeout = '20h'
+
 
 process updateAllowedTerms {
     publishDir "./nf_output", mode: 'copy'
@@ -59,10 +66,14 @@ process downloadMetadata_massive_and_github {
 
     """
     mkdir metadata_folder
-    wget https://github.com/Wang-Bioinformatics-Lab/ReDU_metadata/archive/refs/heads/main.zip
-    unzip main
-    mv ReDU_metadata-main/metadata/*.tsv metadata_folder/
-    python $TOOL_FOLDER/gnps_downloader.py metadata_folder
+    if wget -q --tries=3 --timeout=120 https://github.com/Wang-Bioinformatics-Lab/ReDU_metadata/archive/refs/heads/main.zip && unzip -q main.zip; then
+        mv ReDU_metadata-main/metadata/*.tsv metadata_folder/
+    else
+        echo "WARNING: could not fetch ReDU_metadata from GitHub; its rows from earlier runs are kept" >&2
+    fi
+    timeout ${params.source_timeout} python $TOOL_FOLDER/gnps_downloader.py metadata_folder \
+    || echo "WARNING: MassIVE metadata download failed; MassIVE rows from earlier runs are kept" >&2
+    [ -f file_paths.tsv ] || printf 'LocalName\tServerName\n' > file_paths.tsv
     """
 }
 
@@ -83,7 +94,7 @@ process mwbRun {
     file 'REDU_from_MWB_all.tsv'
 
     """
-    python $TOOL_FOLDER/MWB_to_REDU.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/MWB_to_REDU.py \
     --study_id ALL \
     --path_to_csvs $TOOL_FOLDER/translation_sheets \
     --path_to_allowed_term_json ${allowed_terms} \
@@ -92,7 +103,8 @@ process mwbRun {
     --path_to_envo_biome_csv ${ENVO_bio_csv} \
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
-    --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv
+    --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv \
+    || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; }
     """
 }
 
@@ -109,10 +121,11 @@ process mwbFiles {
     file 'mwb_files_all.tsv'
 
     """
-    python $TOOL_FOLDER/getAllWorkbench_file_paths.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/getAllWorkbench_file_paths.py \
     --study_id ALL \
     --output_path mwb_files_all.tsv \
-    --filter_extensions True
+    --filter_extensions True \
+    || { echo "WARNING: mwbFiles failed or timed out; Workbench rows from earlier runs are kept" >&2; : > mwb_files_all.tsv; }
     """
 }
 
@@ -129,10 +142,11 @@ process formatmwb {
     file 'mwb_redu.tsv'
 
     """
-    python $TOOL_FOLDER/MWB_merge.py  \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/MWB_merge.py  \
     $mwb_metadata \
     $mwb_files \
-    mwb_redu.tsv 
+    mwb_redu.tsv \
+    || { echo "WARNING: formatmwb failed or timed out; Workbench rows from earlier runs are kept" >&2; : > mwb_redu.tsv; }
     """
 }
 
@@ -155,14 +169,15 @@ process mlRun {
 
 
     """
-    python $TOOL_FOLDER/Metabolights2REDU.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/Metabolights2REDU.py \
     --study_id ALL  \
     --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
     --path_to_allowed_term_json ${allowed_terms} \
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
     --path_to_envo_biome_csv ${ENVO_bio_csv} \
     --path_to_envo_material_csv ${ENVO_material_csv} \
-    --path_ncbi_rank_division ${ncbi_rank_division}
+    --path_ncbi_rank_division ${ncbi_rank_division} \
+    || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; }
     """
 }
 
@@ -178,8 +193,9 @@ process mlFiles {
     file 'MetabolightsFilePaths_ALL.tsv'
 
     """
-    python $TOOL_FOLDER/getAllMetabolights_file_paths.py \
-    --output_filename MetabolightsFilePaths_ALL.tsv
+    timeout ${params.source_timeout} python $TOOL_FOLDER/getAllMetabolights_file_paths.py \
+    --output_filename MetabolightsFilePaths_ALL.tsv \
+    || { echo "WARNING: mlFiles failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > MetabolightsFilePaths_ALL.tsv; }
     """
 }
 
@@ -197,10 +213,11 @@ process formatml {
     file 'ml_redu.tsv'
 
     """
-    python $TOOL_FOLDER/ML_merge.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/ML_merge.py \
     $ml_metadata \
     $ml_files \
-    ml_redu.tsv 
+    ml_redu.tsv \
+    || { echo "WARNING: formatml failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > ml_redu.tsv; }
     """
 }
 
@@ -222,14 +239,15 @@ process normanRun {
 
 
     """
-    python $TOOL_FOLDER/NORMAN_to_REDU.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/NORMAN_to_REDU.py \
     --study_id ALL  \
     --path_to_allowed_term_json ${allowed_terms} \
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
     --path_to_envo_biome_csv ${ENVO_bio_csv} \
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
-    --output NORMAN2REDU_ALL.tsv || touch NORMAN2REDU_ALL.tsv
+    --output NORMAN2REDU_ALL.tsv \
+    || { echo "WARNING: normanRun failed or timed out; NORMAN rows from earlier runs are kept" >&2; : > NORMAN2REDU_ALL.tsv; }
     """
 }
 
@@ -317,7 +335,7 @@ process gnpsHarmonize {
 
     """
     mkdir adjusted_metadata_folder
-    python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
     ${metadata_ch} \
     adjusted_metadata_folder \
     --AllowedTermJson_path ${allowed_terms} \
@@ -325,7 +343,8 @@ process gnpsHarmonize {
     --path_to_uberon_cl_po_csv ${UBERON_CL_PO_ontology_csv} \
     --path_to_doid_csv ${DOID_ontology_csv} \
     --path_to_envo_biome_csv ${ENVO_bio_csv} \
-    --path_to_envo_material_csv ${ENVO_material_csv}
+    --path_to_envo_material_csv ${ENVO_material_csv} \
+    || { echo "WARNING: gnpsHarmonize failed or timed out; GNPS rows from earlier runs are kept" >&2; true; }
     """
 }
 
@@ -344,11 +363,12 @@ process gnpsmatchName {
     file 'gnps_metadata_all.tsv'
 
     """
-    python $TOOL_FOLDER/gnps_name_matcher.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/gnps_name_matcher.py \
     all \
     adjusted_metadata_folder \
     gnps_metadata_all.tsv \
-    ${allowed_terms}
+    ${allowed_terms} \
+    || { echo "WARNING: gnpsmatchName failed or timed out; GNPS rows from earlier runs are kept" >&2; : > gnps_metadata_all.tsv; }
     """
 }
 
@@ -371,13 +391,14 @@ process MASST_to_REDU {
 
     """
     mkdir adjusted_metadata_folder
-    python $TOOL_FOLDER/MASST_to_REDU.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/MASST_to_REDU.py \
     ${redu_table} \
     adjusted_metadata_folder \
     --path_microbeMASST ${microbe_masst_table} \
     --path_plantMASST ${plant_masst_table} \
     --path_ncbiRanksDivisions ${ncbi_rank_division} \
-    --AllowedTermJson_path ${allowed_terms}
+    --AllowedTermJson_path ${allowed_terms} \
+    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; true; }
     """
 }
 
@@ -396,11 +417,12 @@ process gnpsmatchName_masst {
     file 'masst_metadata_all.tsv'
 
     """
-    python $TOOL_FOLDER/gnps_name_matcher.py \
+    timeout ${params.source_timeout} python $TOOL_FOLDER/gnps_name_matcher.py \
     all \
     adjusted_metadata_folder \
     masst_metadata_all.tsv \
-    ${allowed_terms}
+    ${allowed_terms} \
+    || { echo "WARNING: gnpsmatchName_masst failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_metadata_all.tsv; }
     """
 }
 
@@ -437,14 +459,16 @@ process saveOlderData {
     path ml_files
 
     output:
-    path 'merged_with_old.tsv'
+    path 'merged_with_old.tsv', emit: merged
+    path 'source_summary.tsv'
 
     """
     python $TOOL_FOLDER/save_older_data.py \
     ${merged_ch} \
     ${old_redu} \
     merged_with_old.tsv \
-    --metabolights_files ${ml_files}
+    --metabolights_files ${ml_files} \
+    --summary_output source_summary.tsv
     """
 }
 
@@ -471,7 +495,8 @@ process enrich_ncbi_information {
 
     python $TOOL_FOLDER/ncbi_database.py \
     ${merged_ch}  \
-    merged_with_ncbi.tsv
+    merged_with_ncbi.tsv \
+    || { echo "WARNING: NCBI lineage annotation failed; passing rows through without it" >&2; cp ${merged_ch} merged_with_ncbi.tsv; }
     """
 }
 
@@ -522,7 +547,7 @@ workflow {
 
     // Make sure we dont loose older data
     old_redu_path_ch = Channel.fromPath(params.old_redu)
-    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch)
+    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch).merged
 
     // Enrich NCBI information
     merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch)

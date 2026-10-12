@@ -2,6 +2,21 @@ import pandas as pd
 import argparse
 import json
 
+
+def read_source(path, data_source, name=None):
+    """Reads one source's table; an empty file (the source failed or timed out this run)
+    gives an empty frame so the other sources are still merged."""
+    name = name or data_source
+    try:
+        df = pd.read_csv(path, sep='\t', dtype=str)
+    except pd.errors.EmptyDataError:
+        print(f"WARNING: no new {name} metadata this run ({path} is empty)")
+        df = pd.DataFrame()
+    print(f"{name}: {len(df)} rows from {path}")
+    df["DataSource"] = data_source
+    return df
+
+
 def main():
     # parsing arguments
     parser = argparse.ArgumentParser(description='Merge GNPS and ReDU metadata')
@@ -24,31 +39,18 @@ def main():
     columns_to_use = [col.replace("MassiveID", "ATTRIBUTE_DatasetAccession") for col in columns_to_use]
 
     # read GNPS metadata
-    gnps_df = pd.read_csv(args.gnps_metadata, sep='\t', dtype=str)
-    gnps_df["DataSource"] = "GNPS"
+    gnps_df = read_source(args.gnps_metadata, "GNPS")
 
     #drop duplicated files
-    duplicates = gnps_df.duplicated(subset='USI', keep=False)
-    gnps_df = gnps_df[~duplicates]
+    if 'USI' in gnps_df.columns:
+        duplicates = gnps_df.duplicated(subset='USI', keep=False)
+        gnps_df = gnps_df[~duplicates]
 
-    # read Workbench metadata
-    mwb_df = pd.read_csv(args.mwb_metadata, sep='\t', dtype=str)
-    mwb_df["DataSource"] = "Workbench"
-
-    # read MetaboLights metadata
-    metabo_df = pd.read_csv(args.metabolights_metadata, sep='\t', dtype=str)
-    metabo_df["DataSource"] = "MetaboLights"
-
-    # read NORMAN metadata
-    try:
-        norman_df = pd.read_csv(args.norman_metadata, sep='\t', dtype=str)
-    except pd.errors.EmptyDataError:
-        norman_df = pd.DataFrame()
-    norman_df["DataSource"] = "NORMAN"
-
-    # read MASST metadata
-    masst_df = pd.read_csv(args.masst_metadata, sep='\t', dtype=str)
-    masst_df["DataSource"] = "GNPS"
+    # read Workbench, MetaboLights, NORMAN and MASST metadata
+    mwb_df = read_source(args.mwb_metadata, "Workbench")
+    metabo_df = read_source(args.metabolights_metadata, "MetaboLights")
+    norman_df = read_source(args.norman_metadata, "NORMAN")
+    masst_df = read_source(args.masst_metadata, "GNPS", name="MASST")
 
     # merge GNPS and ReDU metadata
     merged_df = pd.concat([gnps_df, mwb_df, metabo_df, masst_df, norman_df], ignore_index=True)

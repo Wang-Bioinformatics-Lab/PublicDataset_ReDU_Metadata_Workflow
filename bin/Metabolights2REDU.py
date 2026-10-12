@@ -116,6 +116,26 @@ def rename_duplicated_column_names(df):
     return df
 
 
+def _table_headers(table, prefix):
+    """Column headers for a MetaboLights assay/sample table, in the order of its data rows.
+
+    Field 'index' values are not always contiguous (MetaboLights leaves gaps, e.g. where
+    columns without a header were dropped), while the rows hold one value per field in
+    index order. So headers are assigned by rank of index, not by the index itself.
+    """
+    fields = sorted(table['fields'].values(), key=lambda field: field['index'])
+    widths = {len(row) for row in table['data']}
+    if widths and widths != {len(fields)}:
+        if widths == {fields[-1]['index'] + 1}:
+            # rows padded to the highest index: position == index
+            headers = [None] * widths.pop()
+            for field in fields:
+                headers[field['index']] = prefix + field['header']
+            return headers
+        raise ValueError(f"Table rows have {sorted(widths)} values but {len(fields)} fields are declared")
+    return [prefix + field['header'] for field in fields]
+
+
 def Metabolights2REDU(study_id, **kwargs):
     """
     Converts Metabolights study data to a REDU table format.
@@ -146,9 +166,7 @@ def Metabolights2REDU(study_id, **kwargs):
         if assay_json['technology'] == 'mass spectrometry' or assay_json['technology'] == 'mass spectrometry assay':        
 
             # Extract headers in the correct order
-            headers = [None] * len(assay_json['assayTable']['fields'])
-            for key, value in assay_json['assayTable']['fields'].items():
-                headers[value['index']] = 'Assay_' + value['header']
+            headers = _table_headers(assay_json['assayTable'], 'Assay_')
 
             df = pd.DataFrame(assay_json['assayTable']['data'])
             df = rename_duplicated_column_names(df)
@@ -180,9 +198,7 @@ def Metabolights2REDU(study_id, **kwargs):
         print(f'Assay table has {len(df_assays)} rows and {len(df_assays.columns)} columns.')
 
         #get info on samples (there is only one sample table per study)
-        headers = [None] * len(study_details['content']['sampleTable']['fields'])
-        for key, value in study_details['content']['sampleTable']['fields'].items():
-            headers[value['index']] = 'Samples_' + value['header']
+        headers = _table_headers(study_details['content']['sampleTable'], 'Samples_')
 
         df_samples = pd.DataFrame(study_details['content']['sampleTable']['data'])
         df_samples = rename_duplicated_column_names(df_samples)
@@ -200,39 +216,23 @@ def Metabolights2REDU(study_id, **kwargs):
 
         print(f'Sample table has {len(df_study)} rows and {len(df_study.columns)} columns.')
 
-        # Duplicate rows if we have mzml AND raw files
-        df_study_raw = pd.DataFrame()
-        
-        if 'Assay_Raw Spectral Data File' in df_study.columns:
-            df_study_raw = df_study[df_study['Assay_Raw Spectral Data File'].str.contains(r'\.', regex=True, na=False)].copy()
+        # Duplicate rows if we have mzml AND raw files. A study can have several raw/derived file
+        # columns (e.g. 'Raw Spectral Data File' holding .wiff.scan and 'Raw Spectral Data File.1'
+        # holding the .wiff), so every such column contributes rows; derived (mzML) files come first
+        file_columns = [col for prefix in ['Assay_Derived Spectral Data File', 'Assay_Raw Spectral Data File']
+                        for col in df_study.columns if re.fullmatch(re.escape(prefix) + r'(\.\d+)?', col)]
+        file_dfs = []
+        for col in file_columns:
+            df_files = df_study[df_study[col].str.contains(r'\.', regex=True, na=False)].copy()
+            df_files['filepath'] = df_files[col]
+            df_files = df_files.drop(columns=file_columns)
+            print(f'Assay table has {len(df_files)} rows and {len(df_files.columns)} columns.')
+            if len(df_files) > 0:
+                file_dfs.append(df_files)
 
-            df_study_raw['filepath'] = df_study_raw['Assay_Raw Spectral Data File']
-            # Check if the column exists before dropping
-            if 'Assay_Raw Spectral Data File' in df_study_raw.columns:
-                df_study_raw.drop(columns=['Assay_Raw Spectral Data File'], inplace=True)
-            if 'Assay_Derived Spectral Data File' in df_study_raw.columns:
-                df_study_raw.drop(columns=['Assay_Derived Spectral Data File'], inplace=True)
-            print(f'Assay table has {len(df_study_raw)} rows and {len(df_study_raw.columns)} columns.')
-
-        df_study_mzml = pd.DataFrame()
-        if 'Assay_Derived Spectral Data File' in df_study.columns:
-            df_study_mzml = df_study[df_study['Assay_Derived Spectral Data File'].str.contains(r'\.', regex=True, na=False)].copy()
-            df_study_mzml['filepath'] = df_study_mzml['Assay_Derived Spectral Data File']
-            # Check if the column exists before dropping
-            if 'Assay_Raw Spectral Data File' in df_study_mzml.columns:
-                df_study_mzml.drop(columns=['Assay_Raw Spectral Data File'], inplace=True)
-            if 'Assay_Derived Spectral Data File' in df_study_mzml.columns:
-                df_study_mzml.drop(columns=['Assay_Derived Spectral Data File'], inplace=True)
-            print(f'Assay table has {len(df_study_mzml)} rows and {len(df_study_mzml.columns)} columns.')
-
-        if len(df_study_raw) > 0 and len(df_study_mzml) > 0:
-            df_study = pd.concat([df_study_mzml, df_study_raw], ignore_index=True).copy(deep=True)
-        elif len(df_study_raw) > 0:
-            df_study = df_study_raw.copy(deep=True)
-        elif len(df_study_mzml) > 0:
-            df_study = df_study_mzml.copy(deep=True)
-        elif len(df_study_raw) == 0 and len(df_study_mzml) == 0:
+        if len(file_dfs) == 0:
             return pd.DataFrame()
+        df_study = pd.concat(file_dfs, ignore_index=True).copy(deep=True)
         
         df_study = rename_duplicated_column_names(df_study)
         df_study['filename'] = df_study['filepath']#.apply(lambda x: os.path.basename(x))
@@ -250,7 +250,8 @@ def Metabolights2REDU(study_id, **kwargs):
         print(f'Assay table has {len(df_study)} rows and {len(df_study.columns)} columns.')
 
         if len(df_study) == 0:
-            return None
+            # e.g. only .zip archives or .xls tables listed, nothing REDU can index
+            return pd.DataFrame()
 
         # Assign the split columns to 'base' and 'extension'
         df_study['base'] = split_values[0]
@@ -721,7 +722,9 @@ def Metabolights2REDU(study_id, **kwargs):
             
             df_study = df_study.drop_duplicates() 
 
-            #remove files if they are assigned multiple times as we cannot tell which sample they belong to (this is probably because people make mistakes when creating their study)
+            #files assigned to several samples were already collapsed into one row by merge_repeated_fileobservations,
+            #with conflicting fields set to 'missing value'. Rows can still share a USI here when different filenames
+            #resolve to the same file (e.g. several paths inside one .d folder); drop those as we cannot tell them apart
             df_study['count'] = df_study.groupby('USI')['USI'].transform('size')
             df_study = df_study[df_study['count'] == 1]
             df_study = df_study.drop(columns=['count'])

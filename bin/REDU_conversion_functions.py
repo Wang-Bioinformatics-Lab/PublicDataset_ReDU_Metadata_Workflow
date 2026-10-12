@@ -14,26 +14,50 @@ import tqdm
 
 # owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
 # declares an IRI as both a property and a class/individual. Patch _load_properties
-# to skip those conflicting entries instead of crashing.
-_original_load_properties = _owl_ns.Ontology._load_properties
+# to skip only those conflicting entries instead of crashing. (Catching the TypeError
+# around the original method would also skip loading every property after the
+# conflicting one.) Mirrors Ontology._load_properties of owlready2 0.46.
 def _patched_load_properties(self):
-    try:
-        _original_load_properties(self)
-    except TypeError:
-        pass
+    # Update props from other ontologies, if needed
+    for prop in list(self.world._props.values()):
+        if prop.namespace.world is _owl_ns.owl_world: continue
+        prop._check_update(self)
+
+    # Loads new props
+    for prop_storid in _owl_ns.itertools.chain(self._get_obj_triples_po_s(_owl_ns.rdf_type, _owl_ns.owl_object_property),
+                                               self._get_obj_triples_po_s(_owl_ns.rdf_type, _owl_ns.owl_data_property),
+                                               self._get_obj_triples_po_s(_owl_ns.rdf_type, _owl_ns.owl_annotation_property)):
+        Prop = self.world._get_by_storid(prop_storid)
+        if not isinstance(Prop, _owl_ns.PropertyClass):
+            print(f"Skipping '{Prop.iri}': it is both a property and a class/an individual")
+            continue
+        python_name_d = self.world._get_data_triple_sp_od(prop_storid, _owl_ns.owlready_python_name)
+        if python_name_d is not None:
+            with _owl_ns.LOADING: Prop.python_name = python_name_d[0]
 _owl_ns.Ontology._load_properties = _patched_load_properties
 
 
 
-def merge_repeated_fileobservations(df):
+def _is_missing_observation(value):
+    return value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip().lower() in ('', 'nan', 'missing value')
 
+
+def merge_repeated_fileobservations(df):
+    """Collapses rows describing the same file into one.
+
+    A file listed for several samples or assays cannot be attributed to one of them, so
+    columns with conflicting values become 'missing value'. Blank/missing entries are not
+    a conflict: if exactly one real value is present it is kept (e.g. a sample listed twice,
+    once with 'France' and once with an empty country).
+    """
 
     def process_group(group):
 
-        # Handle discrepancies for columns not in 'li_make_most_common'
-        li_rm_discrepancies = [col for col in group.columns]
-        for col in li_rm_discrepancies:
-            if len(set(group[col])) > 1 or all(value is None for value in group[col]):
+        for col in group.columns:
+            present = [value for value in group[col] if not _is_missing_observation(value)]
+            if len({str(value) for value in present}) == 1:
+                group[col] = present[0]
+            elif present or len(set(group[col])) > 1 or all(value is None for value in group[col]):
                 group[col] = 'missing value'
             else:
                 # If there's no discrepancy, keep the original value
@@ -138,42 +162,26 @@ def _get_ncbi_lineage(ncbi_id, retries=3):
     return None
 
 
+@functools.lru_cache(maxsize=None)
+def _get_ncbi_scientific_name(ncbi_id):
+    """Cached esummary lookup; network errors propagate and are not cached."""
+    response = _ncbi_get(f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=taxonomy&id={ncbi_id}&retmode=json")
+    summary = response.json().get("result", {}).get(ncbi_id, {})
+    return summary.get("scientificname") or None
+
+
 def get_taxonomic_name_from_id(ncbi_id):
-    url = f"https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?id={ncbi_id}"
-    attempts = 0
-    max_attempts = 3
+    """Returns the scientific name of an NCBI taxon id, or None if NCBI does not know it.
 
-    while attempts < max_attempts:
-        try:
-            _ncbi_throttle()
-            response = requests.get(url, timeout=NCBI_TIMEOUT)
-            response.raise_for_status()  # Check for HTTP errors.
-            soup = BeautifulSoup(response.text, 'html.parser')
+    Uses the E-utilities esummary endpoint; the Taxonomy Browser page this used to scrape
+    no longer carries the name in its title.
+    """
+    try:
+        return _get_ncbi_scientific_name(str(ncbi_id).strip())
+    except (requests.RequestException, ValueError) as e:
+        print(f"Could not get the taxonomic name for {ncbi_id}: {e}")
+        return None
 
-            # Attempt to find the taxonomic name more reliably.
-            title_content = soup.title.string
-            # Adjusting strategy to account for potential differences in page structure.
-            if "Taxonomy browser" in title_content:
-                taxonomic_name = title_content.split("(")[-1].split(")")[0]
-            else:
-                # Fallback if the expected pattern is not found
-                header = soup.find('h2')
-                if header and "Taxonomy browser" in header.text:
-                    taxonomic_name = header.text.split("(")[-1].split(")")[0]
-                else:
-                    raise ValueError("Taxonomic name pattern not recognized.")
-
-            if taxonomic_name:  # Check if a name was found
-                return taxonomic_name
-            else:
-                raise ValueError("Taxonomic name not found.")
-        except Exception as e:
-            print(f"Attempt {attempts + 1}: An error occurred - {e}")
-            time.sleep(6)  # Wait before retrying
-            attempts += 1
-
-    return None
-                      
 
 def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
     if ncbi_id is not None and ncbi_id != "NA":

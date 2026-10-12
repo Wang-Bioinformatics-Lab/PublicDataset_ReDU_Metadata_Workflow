@@ -8,6 +8,7 @@ import sys
 import collections
 import argparse
 import time
+from ftplib import FTP_TLS, all_errors as ftp_errors
 
 
 def download_gnps_metadata(out_path="gnps_metadata.tsv", page_size=1000, max_pages=None, max_retries=5):
@@ -126,6 +127,73 @@ def _download_metadata_file(session, url, max_retries=5, timeout=120):
     return None
 
 
+class MassiveFTPS:
+    """Anonymous explicit-FTPS access to MassIVE (massive-ftp.ucsd.edu).
+
+    Files live under version roots (v01.., x01, z01, ..) and one dataset can be split
+    across several of them, so an accession -> roots index is built once.
+    Recommended over the throttled ProteoSAFe/DownloadResultFile HTTP endpoint.
+    """
+
+    def __init__(self, host="massive-ftp.ucsd.edu", timeout=120):
+        self.host = host
+        self.timeout = timeout
+        self.ftp = None
+        self.index = None
+
+    def _connect(self):
+        ftp = FTP_TLS(self.host, timeout=self.timeout)
+        ftp.login("anonymous", "")
+        ftp.prot_p()
+        ftp.encoding = "utf-8"
+        self.ftp = ftp
+
+    def _build_index(self):
+        index = collections.defaultdict(list)
+        for root in sorted(self.ftp.nlst()):
+            try:
+                for entry in self.ftp.nlst(root):
+                    index[entry.split('/')[-1]].append(root)
+            except ftp_errors as e:
+                print(f"Could not list FTPS root {root}: {e}")
+        self.index = index
+        print(f"FTPS index built for {len(index)} accessions")
+
+    def download(self, dataset_path, retries=3):
+        """Returns the content of <dataset>/<path>, or None if it could not be fetched."""
+        dataset, _, file_path = dataset_path.partition('/')
+        for attempt in range(1, retries + 1):
+            try:
+                if self.ftp is None:
+                    self._connect()
+                if self.index is None:
+                    self._build_index()
+                self.ftp.voidcmd("TYPE I")
+                for root in self.index.get(dataset, []):
+                    remote = f"{root}/{dataset}/{file_path}"
+                    try:
+                        self.ftp.size(remote)
+                    except ftp_errors:
+                        continue
+                    buffer = io.BytesIO()
+                    self.ftp.retrbinary(f"RETR {remote}", buffer.write, blocksize=1 << 20)
+                    return buffer.getvalue()
+                return None
+            except (OSError, EOFError) + ftp_errors as e:
+                print(f"FTPS attempt {attempt} failed for {dataset_path}: {e}")
+                self.close()
+                time.sleep(min(2 ** attempt, 30))
+        return None
+
+    def close(self):
+        if self.ftp is not None:
+            try:
+                self.ftp.close()
+            except Exception:
+                pass
+        self.ftp = None
+
+
 def main():
     # Args parse
     parser = argparse.ArgumentParser(description='Download GNPS files')
@@ -136,7 +204,13 @@ def main():
     print("echo Importing Done!")
 
 
-    gnps_df = download_gnps_metadata()
+    # If the dataset cache is unavailable, continue with the GitHub metadata only; the
+    # MassIVE rows of earlier runs are carried forward by saveOlderData
+    try:
+        gnps_df = download_gnps_metadata()
+    except Exception as e:
+        print(f"WARNING: could not list MassIVE metadata files ({e}); continuing with GitHub metadata only")
+        gnps_df = pd.DataFrame(columns=['dataset', 'filepath', 'create_time'])
 
     # Print message to indicate that the CSV file has been read
     print("echo GNPS CSV Read Done!")
@@ -170,8 +244,10 @@ def main():
     # Get list of basenames of existing files without file extension
     existing_files = [os.path.basename(file).split(".")[0] for file in existing_files]
 
-    # Set the download link for GNPS files
+    # Files are fetched over FTPS; the (throttled) HTTP endpoint is only a fallback
     download_link = "https://massive.ucsd.edu/ProteoSAFe/DownloadResultFile?forceDownload=true&file=f."
+    ftps = MassiveFTPS()
+    downloaded_via = collections.Counter()
     print("echo We are downloading now ...")
 
     # Create a defaultdict to store file paths
@@ -190,9 +266,14 @@ def main():
             print(f"File {msv_id} already present in the folder from github!")
             continue
 
-        download_url = download_link + link
-        print(download_url)
-        content = _download_metadata_file(session, download_url)
+        print(f"Downloading {link}")
+        content = ftps.download(link)
+        if content is not None:
+            downloaded_via["FTPS"] += 1
+        else:
+            content = _download_metadata_file(session, download_link + link)
+            if content is not None:
+                downloaded_via["HTTP"] += 1
         if content is None:
             failed_downloads.append(link)
             continue
@@ -202,12 +283,12 @@ def main():
         with open(file_name,'wb') as f:
             f.write(content) #Downloading
 
+    ftps.close()
+    print(f"Downloaded metadata files: {dict(downloaded_via)}")
     if failed_downloads:
-        print(f"Failed to download {len(failed_downloads)} of {len(gnps_list)} metadata files:")
+        print(f"WARNING: failed to download {len(failed_downloads)} of {len(gnps_list)} metadata files:")
         for link in failed_downloads:
             print(f"  {link}")
-    if gnps_list and len(failed_downloads) == len(gnps_list):
-        raise RuntimeError("All MassIVE metadata downloads failed.")
 
     # Print message to indicate that downloading has been completed successfully
     print("echo Download has been completed successfully!")

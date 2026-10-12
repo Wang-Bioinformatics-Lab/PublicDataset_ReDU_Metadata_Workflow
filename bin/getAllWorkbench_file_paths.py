@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 import requests
 import argparse
@@ -77,6 +78,15 @@ def _get_metabolomicsworkbench_filepaths(study_id):
 
     return workbench_df
 
+# Some archive listings carry raw 7z listing columns in front of the path,
+# e.g. '2014-10-05 10:45:02 ..H.A           80               MX183900 .../x.d'
+_7Z_LISTING_PREFIX = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \S{5} +\d+ +(?:\d+ +)?')
+
+
+def clean_listing_path(path):
+    return _7Z_LISTING_PREFIX.sub('', path)
+
+
 def process_filename(filename):
     path_parts = filename.split('/')
     for part in path_parts:
@@ -131,13 +141,16 @@ if __name__ == '__main__':
         result_df = _get_metabolomicsworkbench_filepaths(study_id=args.study_id)
 
     result_df['study_id'] = result_df['STUDY_ID']
-    result_df['file_path'] = result_df['FILENAME'].apply(process_filename)
-    
-    result_df['USI'] = result_df['USI_file'].apply(process_filename)
+    result_df['file_path'] = result_df['FILENAME'].apply(clean_listing_path).apply(process_filename)
+
+    result_df['USI'] = result_df.apply(
+        lambda row: f"mzspec:{row['study_id']}:{process_filename(clean_listing_path(parse_qs(urlparse(row['URL']).query).get('F', [''])[0]))}",
+        axis=1)
 
     if args.filter_extensions == 'True':
         extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
-        result_df = result_df[result_df['FILENAME'].str.lower().str.endswith(tuple(extensions))]
+        # filter on the collapsed path so .d folders listed only by their inner files are kept
+        result_df = result_df[result_df['file_path'].str.lower().str.endswith(tuple(extensions))]
 
 
     result_df = result_df[['study_id', 'file_path', 'USI']]

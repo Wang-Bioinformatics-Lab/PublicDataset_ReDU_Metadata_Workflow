@@ -4,6 +4,6 @@ channels:
   - bioconda
 dependencies:
   - python=3.10
-  - pandas
+  - pandas=2.3.3
   - ete3
   - tqdm
