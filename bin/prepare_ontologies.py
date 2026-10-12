@@ -33,7 +33,10 @@ def _patched_load_properties(self):
 _owl_ns.Ontology._load_properties = _patched_load_properties
 
 def get_uberon_table(owl_path):
-    onto = get_ontology(owl_path).load()
+    # Each ontology gets its own owlready2 World: in the shared default world, classes an
+    # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
+    # that earlier ontology and silently disappear from this one's classes()
+    onto = owlready2.World().get_ontology(owl_path).load()
 
     multi_cellular = onto.search(iri="http://purl.obolibrary.org/obo/UBERON_0010000")[0]
     organ = onto.search(iri="http://purl.obolibrary.org/obo/UBERON_0000062")[0]
@@ -75,7 +78,10 @@ def get_uberon_table(owl_path):
 
 
 def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex'):
-    onto = get_ontology(owl_path).load()
+    # Each ontology gets its own owlready2 World: in the shared default world, classes an
+    # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
+    # that earlier ontology and silently disappear from this one's classes()
+    onto = owlready2.World().get_ontology(owl_path).load()
     filter_class = None
     descendants = set()
     if descendant_node:

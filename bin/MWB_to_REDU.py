@@ -17,6 +17,8 @@ from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_d
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
+from REDU_conversion_functions import normalize_redu_datetime
+from ms_instrument_matching import match_mass_spectrometer
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -38,6 +40,101 @@ def _mwb_get(url):
 def is_apple_double(path):
     # macOS resource-fork copies (__MACOSX/.../._x.mzML) are not data files
     return "__MACOSX/" in path or os.path.basename(path).startswith("._")
+
+
+_POS_RE = re.compile(r'(?:^|[^a-z]|hilic|rp|c18|esi|lipid|lipids)(?:pos|positive)(?:[^a-z]|$)')
+_NEG_RE = re.compile(r'(?:^|[^a-z]|hilic|rp|c18|esi|lipid|lipids)(?:neg|negative)(?:[^a-z]|$)')
+_CHROM_TOKENS = {
+    'hilic': re.compile(r'(?:^|[^a-z])hilic|amide|zic'),
+    'reverse': re.compile(r'(?:^|[^a-z])(?:c18|rp|rplc|reverse|reversed|c8|c30|t3)(?:[^a-z]|pos|neg|$)'),
+}
+
+
+def _path_indicates(path):
+    """Polarity ('positive'/'negative'/None) and chromatography ('hilic'/'reverse'/None)
+    stated by tokens in a raw file path, e.g. 'C18-NEG/0001.raw' or 'x_HILICpos_1.mzML'."""
+    p = str(path).lower()
+    pos = bool(_POS_RE.search(p) or re.search(r'(?<![a-z])(?:esi|apci|hesi)\s*\+', p))
+    neg = bool(_NEG_RE.search(p) or re.search(r'(?<![a-z])(?:esi|apci|hesi)\s*-(?![a-z])', p))
+    polarity = 'positive' if pos and not neg else 'negative' if neg and not pos else None
+    chrom_hits = [k for k, rx in _CHROM_TOKENS.items() if rx.search(p)]
+    chrom = chrom_hits[0] if len(chrom_hits) == 1 else None
+    return polarity, chrom
+
+
+def resolve_analysis_conflicts_from_path(df):
+    """A raw file listed under several analyses of a study (e.g. a positive and a
+    negative mode analysis) gets conflicting analysis-level values, which are later
+    blanked to 'missing value'. When the file path itself states the polarity and/or
+    the chromatography (C18-NEG/..., ..._HILICpos...), keep only the analysis rows that
+    agree with it - but only if that leaves rows that agree with each other on the
+    analysis-level columns. Otherwise the group is left unchanged."""
+    analysis_cols = [c for c in ['IonizationSourceAndPolarity', 'ChromatographyAndPhase', 'MassSpectrometer'] if c in df.columns]
+    dup = df['filename'].duplicated(keep=False)
+    if not dup.any() or not analysis_cols:
+        return df
+    drop_idx = []
+    for filename, group in df[dup].groupby('filename'):
+        if all(group[c].astype(str).nunique() == 1 for c in analysis_cols):
+            continue
+        polarity, chrom = _path_indicates(filename)
+        if polarity is None and chrom is None:
+            continue
+        keep = pd.Series(True, index=group.index)
+        if polarity is not None:
+            keep &= group['IonizationSourceAndPolarity'].astype(str).str.lower().str.contains(polarity)
+        if chrom is not None and 'ChromatographyAndPhase' in group.columns:
+            keep &= group['ChromatographyAndPhase'].astype(str).str.lower().str.contains(chrom)
+        kept = group[keep]
+        if len(kept) == 0 or len(kept) == len(group):
+            continue
+        if all(kept[c].astype(str).nunique() == 1 for c in analysis_cols):
+            drop_idx.extend(group.index[~keep])
+    if drop_idx:
+        print(f"Resolved analysis conflicts from file paths: {len(drop_idx)} conflicting analysis rows dropped")
+    return df.drop(index=drop_idx)
+
+
+def propagate_to_same_name_files(redu_df, raw_file_name_df):
+    """Studies often hold one raw file per sample under several method folders
+    (Method_1/Sample_1.raw, Method_2/Sample_1.raw, ...), but the sample-to-file match
+    links each sample to one of them. Give the other same-name files (same basename and
+    extension) the sample's metadata, when the basename belongs to exactly one sample.
+    Analysis-level fields are copied only if the study has a single analysis setup;
+    otherwise they come from the file path tokens, or stay missing."""
+    if redu_df is None or len(redu_df) == 0 or raw_file_name_df is None or len(raw_file_name_df) == 0:
+        return redu_df
+    out = redu_df.copy()
+    out['_base'] = out['filename'].astype(str).map(lambda x: os.path.basename(x).lower())
+    base_counts = out['_base'].value_counts()
+    unique_rows = out[out['_base'].map(base_counts) == 1].set_index('_base')
+    if len(unique_rows) == 0:
+        return redu_df
+    files = raw_file_name_df[['filename', 'USI']].drop_duplicates('filename').copy()
+    files['_base'] = files['filename'].astype(str).map(lambda x: os.path.basename(x).lower())
+    files = files[~files['filename'].isin(set(out['filename'])) & files['_base'].isin(unique_rows.index)]
+    if len(files) == 0:
+        return redu_df
+    analysis_cols = [c for c in ['IonizationSourceAndPolarity', 'ChromatographyAndPhase', 'MassSpectrometer'] if c in out.columns]
+    single_setup = all(out[c].astype(str).nunique() == 1 for c in analysis_cols)
+    copies = unique_rows.loc[files['_base']].reset_index(drop=True)
+    copies['filename'] = files['filename'].values
+    copies['USI'] = files['USI'].values
+    if not single_setup:
+        for c in analysis_cols:
+            copies[c] = 'missing value'
+        for i, path in enumerate(copies['filename']):
+            polarity, chrom = _path_indicates(path)
+            match = out
+            if polarity is not None:
+                match = match[match['IonizationSourceAndPolarity'].astype(str).str.lower().str.contains(polarity)]
+            if chrom is not None and 'ChromatographyAndPhase' in out.columns:
+                match = match[match['ChromatographyAndPhase'].astype(str).str.lower().str.contains(chrom)]
+            if (polarity is not None or chrom is not None) and len(match) and all(match[c].astype(str).nunique() == 1 for c in analysis_cols):
+                for c in analysis_cols:
+                    copies.at[i, c] = match[c].iloc[0]
+    print(f"Copied sample metadata to {len(copies)} same-name raw files in other folders")
+    return pd.concat([redu_df, copies[redu_df.columns]], ignore_index=True)
 
 
 def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
@@ -79,6 +176,11 @@ def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
     df = df[~((df['IonizationSourceAndPolarity'].str.contains('negative')) & (df['positive_polarity_count'] > 0))]
     df = df[~((df['IonizationSourceAndPolarity'].str.contains('positive')) & (df['negative_polarity_count'] > 0))]
     df = df[~((df['IonizationSourceAndPolarity'].str.contains('alternating')) & ((df['negative_polarity_count'] == 0) | (df['positive_polarity_count'] == 0)))]
+
+    try:
+        df = resolve_analysis_conflicts_from_path(df.reset_index(drop=True))
+    except Exception as e:
+        print(f"Could not resolve analysis conflicts from file paths: {type(e).__name__}: {e}")
 
 
     # Group by 'USI' and apply the processing function to each group
@@ -207,16 +309,135 @@ def get_blanks(x):
         return [None, None]
 
 
+_SEX_WORDS = {
+    'female': {'f', 'female', 'females', 'woman', 'women', 'girl', 'girls', 'spayed', 'sow', 'hen', 'mare', 'doe', 'ewe'},
+    'male': {'m', 'male', 'males', 'man', 'men', 'boy', 'boys', 'gelding', 'castrated', 'barrow', 'boar', 'stallion', 'rooster', 'buck', 'ram'},
+}
+
+
 def convert_sex(x):
-    x = x.lower()
+    x = str(x).lower().strip()
     if x in ['f', 'female']:
         return 'female'
     elif x in ['m', 'male']:
         return 'male'
     elif x in ['as', 'asexual']:
         return 'asexual'
-    else:
-        return 'missing value'
+    # spelled-out / plural / animal-husbandry forms ('Males', 'BOY', 'Male (gelding)',
+    # 'neutered male'): exactly one sex must be named
+    tokens = set(re.split(r'[^a-z]+', x)) - {''}
+    hits = [sex for sex, words in _SEX_WORDS.items() if tokens & words]
+    if len(hits) == 1 and not tokens & {'and', 'mixed', 'both', 'pooled', 'pool'}:
+        return hits[0]
+    return 'missing value'
+
+
+# Keys describing the sex of someone other than the sampled subject
+_SEX_KEY_EXCLUDE_RE = r'pup|fetus|fetal|foetal|offspring|mother|maternal|father|paternal|donor|partner|infant|baby|child of|recipient'
+
+
+def convert_sex_coded(value, key):
+    """Numeric sex codes are only decoded when the key defines them, e.g.
+    'sex (1 boy, 2 girl)' or 'gender: 1=male, 2=female'."""
+    v = str(value).strip()
+    if not re.fullmatch(r'\d+', v):
+        return None
+    codes = {}
+    for code, word in re.findall(r'(\d+)\s*[=:\-]?\s*([a-z]+)', str(key).lower()):
+        sex = convert_sex(word)
+        if sex in ('male', 'female'):
+            codes[code] = sex
+    return codes.get(v)
+
+
+# Depth / altitude in metres; depths are negative from sea level, altitudes positive
+_DEPTH_KEY_RE = r'(?<![a-z])(depth|altitude|elevation)(?![a-z])'
+_DEPTH_KEY_EXCLUDE_RE = r'sequenc|read|coverage|seq\b|snow|soil depth class'
+
+
+def depth_or_altitude_meters(value, key):
+    nums = re.findall(r'-?\d+(?:\.\d+)?', str(value))
+    if len(nums) != 1:
+        return None  # missing, or a range such as '0-10 cm'
+    num = abs(float(nums[0]))
+    unit_src = (str(key) + ' ' + str(value)).lower()
+    if re.search(r'\bcm\b|centimet', unit_src):
+        num /= 100
+    elif re.search(r'\bmm\b|millimet', unit_src):
+        num /= 1000
+    elif re.search(r'\bkm\b|kilomet', unit_src):
+        num *= 1000
+    elif re.search(r'\bft\b|feet|foot', unit_src):
+        num *= 0.3048
+    if re.search(r'(?<![a-z])depth(?![a-z])', str(key).lower()) and num:
+        num = -num
+    return round(num, 3)
+
+
+_DATE_KEYS = {'collection date', 'collection_date', 'sampling date', 'sampling_date', 'sample collection date',
+              'date of collection', 'date collected', 'collection_datetime', 'sampling datetime', 'sample date',
+              'date of sampling', 'collection date and time', 'date_collected', 'sampledate', 'date'}
+
+# per-sample health keys; values are matched exactly (case-insensitive)
+_HEALTH_KEY_RE = r'^(condition|phenotype|disease|diagnosis|disease state|disease status|disease_state|clinical diagnosis|health status|health_status|health state|pathology|group|subject group|cohort)$'
+_HEALTHY_VALUES = {'healthy', 'healthy control', 'healthy controls', 'healthy volunteer', 'healthy volunteers',
+                   'healthy subject', 'healthy subjects', 'healthy individual', 'healthy donor', 'healthy donors',
+                   'normal healthy', 'healthy adult', 'healthy adults'}
+# plain 'control' only means healthy under keys that are about disease
+_DISEASE_KEY_RE = r'^(disease|diagnosis|disease state|disease status|disease_state|clinical diagnosis|health status|health_status|health state)$'
+
+# lower-cased DOID label/exact synonym -> 'Label|DOID:x'; set from --path_to_doid_csv
+DOID_LOOKUP = {}
+
+
+def build_doid_lookup(doid_table):
+    """Exact (case-insensitive) DOID label/synonym lookup. Names that point to more
+    than one disease, the root term 'disease' and very short names are left out."""
+    names = {}
+    for idx, label, syn in doid_table[['DOIDOntologyIndex', 'Label', 'Synonym']].itertuples(index=False):
+        if not isinstance(label, str) or idx == 'DOID:4':
+            continue
+        for name in {label, syn}:
+            if isinstance(name, str) and len(name.strip()) >= 4:
+                names.setdefault(name.strip().lower(), set()).add(f'{label}|{idx}')
+    return {name: next(iter(v)) for name, v in names.items() if len(v) == 1}
+
+
+_COUNTRY_ALIASES = {
+    'usa': 'United States of America', 'u.s.a.': 'United States of America', 'u.s.a': 'United States of America',
+    'united states': 'United States of America', 'u.s.': 'United States of America',
+    'uk': 'United Kingdom', 'u.k.': 'United Kingdom', 'england': 'United Kingdom', 'scotland': 'United Kingdom',
+    'wales': 'United Kingdom', 'great britain': 'United Kingdom', 'northern ireland': 'United Kingdom',
+    'korea': 'South Korea', 'republic of korea': 'South Korea', 'the netherlands': 'Netherlands', 'holland': 'Netherlands',
+    'p.r. china': 'China', "people's republic of china": 'China', 'pr china': 'China', 'viet nam': 'Vietnam',
+    'russian federation': 'Russia', 'new mexico': 'United States of America',
+}
+# country names that are also common US states / names / words in location text
+_COUNTRY_SKIP = {'georgia', 'jordan', 'chad', 'guinea', 'niger', 'dominica', 'turkey', 'mali', 'oman', 'peru'}
+
+
+def country_from_location(text, allowed_countries):
+    """Country named in a free-text location ('Children's Hospital, Boston, USA'):
+    the longest country name/alias found as a whole phrase, if exactly one country."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = ' ' + re.sub(r'[^a-z.\' ]+', ' ', text.lower()) + ' '
+    names = {c.lower(): c for c in allowed_countries if ',' not in c and c.lower() not in _COUNTRY_SKIP}
+    names.update({k: v for k, v in _COUNTRY_ALIASES.items() if v in allowed_countries})
+    found = [(n, c) for n, c in names.items() if re.search(r'(?<![a-z])' + re.escape(n) + r'(?![a-z])', t)]
+    # drop names contained in a longer match ('sudan' in 'south sudan')
+    found = [(n, c) for n, c in found if not any(n != m and n in m for m, _ in found)]
+    countries = {c for _, c in found}
+    return next(iter(countries)) if len(countries) == 1 else None
+
+
+_LIFESTAGE_VALUES = {
+    'newborn': 'Infancy (<2 yrs)', 'neonate': 'Infancy (<2 yrs)', 'neonatal': 'Infancy (<2 yrs)',
+    'infant': 'Infancy (<2 yrs)', 'infancy': 'Infancy (<2 yrs)',
+    'adolescent': 'Adolescence (8 yrs < x <= 18 yrs)', 'adolescence': 'Adolescence (8 yrs < x <= 18 yrs)',
+    'teenager': 'Adolescence (8 yrs < x <= 18 yrs)',
+}
+_LIFESTAGE_KEY_RE = r'^(life stage|life_stage|lifestage|developmental stage|development stage|age group|age_group)$'
 
 
 def convert_to_years(age):
@@ -980,7 +1201,16 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df['Value'] = df['Value'].str.lower()
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
     df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
-    df = get_key_info_into_outer(df, key_vars=["gender", "sex", "gender (f/m)", "biological_sex"], new_col="MWB_sex")
+    # sex keys: the known ones plus other 'sex'/'gender' keys about the sampled subject;
+    # numeric codes are decoded only where the key defines them
+    _keyl = df['Key'].astype(str).str.lower()
+    _sex_keys = ["gender", "sex", "gender (f/m)", "biological_sex"]
+    _extra_sex = sorted(set(_keyl[_keyl.str.contains(r'\b(?:sex|gender)\b', regex=True)
+                                  & ~_keyl.str.contains(_SEX_KEY_EXCLUDE_RE, regex=True)]) - set(_sex_keys))
+    _is_sex = _keyl.isin(_sex_keys + _extra_sex)
+    _decoded = [convert_sex_coded(v, k) for k, v in zip(df.loc[_is_sex, 'Key'], df.loc[_is_sex, 'Value'])]
+    df.loc[_is_sex, 'Value'] = [d if d is not None else v for d, v in zip(_decoded, df.loc[_is_sex, 'Value'])]
+    df = get_key_info_into_outer(df, key_vars=_sex_keys + _extra_sex, new_col="MWB_sex")
     df = get_age_years_into_outer(df, new_col="MWB_age")
     smoking_keys = ["smoking_status", "smoking status", "smokstatus",
                     "smoking", "smoke", "tobacco use", "smoking history",
@@ -1000,8 +1230,44 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                                                "diet_group"], new_col="MWB_diet")
     df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country", "site", "location", "country_of_origin"],
                                  new_col="Country")
-    df = get_key_info_into_outer(df, key_vars=["latitude"], new_col="Latitude")
-    df = get_key_info_into_outer(df, key_vars=["longitude"], new_col="Longitude")
+    df = get_key_info_into_outer(df, key_vars=["latitude", "lat", "lat_dd", "decimal latitude", "latitude (decimal degrees)"], new_col="Latitude")
+    df = get_key_info_into_outer(df, key_vars=["longitude", "lon", "long", "lon_dd", "decimal longitude", "longitude (decimal degrees)"], new_col="Longitude")
+
+    # extra per-sample fields (depth, collection date, health, life stage); a problem
+    # here must never cost the study its rows
+    try:
+        # depth / altitude
+        _keyl = df['Key'].astype(str).str.lower()
+        _is_depth = _keyl.str.contains(_DEPTH_KEY_RE, regex=True) & ~_keyl.str.contains(_DEPTH_KEY_EXCLUDE_RE, regex=True)
+        _depth = pd.Series([depth_or_altitude_meters(v, k) for k, v in zip(df.loc[_is_depth, 'Key'], df.loc[_is_depth, 'Value'])],
+                           index=df.index[_is_depth], dtype=object)
+        df['MWB_depth'] = _depth
+        df['MWB_depth'] = df.groupby('filename')['MWB_depth'].transform(lambda s: s.dropna().iloc[0] if s.dropna().nunique() == 1 else np.nan)
+
+        # collection date: raw value, normalised (and rejected if not a real date) during validation
+        df = get_key_info_into_outer(df, key_vars=sorted(_DATE_KEYS), new_col="MWB_collection_date")
+
+        # health: 'healthy' keywords and exact DOID names under disease-like keys
+        _is_health = _keyl.str.contains(_HEALTH_KEY_RE, regex=True)
+        _vals = df['Value'].astype(str).str.strip().str.lower()
+        _healthy = _is_health & (_vals.isin(_HEALTHY_VALUES) | (_keyl.str.contains(_DISEASE_KEY_RE, regex=True) & _vals.isin({'control', 'controls', 'normal', 'none'})))
+        df['MWB_healthy'] = np.where(_healthy, 'healthy', None)
+        df['MWB_healthy'] = df.groupby('filename')['MWB_healthy'].transform(lambda s: s.dropna().iloc[0] if s.dropna().nunique() == 1 else None)
+        if DOID_LOOKUP:
+            df['MWB_doid'] = _vals.where(_is_health).map(DOID_LOOKUP)
+            df['MWB_doid'] = df.groupby('filename')['MWB_doid'].transform(lambda s: s.dropna().iloc[0] if s.dropna().nunique() == 1 else None)
+        else:
+            df['MWB_doid'] = None
+
+        # life stage stated directly (newborn, adolescent, ...)
+        _is_ls = _keyl.str.contains(_LIFESTAGE_KEY_RE, regex=True)
+        df['MWB_lifestage'] = _vals.where(_is_ls).map(_LIFESTAGE_VALUES)
+        df['MWB_lifestage'] = df.groupby('filename')['MWB_lifestage'].transform(lambda s: s.dropna().iloc[0] if s.dropna().nunique() == 1 else None)
+    except Exception as e:
+        print(f"Could not extract additional sample fields: {type(e).__name__}: {e}")
+        for col in ['MWB_depth', 'MWB_collection_date', 'MWB_healthy', 'MWB_doid', 'MWB_lifestage']:
+            if col in df.columns:
+                df = df.drop(columns=[col])
     df['LatitudeandLongitude'] = df.apply(
         lambda x: f'{x.Latitude}|{x.Longitude}' if x.Latitude is not None and x.Longitude is not None and not np.isnan(
             x.Latitude) and not np.isnan(x.Longitude) else None, axis=1)
@@ -1260,8 +1526,10 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                 if allowed_ms and unresolved.any():
                     _cache = {}
                     def _resolve(raw):
+                        # unambiguous vendor-normalised match first; the token-subset
+                        # match only for names it cannot decide
                         if raw not in _cache:
-                            _cache[raw] = map_instrument_to_allowed(raw, allowed_ms)
+                            _cache[raw] = match_mass_spectrometer(raw, allowed_ms) or map_instrument_to_allowed(raw, allowed_ms)
                         return _cache[raw]
                     MWB_table.loc[unresolved, col_csv_name] = MWB_table.loc[unresolved, '_ms_raw'].map(_resolve)
                 MWB_table = MWB_table.drop(columns=['_ms_raw'])
@@ -1357,6 +1625,41 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
         MWB_table['BodyMassIndex'] = MWB_table['MWB_bmi'].apply(bmi_to_numeric)
     if 'MWB_diet' in MWB_table.columns:
         MWB_table['Diet'] = MWB_table['MWB_diet'].map(convert_diet)
+
+    def _is_missing(col):
+        if col not in MWB_table.columns:
+            MWB_table[col] = np.nan
+        return MWB_table[col].isna() | MWB_table[col].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'na', 'missing value'])
+
+    # values derived from extra factor keys only fill gaps; a problem here must never
+    # cost the study its rows
+    try:
+        if 'MWB_healthy' in MWB_table.columns:
+            fill = _is_missing('HealthStatus') & MWB_table['MWB_healthy'].notna()
+            MWB_table.loc[fill, 'HealthStatus'] = MWB_table.loc[fill, 'MWB_healthy']
+        if 'MWB_doid' in MWB_table.columns:
+            fill = _is_missing('DOIDCommonName') & MWB_table['MWB_doid'].notna()
+            if fill.any():
+                doid = MWB_table.loc[fill, 'MWB_doid'].astype(str).str.split('|')
+                MWB_table.loc[fill, 'DOIDCommonName'] = doid.str[0]
+                MWB_table.loc[fill, 'DOIDOntologyIndex'] = doid.str[1]
+        if 'MWB_depth' in MWB_table.columns:
+            MWB_table['DepthorAltitudeMeters'] = MWB_table['MWB_depth']
+        if 'COLLECTION_LOCATION' in MWB_table.columns:
+            allowed_countries = (allowedTerm_dict.get('Country') or {}).get('allowed_values') or []
+            fill = _is_missing('Country')
+            if fill.any() and allowed_countries:
+                MWB_table.loc[fill, 'Country'] = MWB_table.loc[fill, 'COLLECTION_LOCATION'].map(
+                    lambda v: country_from_location(v, allowed_countries))
+        if 'MWB_collection_date' in MWB_table.columns:
+            dates = MWB_table['MWB_collection_date'].where(MWB_table['MWB_collection_date'].astype(str) != 'NA')
+            if 'COLLECTION_TIME' in MWB_table.columns:
+                # study-level collection time only when it is a real calendar date
+                study_date = MWB_table['COLLECTION_TIME'].map(lambda v: normalize_redu_datetime(v) if isinstance(v, str) and re.search(r'(19|20)\d\d', v) else None)
+                dates = dates.fillna(study_date)
+            MWB_table['SampleCollectionDateandTime'] = dates
+    except Exception as e:
+        print(f"Could not derive additional sample fields: {type(e).__name__}: {e}")
 
     df_translations = pd.read_csv(path_to_csvs + "/biofluid_tissue_distinction.csv", encoding="ISO-8859-1", dtype=str)
 
@@ -1541,6 +1844,10 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
 
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
+    try:
+        redu_df_final = propagate_to_same_name_files(redu_df_final, raw_file_name_df)
+    except Exception as e:
+        print(f"Could not copy metadata to same-name files: {type(e).__name__}: {e}")
 
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
     redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, 
@@ -1618,10 +1925,16 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
     
 
     complete_df['LifeStage'] = complete_df['AgeInYears'].apply(lambda x: age_category(x))
+    if 'MWB_lifestage' in complete_df.columns:
+        # LifeStage is defined for humans only
+        is_human = complete_df['NCBITaxonomy'].astype(str).str.startswith('9606|')
+        fill = (complete_df['LifeStage'].isin(['', None]) | complete_df['LifeStage'].isna()) & complete_df['MWB_lifestage'].notna() & is_human
+        complete_df.loc[fill, 'LifeStage'] = complete_df.loc[fill, 'MWB_lifestage']
 
-    complete_df[['SampleCollectionDateandTime',
-                 'DepthorAltitudeMeters',
-                 'qiita_sample_name']] = 'missing value'
+    for col in ['SampleCollectionDateandTime', 'DepthorAltitudeMeters']:
+        if col not in complete_df.columns:
+            complete_df[col] = 'missing value'
+    complete_df['qiita_sample_name'] = 'missing value'
 
     missing_not_imported = ["SampleType",
                             "SampleTypeSub1",
@@ -1661,8 +1974,6 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
         {np.nan: 'not collected', None: 'not collected'})
 
     complete_df[['TermsofPosition',
-                 'SampleCollectionDateandTime',
-                 'DepthorAltitudeMeters',
                  'qiita_sample_name']] = 'missing value'
 
     REDU_df = complete_df[["MassiveID",
@@ -1715,6 +2026,7 @@ if __name__ == '__main__':
     parser.add_argument("--path_to_envo_material_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
     parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
+    parser.add_argument("--path_to_doid_csv", type=str, help="Prepared DOID ontology csv (optional); enables exact disease-name matching", default='none')
 
     print('Starting MWB2REDU script,..')
 
@@ -1736,6 +2048,9 @@ if __name__ == '__main__':
 
     # Read polarity file
     polarity_table = pd.read_csv(args.path_to_polarity_info)
+
+    if args.path_to_doid_csv != 'none':
+        DOID_LOOKUP = build_doid_lookup(pd.read_csv(args.path_to_doid_csv, dtype=str))
    
     # Read NCBI rank and division csv
     NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)

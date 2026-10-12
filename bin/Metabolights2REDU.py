@@ -17,6 +17,7 @@ from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
+from ms_instrument_matching import match_mass_spectrometer
 
 
 
@@ -49,6 +50,35 @@ def get_enviromental_water(x):
             return [None, None]
     else:
         return [None, None]
+
+
+_AGE_UNIT_DIVISOR = {'year': 1, 'yr': 1, 'month': 12, 'mo': 12, 'week': 52.1429, 'wk': 52.1429, 'day': 365, 'd': 365, 'hour': 8760, 'h': 8760}
+
+
+def _age_in_years_from_text(value):
+    """Age in years from a value that carries its own unit ('73 year', '7 weeks'), else None."""
+    m = re.fullmatch(r'\s*(\d+(?:\.\d+)?)\s*(years?|yrs?|months?|mo|weeks?|wks?|days?|d|hours?|h)\s*(?:old)?\s*', str(value), re.I)
+    if not m:
+        return None
+    unit = m.group(2).lower()
+    unit = unit if unit in _AGE_UNIT_DIVISOR else unit.rstrip('s')
+    return float(m.group(1)) / _AGE_UNIT_DIVISOR[unit]
+
+
+def _sample_type_qc(x):
+    """REDU SampleType for a MetaboLights 'Sample type' value that marks a pooled QC or a
+    blank, otherwise None."""
+    x = re.sub(r'[^a-z]+', ' ', str(x).lower()).strip()
+    if 'pool' in x and ('quality control' in x or re.search(r'\bqc\b', x)):
+        return 'pool_QC'
+    if 'blank' in x:
+        if re.search(r'extraction|process|procedur|method', x):
+            return 'blank_extraction'
+        if re.search(r'media|medium', x):
+            return 'blank_culturemedia'
+        if re.search(r'solvent|instrument|analytic|injection|^blank$', x):
+            return 'blank_analysis'
+    return None
 
 
 def get_blanks(x):
@@ -136,6 +166,71 @@ def _table_headers(table, prefix):
     return [prefix + field['header'] for field in fields]
 
 
+_ACCESSION_COLUMN = re.compile(r'Term Accession Number(?:[._]\d+)*$')
+_ANNOTATION_COLUMN = re.compile(r'(?:Unit|Term Source REF|Term Accession Number)(?:[._]\d+)*$')
+_MISSING_VALUES = ('', 'nan', 'none', 'missing value', 'not applicable', 'not available', 'n/a', 'na')
+
+
+def _is_missing(series):
+    return series.isna() | series.astype(str).str.strip().str.lower().isin(_MISSING_VALUES)
+
+
+def _accession_column(df, value_column):
+    """The 'Term Accession Number' column belonging to value_column. In ISA tables it
+    follows the value directly, after an optional Unit / Term Source REF column."""
+    if value_column not in df.columns:
+        return None
+    columns = list(df.columns)
+    position = columns.index(value_column)
+    prefix = value_column.split('_', 1)[0] + '_'
+    for column in columns[position + 1:position + 4]:
+        if not column.startswith(prefix) or not _ANNOTATION_COLUMN.match(column[len(prefix):]):
+            return None
+        if _ACCESSION_COLUMN.match(column[len(prefix):]):
+            return column
+    return None
+
+
+def _accession_ids(series, ontology):
+    """Ontology ids ('<ONTOLOGY>:<id>') from accession values such as
+    'http://purl.obolibrary.org/obo/NCBITaxon_9606', '.../ontology/NCBITAXON/9606' (BioPortal)
+    or 'UBERON:0001088'; '' if none."""
+    pattern = r'(?i)(?:^|[/#:\s])' + ontology + r'[_:/]([A-Za-z0-9]+)\s*$'
+    ids = series.astype(str).str.strip().str.extract(pattern, expand=False)
+    return ids.fillna('').map(lambda x: f'{ontology}:{x}' if x else '')
+
+
+_ncbi_by_id = {}
+
+
+def _ncbi_term_by_id(allowedTerm_dict):
+    """taxid -> allowed 'taxid|name' term, built once (the allowed list has ~3M entries)."""
+    if not _ncbi_by_id:
+        for term in allowedTerm_dict['NCBITaxonomy']['allowed_values']:
+            taxid, _, _ = str(term).partition('|')
+            _ncbi_by_id.setdefault(taxid, term)
+    return _ncbi_by_id
+
+
+def _investigation_submission_year(study_id):
+    """Submission year from the study's public ISA investigation file, used when the
+    API has no submissionYear. Returns None if it cannot be read."""
+    url = f"https://ftp.ebi.ac.uk/pub/databases/metabolights/studies/public/{study_id}/i_Investigation.txt"
+    try:
+        response = requests.get(url, timeout=(10, 120))
+        if response.status_code != 200:
+            return None
+    except requests.RequestException:
+        return None
+    for line in response.text.splitlines():
+        for key in ('Study Submission Date', 'Study Public Release Date'):
+            if line.startswith(key):
+                match = re.search(r'(19|20)\d{2}', line)
+                if match:
+                    return int(match.group(0))
+    return None
+
+
 def Metabolights2REDU(study_id, **kwargs):
     """
     Converts Metabolights study data to a REDU table format.
@@ -156,7 +251,9 @@ def Metabolights2REDU(study_id, **kwargs):
 
     study_assays = study_details['content']['assays']
 
-    submissionYear = study_details['content']['derivedData']['submissionYear']
+    submissionYear = (study_details['content'].get('derivedData') or {}).get('submissionYear')
+    if submissionYear in (None, '', 0):
+        submissionYear = _investigation_submission_year(study_id)
 
     df_assays = pd.DataFrame()
     ms_study_assays = []
@@ -178,9 +275,11 @@ def Metabolights2REDU(study_id, **kwargs):
             ms_study_assays.append(df)
 
     if len(ms_study_assays) > 0:
-        all_columns = set()
-        for df in ms_study_assays:
-            all_columns.update(df.columns)
+        # Union of the columns in first-seen order: the position of a column matters, as
+        # an ontology accession sits in the 'Term Accession Number' column after its value.
+        # Repeated headers are renamed before the union so none of them is dropped.
+        ms_study_assays = [rename_duplicated_column_names(df) for df in ms_study_assays]
+        all_columns = list(dict.fromkeys(col for df in ms_study_assays for col in df.columns))
 
         aligned_dfs = []
         for df in ms_study_assays:
@@ -189,8 +288,7 @@ def Metabolights2REDU(study_id, **kwargs):
                 if col not in df.columns:
                     df[col] = np.nan
             # Reorder columns and add to the aligned list
-            df = rename_duplicated_column_names(df)
-            aligned_dfs.append(df[list(all_columns)])
+            aligned_dfs.append(df[all_columns])
 
         # Concatenate all dataframes into a single dataframe
         df_assays = pd.concat(aligned_dfs, ignore_index=True)
@@ -286,6 +384,12 @@ def Metabolights2REDU(study_id, **kwargs):
             # wins (no existing value is changed).
             _tax_alias_cols = ['Samples_Species', 'Samples_species', 'Samples_Bacteria',
                                'Samples_Genus', 'Samples_genus', 'Samples_organism']
+            # NCBITaxon accession recorded with the organism (taken from the same column
+            # as the organism value)
+            _tax_accession = pd.Series('', index=df_study.index, dtype=object)
+            _acc_col = _accession_column(df_study, 'Samples_Organism')
+            if _acc_col:
+                _tax_accession = _accession_ids(df_study[_acc_col], 'NCBITaxon')
             if any(c in df_study.columns for c in _tax_alias_cols):
                 if 'Samples_Organism' not in df_study.columns:
                     df_study['Samples_Organism'] = np.nan
@@ -293,12 +397,23 @@ def Metabolights2REDU(study_id, **kwargs):
                     if _c in df_study.columns:
                         _blank = df_study['Samples_Organism'].isna() | df_study['Samples_Organism'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
                         df_study.loc[_blank, 'Samples_Organism'] = df_study.loc[_blank, _c]
+                        _alias_acc = _accession_column(df_study, _c)
+                        if _alias_acc:
+                            _tax_accession.loc[_blank] = _accession_ids(df_study.loc[_blank, _alias_acc], 'NCBITaxon')
 
             if 'Samples_Organism' in df_study.columns:
                 processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict)) for org in df_study['Samples_Organism'].unique()}
 
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='missing value', regex=True)
+
+                # The curator-chosen NCBITaxon accession is more reliable than resolving the
+                # free-text organism name, so it is used whenever it is a valid taxon
+                if (_tax_accession != '').any():
+                    _by_id = _ncbi_term_by_id(allowedTerm_dict)
+                    _from_acc = _tax_accession.str.replace('NCBITaxon:', '', regex=False).map(_by_id)
+                    _use = _from_acc.notna()
+                    df_study.loc[_use, 'NCBITaxonomy'] = _from_acc[_use]
                 
                 df_study.loc[:, ['SampleType', 'SampleTypeSub1']] = 'missing value'
 
@@ -327,6 +442,16 @@ def Metabolights2REDU(study_id, **kwargs):
                     else [row.SampleType, row.SampleTypeSub1], 
                     axis=1
                 ).apply(pd.Series)
+
+                # Pooled QCs and blanks are labelled in the 'Sample type' characteristic
+                # (MetaboLights vocabulary), while their organism is often that of the study
+                # (e.g. a pooled human plasma QC), so this label takes precedence
+                for _c in [c for c in df_study.columns if re.fullmatch(r'Samples_Sample type(?:_\d+)?', str(c), re.I)]:
+                    _qc = df_study[_c].map(_sample_type_qc)
+                    _set = _qc.notna()
+                    if _set.any():
+                        df_study.loc[_set, 'SampleType'] = _qc[_set]
+                        df_study.loc[_set, 'SampleTypeSub1'] = _qc[_set]
 
 
                 # df_biofluid_vs_tissue = pd.read_csv(os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv'))
@@ -391,10 +516,22 @@ def Metabolights2REDU(study_id, **kwargs):
                                   'Samples_Biospecimen Type', 'Samples_Cell type']
                 if 'Samples_Organism part' not in df_study.columns:
                     df_study['Samples_Organism part'] = np.nan
+                # UBERON/CL/PO accession recorded with the body part (from the same column
+                # as the body part value)
+                def _body_part_accession(column):
+                    _acc = _accession_column(df_study, column)
+                    if not _acc:
+                        return pd.Series('', index=df_study.index, dtype=object)
+                    ids = _accession_ids(df_study[_acc], 'UBERON')
+                    for _ont in ('CL', 'PO'):
+                        ids = ids.where(ids != '', _accession_ids(df_study[_acc], _ont))
+                    return ids
+                _bp_accession = _body_part_accession('Samples_Organism part')
                 for _c in _bp_alias_cols:
                     if _c in df_study.columns:
                         _blank = df_study['Samples_Organism part'].isna() | df_study['Samples_Organism part'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
                         df_study.loc[_blank, 'Samples_Organism part'] = df_study.loc[_blank, _c]
+                        _bp_accession.loc[_blank] = _body_part_accession(_c).loc[_blank]
 
                 df_study['UBERONBodyPartName'] = 'missing value'
 
@@ -402,17 +539,35 @@ def Metabolights2REDU(study_id, **kwargs):
                 synonyms_in_ontology_table = set(ontology_table['Synonym'])
                 allowed_bodyparts = set(allowedTerm_dict['UBERONBodyPartName']['allowed_values'])
                 allowed_bodypart_ids = set(allowedTerm_dict['UBERONOntologyIndex']['allowed_values'])
+                _label_by_id = dict(zip(ontology_table['UBERONOntologyIndex'].astype(str).str.replace('_', ':', regex=False),
+                                        ontology_table['Label']))
+                _synonyms_lower = ontology_table['Synonym'].astype(str).str.strip().str.lower()
+                _labels_lower = ontology_table['Label'].astype(str).str.strip().str.lower()
+                _case_insensitive_matches = {}
 
                 for index, row in df_study.iterrows():
                     organism_part = row['Samples_Organism part']
+
+                    _acc_id = _bp_accession.get(index, '')
+                    if _acc_id and _acc_id in allowed_bodypart_ids and _label_by_id.get(_acc_id) in allowed_bodyparts:
+                        df_study.at[index, 'UBERONBodyPartName'] = _label_by_id[_acc_id]
+                        continue
 
                     if organism_part in allowed_bodyparts:
                         df_study.at[index, 'UBERONBodyPartName'] = organism_part
                         continue 
 
+                    matching_rows = ontology_table.iloc[0:0]
                     if organism_part in synonyms_in_ontology_table:
-
                         matching_rows = ontology_table[ontology_table['Synonym'] == organism_part]
+                    elif isinstance(organism_part, str) and organism_part.strip():
+                        # same label/exact synonym, written with different capitalisation
+                        _key = organism_part.strip().lower()
+                        if _key not in _case_insensitive_matches:
+                            _case_insensitive_matches[_key] = ontology_table[(_labels_lower == _key) | (_synonyms_lower == _key)].drop_duplicates(subset=['UBERONOntologyIndex'])
+                        matching_rows = _case_insensitive_matches[_key]
+
+                    if len(matching_rows) > 0:
 
                         plant = True if row['SampleType'] == 'plant' else False
 
@@ -435,6 +590,16 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study.loc[df_study['Is Fluid'] == True, 'SampleTypeSub1'] = 'biofluid'
                 df_study.loc[df_study['Is Multicellular'] == True, 'SampleTypeSub1'] = 'tissue'
+
+                # UBERON does not flag every body fluid or excretion (urine, feces, follicular
+                # fluid, ...) as such; the MetaboLights translation sheet covers those
+                _bvt = kwargs.get('biofluid_vs_tissue')
+                if _bvt is not None and len(_bvt):
+                    _bvt_map = dict(zip(_bvt['ML'].astype(str).str.strip().str.lower(), _bvt['tissueVSbiofluid']))
+                    _sheet = df_study['UBERONBodyPartName'].astype(str).str.strip().str.lower().map(_bvt_map)
+                    _sheet = _sheet.where(_sheet.notna(), df_study['Samples_Organism part'].astype(str).str.strip().str.lower().map(_bvt_map))
+                    _need = _is_missing(df_study['SampleTypeSub1']) & _sheet.notna() & (df_study['SampleType'] == 'animal')
+                    df_study.loc[_need, 'SampleTypeSub1'] = _sheet[_need]
                 df_study['UBERONOntologyIndex'] = df_study['UBERONOntologyIndex'].str.replace("_", ":", regex=False)
 
 
@@ -442,6 +607,9 @@ def Metabolights2REDU(study_id, **kwargs):
             #######
             if 'Assay_Instrument' in df_study.columns:
                 df_study['Assay_Instrument'] = df_study['Assay_Instrument'].fillna('')
+                _instrument_name = df_study['Assay_Instrument'].astype(str)
+                _instrument_acc_col = _accession_column(df_study, 'Assay_Instrument')
+                _instrument_acc = df_study[_instrument_acc_col].astype(str) if _instrument_acc_col else pd.Series('', index=df_study.index)
 
                 prefixes = [
                     "Thermo Scientific ",
@@ -470,6 +638,20 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study["MassSpectrometer"] = df_study["Assay_Instrument"].map(allowed_values_map)
 
+                # Then the PSI-MS accession recorded with the instrument, then the shared
+                # name matcher (vendor prefixes, abbreviations; only unambiguous matches)
+                _unres = df_study["MassSpectrometer"].isna()
+                if _unres.any():
+                    _allowed_ms_terms = allowedTerm_dict["MassSpectrometer"]["allowed_values"]
+                    _ms_matches = {}
+                    def _match_ms(name, accession):
+                        if (name, accession) not in _ms_matches:
+                            _ms_matches[(name, accession)] = (match_mass_spectrometer(None, _allowed_ms_terms, accession=accession)
+                                                              or match_mass_spectrometer(name, _allowed_ms_terms))
+                        return _ms_matches[(name, accession)]
+                    df_study.loc[_unres, "MassSpectrometer"] = [
+                        _match_ms(n, a) for n, a in zip(_instrument_name[_unres], _instrument_acc[_unres])]
+
                 # Fallback: the exact map misses ~40% of instruments (Q-Exactive vs
                 # "Q Exactive", Agilent iFunnel Q-TOF, Synapt/maXis variants, ...). Map
                 # the (already prefix-stripped) instrument string onto the allowed
@@ -491,15 +673,39 @@ def Metabolights2REDU(study_id, **kwargs):
             if 'Assay_Ion source' in df_study.columns and 'Assay_Scan polarity' in df_study.columns:
                 df_study['Assay_Ion source'] = df_study['Assay_Ion source'].fillna('')
                 df_study['Assay_Scan polarity'] = df_study['Assay_Scan polarity'].fillna('')
+                _ion_acc_col = _accession_column(df_study, 'Assay_Ion source')
+                _ion_acc = _accession_ids(df_study[_ion_acc_col], 'MS') if _ion_acc_col else pd.Series('', index=df_study.index)
 
                 df_study['Assay_Ion source'] = df_study['Assay_Ion source'].str.lower()
+                df_study['Assay_Scan polarity'] = df_study['Assay_Scan polarity'].astype(str).str.lower()
                 df_study['IonizationSourceAndPolarity'] = ''
                 df_study.loc[df_study['Assay_Ion source'].str.contains('electrospray'), 'IonizationSourceAndPolarity'] = 'electrospray ionization'
                 df_study.loc[df_study['Assay_Ion source'].str.contains('electron ionization'), 'IonizationSourceAndPolarity'] = 'electron ionization'      
                 df_study.loc[df_study['Assay_Ion source'].str.contains('chemical ionization'), 'IonizationSourceAndPolarity'] = 'atmospheric pressure chemical ionization'
-                df_study.loc[df_study['Assay_Scan polarity'].str.contains('negative') & ~df_study['IonizationSourceAndPolarity'].str.contains("electron ionization"), 'IonizationSourceAndPolarity'] += ' (negative)'
-                df_study.loc[df_study['Assay_Scan polarity'].str.contains('positive') & ~df_study['IonizationSourceAndPolarity'].str.contains("electron ionization"), 'IonizationSourceAndPolarity'] += ' (positive)'
-                df_study.loc[df_study['Assay_Scan polarity'].str.contains('alternating') & ~df_study['IonizationSourceAndPolarity'].str.contains("electron ionization"), 'IonizationSourceAndPolarity'] += ' (alternating)'
+                # Abbreviations and vendor source names (ESI, HESI, Turbo V/TurboIonSpray,
+                # IonDrive, APCI, APPI, EI), then the PSI-MS accession of the ion source
+                _unset = df_study['IonizationSourceAndPolarity'] == ''
+                _src = df_study['Assay_Ion source']
+                for _pattern, _term in [(r'\bn?h?esi\b|nano ?spray|turbo ?(?:v|ion ?spray)|ion ?spray|iondrive|jet stream', 'electrospray ionization'),
+                                        (r'\bapci\b', 'atmospheric pressure chemical ionization'),
+                                        (r'\bappi\b|photoionization|photo-ionization', 'atmospheric pressure photoionization'),
+                                        (r'\bei\b|electron impact', 'electron ionization')]:
+                    _hit = _unset & _src.str.contains(_pattern, regex=True)
+                    df_study.loc[_hit, 'IonizationSourceAndPolarity'] = _term
+                    _unset = _unset & ~_hit
+                for _accession, _term in [('MS:1000073', 'electrospray ionization'), ('MS:1000398', 'electrospray ionization'),
+                                          ('MS:1000070', 'atmospheric pressure chemical ionization'),
+                                          ('MS:1000382', 'atmospheric pressure photoionization'),
+                                          ('MS:1000389', 'electron ionization')]:
+                    _hit = _unset & (_ion_acc == _accession)
+                    df_study.loc[_hit, 'IonizationSourceAndPolarity'] = _term
+                    _unset = _unset & ~_hit
+                _negative = df_study['Assay_Scan polarity'].str.contains(r'negative|\bneg\b', regex=True)
+                _positive = df_study['Assay_Scan polarity'].str.contains(r'posi?tive|\bpos\b', regex=True)
+                _with_polarity = (df_study['IonizationSourceAndPolarity'] != '') & ~df_study['IonizationSourceAndPolarity'].str.contains("electron ionization")
+                df_study.loc[_negative & _with_polarity, 'IonizationSourceAndPolarity'] += ' (negative)'
+                df_study.loc[_positive & _with_polarity, 'IonizationSourceAndPolarity'] += ' (positive)'
+                df_study.loc[df_study['Assay_Scan polarity'].str.contains('alternating') & _with_polarity, 'IonizationSourceAndPolarity'] += ' (alternating)'
 
 
             #add LC method
@@ -525,6 +731,21 @@ def Metabolights2REDU(study_id, **kwargs):
                 else:
                     df_study.loc[df_study['ChromatographyAndPhase'].str.contains('reverse phase') & ~df_study['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += ' (NOS)'
 
+            # Gas chromatography: GC studies often leave 'Column type' empty, but name a GC
+            # in the chromatography instrument or use GC column/type wording
+            _gc_text = pd.Series('', index=df_study.index, dtype=object)
+            for _c in ['Assay_Chromatography Instrument', 'Assay_Column type', 'Assay_Column model']:
+                if _c in df_study.columns:
+                    _gc_text = _gc_text + ' ' + df_study[_c].fillna('').astype(str)
+            _is_gc = _gc_text.str.contains(r'\bgc\b|gas chromatograph|\bgc[- ]?ms\b|\bgcxgc\b', case=False, regex=True)
+            if _is_gc.any():
+                if 'ChromatographyAndPhase' not in df_study.columns:
+                    df_study['ChromatographyAndPhase'] = ''
+                _need = _is_missing(df_study['ChromatographyAndPhase']) & _is_gc
+                _db5 = _gc_text.str.contains(r'\bdb-?5', case=False, regex=True)
+                df_study.loc[_need & _db5, 'ChromatographyAndPhase'] = 'gas chromatography (DB-5)'
+                df_study.loc[_need & ~_db5, 'ChromatographyAndPhase'] = 'gas chromatography (NOS)'
+
             #add AgeInYears 
             #######
             if 'samples_age' in df_study.columns.str.lower():
@@ -533,6 +754,7 @@ def Metabolights2REDU(study_id, **kwargs):
                 if 'Samples_AGE' in df_study.columns:
                     df_study.rename(columns={'Samples_AGE': 'Samples_age'}, inplace=True)
 
+                _age_text = df_study['Samples_age'].copy() if 'Samples_age' in df_study.columns else pd.Series(np.nan, index=df_study.index)
                 unit_column = find_column_after_target_column(df_study, 'Samples_age', 'Samples_Unit')
 
                 if unit_column != '':
@@ -549,6 +771,17 @@ def Metabolights2REDU(study_id, **kwargs):
             #add AgeInYears 
             #######
                     df_study['LifeStage'] = df_study['AgeInYears'].apply(lambda x: age_category(x))
+
+                # The unit can also be written in the value itself ('73 year', '7 weeks')
+                _age_from_value = _age_text.map(_age_in_years_from_text)
+                if _age_from_value.notna().any():
+                    if 'AgeInYears' not in df_study.columns:
+                        df_study['AgeInYears'] = 'missing value'
+                    _need = _is_missing(df_study['AgeInYears']) & _age_from_value.notna()
+                    df_study.loc[_need, 'AgeInYears'] = _age_from_value[_need].astype(str)
+                    if 'LifeStage' not in df_study.columns:
+                        df_study['LifeStage'] = ''
+                    df_study.loc[_need, 'LifeStage'] = _age_from_value[_need].apply(age_category)
 
             #add Sex
             #######
@@ -640,6 +873,48 @@ def Metabolights2REDU(study_id, **kwargs):
                     _m = df_study[_c].astype(str).str.strip().str.lower().map(_hs_map)
                     _need = df_study['HealthStatus'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & _m.notna()
                     df_study.loc[_need, 'HealthStatus'] = _m[_need]
+
+            #add DOIDCommonName / HealthStatus from disease columns
+            #######
+            # Values (or their DOID accessions) that exactly match a DOID label or exact
+            # synonym; 'healthy control'-type values mark healthy subjects. Columns about
+            # someone other than the subject are skipped.
+            _disease_cols = [c for c in df_study.columns
+                             if str(c).startswith('Samples_')
+                             and re.search(r'disease|patholog|diagnos', str(c), re.I)
+                             and not re.search(r'severity|stag|grade|score|duration|onset|family|maternal|mother|father|donor|Term Source|Term Accession|Unit', str(c), re.I)]
+            if _disease_cols:
+                _doid = kwargs.get('doid_table')
+                _doid_allowed = set(allowedTerm_dict['DOIDCommonName']['allowed_values'])
+                _doid_labels = {str(v).strip().lower(): str(v) for v in _doid_allowed}
+                _doid_by_id, _doid_by_synonym = {}, {}
+                if _doid is not None and len(_doid):
+                    _doid_by_id = dict(zip(_doid['DOIDOntologyIndex'].astype(str), _doid['Label'].astype(str)))
+                    _syn = _doid.assign(_s=_doid['Synonym'].astype(str).str.strip().str.lower())
+                    _syn = _syn.groupby('_s')['Label'].agg(lambda x: set(x))
+                    _doid_by_synonym = {k: next(iter(v)) for k, v in _syn.items() if len(v) == 1}
+                def _to_doid(value):
+                    key = str(value).strip().lower()
+                    if not key or key in _MISSING_VALUES or key == 'disease':
+                        return None
+                    return _doid_labels.get(key) or (_doid_by_synonym.get(key) if _doid_by_synonym.get(key) in _doid_allowed else None)
+                if 'DOIDCommonName' not in df_study.columns:
+                    df_study['DOIDCommonName'] = 'missing value'
+                if 'HealthStatus' not in df_study.columns:
+                    df_study['HealthStatus'] = 'missing value'
+                for _c in _disease_cols:
+                    _m = df_study[_c].map(_to_doid)
+                    _acc_col = _accession_column(df_study, _c)
+                    if _acc_col and _doid_by_id:
+                        _from_acc = _accession_ids(df_study[_acc_col], 'DOID').map(_doid_by_id)
+                        _from_acc = _from_acc.where(_from_acc.isin(_doid_allowed))
+                        _m = _from_acc.where(_from_acc.notna(), _m)
+                    _need = _is_missing(df_study['DOIDCommonName']) & _m.notna()
+                    df_study.loc[_need, 'DOIDCommonName'] = _m[_need]
+                    _healthy = df_study[_c].astype(str).str.strip().str.lower().str.fullmatch(
+                        r'(?:healthy|non-?diseased?)(?: (?:control|volunteer|subject|donor|individual|participant)s?)?|healthy controls?|control \(healthy\)')
+                    _need = _is_missing(df_study['HealthStatus']) & _healthy
+                    df_study.loc[_need, 'HealthStatus'] = 'healthy'
 
             #add DepthorAltitudeMeters
             #######
@@ -746,6 +1021,7 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_envo_biome_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--path_to_envo_material_csv", type=str, help="Path to the prepared uberon_cl_po ontology csv")
     parser.add_argument("--path_ncbi_rank_division", type=str, help="Path to the path_ncbi_rank_division")
+    parser.add_argument("--path_to_doid_csv", type=str, default="none", help="Optional path to the prepared DOID ontology csv (exact synonyms and DOID accessions for DOIDCommonName)")
             
     args = parser.parse_args()
 
@@ -788,6 +1064,11 @@ if __name__ == "__main__":
     NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)
     NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
 
+    # Optional tables: DOID ontology, and the body part -> biofluid/tissue translation sheet
+    doid_table = pd.read_csv(args.path_to_doid_csv) if args.path_to_doid_csv != 'none' else None
+    biofluid_vs_tissue_path = os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv')
+    biofluid_vs_tissue = pd.read_csv(biofluid_vs_tissue_path) if os.path.exists(biofluid_vs_tissue_path) else None
+
 
     REDU_dataframes = []
     redu_table_single = pd.DataFrame()
@@ -798,7 +1079,8 @@ if __name__ == "__main__":
         try:
             print(f'Processing study {study_id}...')
             redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
-                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table)
+                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table,
+                                                  doid_table=doid_table, biofluid_vs_tissue=biofluid_vs_tissue)
         except StudyNotAvailable as e:
             print(f"Study {study_id} is not available: {e}")
             not_public_studies.append(study_id)

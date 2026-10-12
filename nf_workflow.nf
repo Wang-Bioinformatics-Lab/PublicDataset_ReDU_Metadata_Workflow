@@ -89,6 +89,7 @@ process mwbRun {
     path ENVO_material_csv
     path ncbi_rank_division
     path allowed_terms
+    path doid_csv
 
     output:
     file 'REDU_from_MWB_all.tsv'
@@ -104,6 +105,7 @@ process mwbRun {
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
     --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv \
+    --path_to_doid_csv ${doid_csv} \
     || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; }
     """
 }
@@ -163,6 +165,7 @@ process mlRun {
     path ENVO_material_csv
     path ncbi_rank_division
     path allowed_terms
+    path doid_csv
 
     output:
     file 'Metabolights2REDU_ALL.tsv'
@@ -177,6 +180,7 @@ process mlRun {
     --path_to_envo_biome_csv ${ENVO_bio_csv} \
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
+    --path_to_doid_csv ${doid_csv} \
     || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; }
     """
 }
@@ -373,6 +377,56 @@ process gnpsmatchName {
 }
 
 
+// Fills missing MassSpectrometer values from the MassIVE dataset description (only when
+// it lists exactly one instrument that maps unambiguously). Optional enrichment: on any
+// failure the rows are passed through unchanged.
+process gnpsInstruments {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    path gnps_metadata
+    path allowed_terms
+
+    output:
+    file 'gnps_metadata_instruments.tsv'
+
+    """
+    timeout 2h python $TOOL_FOLDER/massive_dataset_instruments.py \
+    ${gnps_metadata} \
+    gnps_metadata_instruments.tsv \
+    --path_to_allowed_term_json ${allowed_terms} \
+    || { echo "WARNING: gnpsInstruments failed or timed out; passing rows through" >&2; cp ${gnps_metadata} gnps_metadata_instruments.tsv; }
+    """
+}
+
+
+// The MASST tables grow with every new MASST-indexed dataset, so they are fetched on
+// each run; the copies in data/ (from get_data.sh) are only a fallback
+process fetchMasstTables {
+    input:
+    path microbe_masst_fallback, stageAs: 'fallback/microbe_masst_table.csv'
+    path plant_masst_fallback, stageAs: 'fallback/plant_masst_table.csv'
+
+    output:
+    path 'microbe_masst_table.csv'
+    path 'plant_masst_table.csv'
+
+    """
+    for table in microbe_masst_table plant_masst_table; do
+        if curl -fsSL --retry 3 --max-time 600 -o \${table}.part \
+            https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/\${table}.csv \
+            && [ -s \${table}.part ]; then
+            mv \${table}.part \${table}.csv
+        else
+            echo "WARNING: could not fetch \${table}.csv; using the copy in data/" >&2
+            cp fallback/\${table}.csv \${table}.csv
+        fi
+    done
+    """
+}
+
 // Getting microbmemasst data and putting it in a tentaive redu format
 process MASST_to_REDU {
     publishDir "./nf_output", mode: 'copy'
@@ -385,6 +439,7 @@ process MASST_to_REDU {
     path allowed_terms
     path microbe_masst_table
     path plant_masst_table
+    path nodes_dmp
 
     output:
     file 'adjusted_metadata_folder'
@@ -398,6 +453,7 @@ process MASST_to_REDU {
     --path_plantMASST ${plant_masst_table} \
     --path_ncbiRanksDivisions ${ncbi_rank_division} \
     --AllowedTermJson_path ${allowed_terms} \
+    --path_ncbi_nodes ${nodes_dmp} \
     || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; true; }
     """
 }
@@ -522,19 +578,22 @@ workflow {
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
     msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
+    gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
     // MicrobeMASST and PlantMASST
-    masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
+    (microbe_masst_table, plant_masst_table) = fetchMasstTables(
         dataFile('microbe_masst_table.csv'), dataFile('plant_masst_table.csv'))
+    masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
+        microbe_masst_table, plant_masst_table, dataFile('nodes.dmp'))
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
+    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto)
     mwb_files_ch = mwbFiles(1)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
+    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto)
     ml_files_ch = mlFiles(1)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
@@ -542,7 +601,7 @@ workflow {
     norman_metadata_ch = normanRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
 
     // Combine everything
-    merged_ch = mergeAllMetadata(allowed_terms, gnps_metadata_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch)
+    merged_ch = mergeAllMetadata(allowed_terms, gnps_metadata_instruments_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch)
 
 
     // Make sure we dont loose older data

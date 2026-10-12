@@ -10,8 +10,10 @@ import numpy as np
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
 from REDU_conversion_functions import map_instrument_to_allowed
 import json
+import os
 import sys
 import traceback
+from datetime import datetime
 from getAllNORMAN_file_paths import process_dataset_files, SESSION, HTTP_TIMEOUT
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 
@@ -84,6 +86,129 @@ def clean(series):
               .str.lower()
     )
 
+# NORMAN (Drupal) dates look like 'Mon, 07/01/2019 - 22:00' (month first)
+NORMAN_DATE_FORMAT = '%a, %m/%d/%Y - %H:%M'
+
+
+def parse_norman_date(value):
+    """Parsed date, or None if not in NORMAN format or implausible (typos like year 0003)."""
+    try:
+        parsed = datetime.strptime(str(value).strip(), NORMAN_DATE_FORMAT)
+    except ValueError:
+        return None
+    if parsed.year < 1900 or parsed > datetime.now():
+        return None
+    return parsed
+
+
+def norman_collection_date(value):
+    """Sampling date as an ISO date. The time is dropped (the stored hours are UTC
+    shifts such as 22:00/03:00, not sampling times), and 01/01/YYYY, which submitters
+    use as a placeholder for 'some time in YYYY', keeps only the year. Values in other
+    formats pass through for the shared datetime validation."""
+    if pd.isna(value):
+        return value
+    parsed = parse_norman_date(value)
+    if parsed is None:
+        # implausible NORMAN-format dates are dropped; other formats go to the validation
+        return np.nan if re.match(r'^[A-Za-z]{3}, \d', str(value).strip()) else str(value)
+    if parsed.month == 1 and parsed.day == 1:
+        return parsed.strftime('%Y')
+    return parsed.strftime('%Y-%m-%d')
+
+
+def norman_year(value):
+    parsed = parse_norman_date(value)
+    if parsed is not None:
+        return parsed.strftime('%Y')
+    parsed = pd.to_datetime(value, errors='coerce')
+    return parsed.strftime('%Y') if pd.notna(parsed) else np.nan
+
+
+# Sheets use both 'Real Sample'/'Blank Sample' and the short 'Sample'/'Blank'/'QC'
+SAMPLE_TYPE_NAMES = {'Sample': 'Real Sample', 'Blank': 'Blank Sample', 'QC': 'QC Sample'}
+
+# Files CSV matrix -> SampleTypeSub1 (water types only; sediment, air, biota have no
+# matching SampleTypeSub1 and are described by ENVOEnvironmentMaterial / SampleType)
+MATRIX_TO_SAMPLETYPESUB1 = {'Surface water': 'water_surface', 'Wastewater': 'water_waste',
+                            'Groundwater': 'water_ground', 'Ground water': 'water_ground'}
+
+# Water body / habitat descriptions -> ENVO biome. 'Coastal region' is left out: it is
+# used for marine and for terrestrial coastal samples alike.
+HABITAT_TO_BIOME = {'marine environment': 'marine biome', 'marine water': 'marine biome',
+                    'coastal water': 'marine biome', 'river': 'freshwater river biome',
+                    'river water': 'freshwater river biome', 'lake': 'freshwater lake biome',
+                    'lake water': 'freshwater lake biome', 'transitional water': 'estuarine biome',
+                    'terrestrial environment': 'terrestrial biome'}
+
+# Species group (the number is NORMAN's term id) -> SampleType
+SPECIES_GROUP_TO_SAMPLETYPE = {'fish': 'animal', 'bird': 'animal', 'other': 'animal', 'molluscs': 'animal',
+                               'mussel': 'animal', 'adult mussel': 'animal', 'juvenile mussel': 'animal',
+                               'rat': 'animal', 'deer': 'animal', 'earthworm': 'animal', 'eggs': 'animal',
+                               'crab': 'animal', 'barnacle': 'animal', 'dab': 'animal',
+                               'vegetation': 'plant', 'macrophytes': 'plant', 'algae': 'algae'}
+VERTEBRATE_GROUPS = {'fish', 'bird', 'rat', 'deer', 'dab'}
+VERTEBRATE_DIVISIONS = {'Vertebrates', 'Mammals', 'Primates', 'Rodents'}
+PLANT_GROUPS = {'vegetation', 'macrophytes', 'algae'}
+
+COUNTRY_NAMES = {'UK': 'United Kingdom', 'England': 'United Kingdom', 'Scotland': 'United Kingdom',
+                 'Wales': 'United Kingdom', 'Northern Ireland': 'United Kingdom',
+                 'USA': 'United States of America', 'US': 'United States of America'}
+
+
+def species_group(value):
+    """'Fish (22486)' -> 'fish'"""
+    if pd.isna(value):
+        return ''
+    return re.sub(r'\s*\(\d+\)\s*$', '', str(value)).strip().lower()
+
+
+def tissue_for_group(tissue, group, division=None):
+    """NORMAN Tissue -> a body part label ReDU resolves; None keeps the original value.
+    'Muscle' alone is ambiguous in the ontology synonyms, so it is resolved by organism:
+    the NCBI division of the species if known, else the species group ('Other' mixes
+    mammals and invertebrates, so it falls back to the generic muscle tissue)."""
+    if pd.isna(tissue):
+        return None
+    t = str(tissue).strip().lower()
+    if t in ('muscle', 'muscel'):
+        if group in PLANT_GROUPS:
+            return ''
+        vertebrate = division in VERTEBRATE_DIVISIONS if division else group in VERTEBRATE_GROUPS
+        return 'skeletal muscle tissue' if vertebrate else 'muscle tissue'
+    if t in ('whole body', 'soft body'):
+        return 'multicellular organism'
+    if t == 'egg':
+        return 'shelled egg'
+    if t == 'leaves':
+        return 'leaf'
+    return None
+
+
+def load_species_names():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'translation_sheets', 'NORMAN_species_names.csv')
+    table = pd.read_csv(path, dtype=str)
+    return {k.strip().lower(): v.strip() for k, v in zip(table['name_in_source'], table['scientific_name'])}
+
+
+def scientific_name_candidates(value, species_names):
+    """Names to try for a 'Biota species name (in Latin)' value, most specific first:
+    curated common name / typo fix, 'Common, Latin', 'Common (Latin)', the raw value."""
+    s = str(value).strip()
+    candidates = []
+    if s.lower() in species_names:
+        candidates.append(species_names[s.lower()])
+    m = re.fullmatch(r'(.+?)\s*\(([^)]+)\)', s)
+    if m:
+        candidates += [species_names.get(m.group(2).strip().lower(), m.group(2).strip()),
+                       species_names.get(m.group(1).strip().lower(), '')]
+    if ',' in s:
+        latin = s.rsplit(',', 1)[1].strip()
+        candidates.append(species_names.get(latin.lower(), latin))
+    candidates.append(s)
+    return [c for c in candidates if c]
+
+
 def main(output_filename, study_id, **kwargs):
 
 
@@ -93,6 +218,8 @@ def main(output_filename, study_id, **kwargs):
     ENVOEnvironmentBiomeIndex_table = kwargs['ENVOEnvironmentBiomeIndex_table']
     ENVOEnvironmentMaterialIndex_table = kwargs['ENVOEnvironmentMaterialIndex_table']
     NCBIRankDivision_table = kwargs['NCBIRankDivision_table']
+    species_names = load_species_names()
+    division_by_taxid = dict(zip(NCBIRankDivision_table['TaxonID'].astype(str), NCBIRankDivision_table['NCBIDivision']))
 
 
     # Fetch the list of datasets
@@ -162,18 +289,17 @@ def main(output_filename, study_id, **kwargs):
                                             
 
                         df_metadata_sheet = df_metadata_sheet.rename(columns={'ID': 'sample_id', 'Sample type': 'sample_type'})
+                        df_metadata_sheet['sample_type'] = df_metadata_sheet['sample_type'].replace(SAMPLE_TYPE_NAMES)
+                        is_real = df_metadata_sheet['sample_type'] == 'Real Sample'
 
-                        # Pass the raw sampling date through unchanged; the shared
-                        # validation (complete_and_fill_REDU_table, 'datetime' handling)
-                        # normalises it to precision-preserving ISO-8601. Pre-forcing a
-                        # full m/d/Y H:M here would fabricate a day/time for year-only
-                        # values and emit literal 'NaT' for unparseable ones.
+                        # 'Mon, 07/01/2019 - 22:00' -> '2019-07-01' (date only, 01/01 placeholders
+                        # keep only the year); the shared validation then checks the ISO value
                         if 'Sampling date' in df_metadata_sheet.columns:
-                            df_metadata_sheet['SampleCollectionDateandTime'] = df_metadata_sheet['Sampling date'].astype(str)
+                            df_metadata_sheet['SampleCollectionDateandTime'] = df_metadata_sheet['Sampling date'].map(norman_collection_date)
 
-                        # in YearOfAnalysis reformat 2014-12-31 22:00 to 2014
+                        # in YearOfAnalysis reformat 'Sat, 11/27/1999 - 22:00' to 1999
                         if 'Analysis date' in df_metadata_sheet.columns:
-                            df_metadata_sheet['YearOfAnalysis'] = pd.to_datetime(df_metadata_sheet['Analysis date'], errors='coerce').dt.strftime('%Y').astype(str)
+                            df_metadata_sheet['YearOfAnalysis'] = df_metadata_sheet['Analysis date'].map(norman_year)
 
                         # Make LatitudeandLongitude column in format latitude and longitude separated by a |
                         if 'Latitude' in df_metadata_sheet.columns and 'Longitude' in df_metadata_sheet.columns:
@@ -221,6 +347,12 @@ def main(output_filename, study_id, **kwargs):
                                 ''
                                 )                                               
 
+                        # Biome from the water body / habitat of the sample
+                        for habitat_column in ['Type of Surface water', 'Origin of biota']:
+                            if habitat_column in df_metadata_sheet.columns:
+                                biome = df_metadata_sheet[habitat_column].astype('string').str.strip().str.lower().map(HABITAT_TO_BIOME)
+                                df_metadata_sheet['ENVOEnvironmentBiome_overwrite'] = np.where(is_real & biome.notna(), biome, '')
+
                         # Sediment overwrite if Origin of Sediment column exists
                         if 'Origin of Sediment' in df_metadata_sheet.columns:
                             df_metadata_sheet['ENVOEnvironmentMaterial_overwrite'] = np.where(
@@ -232,13 +364,30 @@ def main(output_filename, study_id, **kwargs):
                                 ''
                                 )
                         
-                        # NCBI Taxonomy overwrite if Biota species name (in Latin) column exists
+                        # Biota: SampleType from the species group (fish, birds, mussels -> animal, ...)
+                        groups = (df_metadata_sheet['Species group'].map(species_group) if 'Species group' in df_metadata_sheet.columns
+                                  else pd.Series('', index=df_metadata_sheet.index))
+                        if 'Species group' in df_metadata_sheet.columns:
+                            df_metadata_sheet['SampleType_overwrite'] = np.where(
+                                is_real, groups.map(SPECIES_GROUP_TO_SAMPLETYPE).fillna(''), '')
+
+                        # NCBI Taxonomy overwrite if Biota species name (in Latin) column exists.
+                        # The column also holds 'Common, Latin', 'Common (Latin)', common names
+                        # only and typos; candidates are tried in order against the allowed terms.
                         if 'Biota species name (in Latin)' in df_metadata_sheet.columns:
+                            def _taxonomy(org):
+                                if pd.isna(org):
+                                    return ''
+                                for candidate in scientific_name_candidates(org, species_names):
+                                    hit = get_taxonomy_id_from_name__allowedTerms(candidate, allowedTerm_dict = allowedTerm_dict)
+                                    if hit:
+                                        return hit
+                                return ''
 
                             df_metadata_sheet['NCBITaxonomy'] = np.where(
-                                df_metadata_sheet['sample_type'] == 'Real Sample',  
+                                is_real,
                                 df_metadata_sheet['Biota species name (in Latin)']
-                                .map({org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict)) for org in df_metadata_sheet['Biota species name (in Latin)'].unique()})
+                                .map({org: _taxonomy(org) for org in df_metadata_sheet['Biota species name (in Latin)'].unique()})
                                 .fillna(''),
                                 ''
                                 )
@@ -271,6 +420,14 @@ def main(output_filename, study_id, **kwargs):
                                 ''
                                 )
 
+
+                        # Resolve NORMAN tissue names ('Muscle', 'Muscel', 'Soft body', ...) by organism
+                        if 'Tissue' in df_metadata_sheet.columns:
+                            divisions = (df_metadata_sheet['NCBITaxonomy'].astype(str).str.split('|').str[0].map(division_by_taxid)
+                                         if 'NCBITaxonomy' in df_metadata_sheet.columns else pd.Series(np.nan, index=df_metadata_sheet.index))
+                            resolved = [tissue_for_group(t, g, d if isinstance(d, str) else None)
+                                        for t, g, d in zip(df_metadata_sheet['Tissue'], groups, divisions)]
+                            df_metadata_sheet['Tissue'] = [t if r is None else r for t, r in zip(df_metadata_sheet['Tissue'], resolved)]
 
                         # If Tissue exists renamethe column to UBERONBodyPartName
                         if 'Tissue' in df_metadata_sheet.columns:
@@ -310,9 +467,14 @@ def main(output_filename, study_id, **kwargs):
                             df_metadata_sheet.loc[df_metadata_sheet['Is Multicellular'] == True, 'SampleTypeSub1'] = 'tissue'
 
 
-                        # if Monitored country exists rename the column to Country
-                        if 'Monitored country' in df_metadata_sheet.columns:
-                            df_metadata_sheet = df_metadata_sheet.rename(columns={'Monitored country': 'Country'})
+                        # Country from 'Monitored country' (or 'field_country'), with UK/USA spelled
+                        # as in the vocabulary
+                        if 'Monitored country' in df_metadata_sheet.columns or 'field_country' in df_metadata_sheet.columns:
+                            country = df_metadata_sheet.get('Monitored country', pd.Series(np.nan, index=df_metadata_sheet.index))
+                            if 'field_country' in df_metadata_sheet.columns:
+                                country = country.fillna(df_metadata_sheet['field_country'])
+                            df_metadata_sheet = df_metadata_sheet.drop(columns=[c for c in ['Monitored country', 'field_country'] if c in df_metadata_sheet.columns])
+                            df_metadata_sheet['Country'] = country.astype('string').str.strip().replace(COUNTRY_NAMES)
 
 
                         nomran_sheets_for_single_dataset_sheets['Sample info'].append(df_metadata_sheet)
@@ -332,22 +494,33 @@ def main(output_filename, study_id, **kwargs):
                             print(f"URL: {download_url}")
                             continue
                         
+                        fileinfo_redu_sheet['sample_type'] = fileinfo_redu_sheet['sample_type'].replace(SAMPLE_TYPE_NAMES)
                         spectral_raw_files_sheet  = fileinfo_redu_sheet.copy()
 
                         spectral_raw_files_sheet = process_dataset_files(spectral_raw_files_sheet, internal_id=internal_id, uuid=uuid, filter_extensions=True)
                         spectral_raw_files_sheet = spectral_raw_files_sheet[['sample_id', 'file_names', 'USI']]
 
 
-                        fileinfo_redu_sheet = fileinfo_redu_sheet[required_columns]  
+                        matrix_type = (fileinfo_redu_sheet['matrix_type'] if 'matrix_type' in fileinfo_redu_sheet.columns
+                                       else pd.Series(np.nan, index=fileinfo_redu_sheet.index))
+                        fileinfo_redu_sheet = fileinfo_redu_sheet[required_columns].copy()
+                        is_real_file = fileinfo_redu_sheet['sample_type'] == 'Real Sample'
 
                         fileinfo_redu_sheet['SampleType'] = fileinfo_redu_sheet['sample_type'].replace({'Blank Sample': 'blank_extraction'})
-                        fileinfo_redu_sheet['SampleTypeSub1'] = fileinfo_redu_sheet['sample_type'].replace({'Blank Sample': 'blank_extraction'})          
+                        fileinfo_redu_sheet['SampleTypeSub1'] = np.where(
+                            is_real_file,
+                            fileinfo_redu_sheet['matrix'].map(MATRIX_TO_SAMPLETYPESUB1).fillna('Real Sample'),
+                            fileinfo_redu_sheet['sample_type'].replace({'Blank Sample': 'blank_extraction'}))
+
+                        # Biome from the matrix type ('River', 'Marine environment', ...)
+                        biome = matrix_type.astype('string').str.strip().str.lower().map(HABITAT_TO_BIOME)
+                        fileinfo_redu_sheet['ENVOEnvironmentBiome'] = np.where(is_real_file & biome.notna(), biome, '')
 
                         fileinfo_redu_sheet['ENVOEnvironmentMaterial'] = np.where(
                             fileinfo_redu_sheet['sample_type'] == 'Real Sample',  
                             fileinfo_redu_sheet['matrix']
-                            .map({'Wastewater': 'waste water', 'Groundwater': 'groundwater', 'Surface water': 'surface water', 'Sludge': 'sludge',
-                                  'Soil': 'soil', 'Sediment': 'sediment', 'Indoor Air': 'air', 'SPM': 'waterborne particulate matter',
+                            .map({'Wastewater': 'waste water', 'Groundwater': 'groundwater', 'Ground water': 'groundwater', 'Surface water': 'surface water', 'Sludge': 'sludge',
+                                  'Soil': 'soil', 'Sediment': 'sediment', 'Indoor Air': 'air', 'Air-Indoor': 'air', 'SPM': 'waterborne particulate matter',
                                   'Ambient Air': 'air', 'Workplace Air': 'air', 'Emission Air': 'air', 'Foodomics': 'food product'})
                             .fillna(''),
                             ''
@@ -529,8 +702,8 @@ def main(output_filename, study_id, **kwargs):
                         
 
                 
-                # Without samples, file info and raw files there is nothing to index for this dataset
-                missing_sheets = [name for name in ['Sample info', 'File info', 'Spectral raw files']
+                # Without file info and raw files there is nothing to index for this dataset
+                missing_sheets = [name for name in ['File info', 'Spectral raw files']
                                   if len(nomran_sheets_for_single_dataset_sheets[name]) == 0]
                 if missing_sheets:
                     message = f"Skipping dataset {internal_id}: no usable {', '.join(missing_sheets)}"
@@ -539,8 +712,13 @@ def main(output_filename, study_id, **kwargs):
                     continue
 
                 # Combine individual sheet types (instrument sheets are optional)
-                combined_sample_info = pd.concat(nomran_sheets_for_single_dataset_sheets['Sample info'], ignore_index=True)
                 combined_file_info = pd.concat(nomran_sheets_for_single_dataset_sheets['File info'], ignore_index=True)
+                if nomran_sheets_for_single_dataset_sheets['Sample info']:
+                    combined_sample_info = pd.concat(nomran_sheets_for_single_dataset_sheets['Sample info'], ignore_index=True)
+                else:
+                    # No usable Samples CSV: the Files CSV still gives sample type and matrix
+                    print(f"Dataset {internal_id}: no usable Samples CSV, using the Files CSV only")
+                    combined_sample_info = pd.DataFrame({'sample_id': combined_file_info['sample_id'].dropna().unique()})
                 combined_instrument_info = (pd.concat(nomran_sheets_for_single_dataset_sheets['Instrument info'], ignore_index=True)
                                             if nomran_sheets_for_single_dataset_sheets['Instrument info'] else None)
                 combined_instrument_setup_info = (pd.concat(nomran_sheets_for_single_dataset_sheets['Instrument setup'], ignore_index=True)
@@ -564,6 +742,9 @@ def main(output_filename, study_id, **kwargs):
                 
                 # Drop the overwrite columns
                 merged_df = merged_df.drop(columns=[col for col in merged_df.columns if col.endswith('_overwrite')])
+
+                # The biome is the broad-scale environmental context (MIxS env_broad_scale)
+                merged_df['ENVOBroadScale'] = merged_df['ENVOEnvironmentBiome']
 
                 # If ENVOEnvironmentMaterial has values other than "" or NA set SampleType to environmental if sample_type is "Real Sample"
                 merged_df['SampleType'] = np.where(

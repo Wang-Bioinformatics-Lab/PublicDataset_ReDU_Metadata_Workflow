@@ -277,7 +277,9 @@ def main():
         if content is None:
             failed_downloads.append(link)
             continue
-        file_name = os.path.join(args.output_metadata_folder, str(index) + "_gnps_metadata.tsv")
+        # The dataset accession leads the name so the harmonization step can recover it
+        # for files that lack a MassiveID column
+        file_name = os.path.join(args.output_metadata_folder, f"{msv_id}_{index}_gnps_metadata.tsv")
         file_paths["sys_name"].append(file_name)
         file_paths["svr_name"].append(link)
         with open(file_name,'wb') as f:

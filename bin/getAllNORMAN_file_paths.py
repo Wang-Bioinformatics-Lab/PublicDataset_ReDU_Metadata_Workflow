@@ -50,12 +50,23 @@ def process_dataset_files(
         print(f"Dataset {internal_id or '(unknown)'} missing columns: {missing_cols}. Skipping.")
         return pd.DataFrame(columns=["sample_id", "variable", "file_urls", "file_names", "file_paths", "USI"])
 
+    # files_per_collision_channel holds one mzML per fixed collision energy, as
+    # '<energy>\n:<url>' entries; each URL is a separate MS/MS file of the sample
+    melt_cols = list(file_cols)
+    if "files_per_collision_channel" in df_files.columns:
+        melt_cols.append("files_per_collision_channel")
+
     # reshape → one file per row
     df = (
-        df_files[["sample_id"] + file_cols]
+        df_files[["sample_id"] + melt_cols]
         .melt(id_vars=["sample_id"], value_name="file_urls")
         .dropna(subset=["file_urls"])
     )
+    is_ce = df["variable"] == "files_per_collision_channel"
+    if is_ce.any():
+        ce = df[is_ce].copy()
+        ce["file_urls"] = ce["file_urls"].astype(str).str.findall(r"https://\S+")
+        df = pd.concat([df[~is_ce], ce.explode("file_urls").dropna(subset=["file_urls"])], ignore_index=True)
     df = df[df["file_urls"].astype(str).str.strip() != ""]
 
     # filenames, paths, url

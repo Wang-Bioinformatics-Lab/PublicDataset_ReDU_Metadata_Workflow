@@ -1,4 +1,5 @@
 import argparse
+import math
 import pandas as pd
 import glob
 import re
@@ -7,7 +8,38 @@ import json
 from io import StringIO
 from REDU_conversion_functions import age_category, normalize_redu_datetime
 
-def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi = False, other_allowed_file_extensions = [], attempt_adding_file_extensions = False, **kwargs):
+def _canonical_term(value):
+    """Case-, space- and separator-insensitive form used to match submitted values to
+    allowed terms ('Male' -> 'male', 'methanol:water (7:3)' -> 'methanol-water (7:3)').
+    Ratios are reduced, so 'methanol-water (8:2)' matches 'methanol-water (4:1)'."""
+    s = str(value).strip().lower()
+    head, sep, tail = s.partition('(')
+    head = re.sub(r'\s*[:/]\s*', '-', head)
+    ratio = re.fullmatch(r'\s*(\d+(?::\d+)+)\s*\)(.*)', tail) if sep else None
+    if ratio:
+        parts = [int(x) for x in ratio.group(1).split(':')]
+        g = 0
+        for x in parts:
+            g = math.gcd(g, x)
+        if g > 1:
+            parts = [x // g for x in parts]
+        tail = ':'.join(str(x) for x in parts) + ')' + ratio.group(2)
+    return re.sub(r'\s+', '', head + sep + tail)
+
+
+# Lookups derived from the (large, unchanging) allowed-term lists, built once per run
+# instead of once per metadata file
+_LOOKUP_CACHE = {}
+
+
+def _cached(name, source, build):
+    key = (name, id(source), len(source))
+    if key not in _LOOKUP_CACHE:
+        _LOOKUP_CACHE[key] = build()
+    return _LOOKUP_CACHE[key]
+
+
+def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi = False, other_allowed_file_extensions = [], attempt_adding_file_extensions = False, case_insensitive_terms = False, **kwargs):
     """
     Completes and fills a REDU table with values based on a dictionary of allowed terms and missing values.
 
@@ -176,26 +208,41 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                     observed_value: next((allowed for allowed in allowed_terms if allowed.replace(" ", "") == str(observed_value).replace(" ", "")), missing_value)
                     for observed_value in unique_values
                 }
+                if case_insensitive_terms:
+                    # Fall back to a case/separator-insensitive match when it is unambiguous
+                    def _build_canonical(terms=allowed_terms):
+                        canonical = {}
+                        for allowed in terms:
+                            canonical.setdefault(_canonical_term(allowed), set()).add(allowed)
+                        return canonical
+                    canonical = _cached('canonical', allowed_terms, _build_canonical)
+                    for observed_value, mapped in value_map.items():
+                        if mapped == missing_value:
+                            hits = canonical.get(_canonical_term(observed_value), set())
+                            if len(hits) == 1:
+                                value_map[observed_value] = next(iter(hits))
 
 
             elif key in ['NCBITaxonomy', 'MassSpectrometer']:
                 if key == 'NCBITaxonomy':
                     # Build fast lookups from allowed terms: 'ID|Name'
-                    allowed_set = set(allowed_terms)
-                    allowed_by_id = {}
-                    allowed_by_name_ci = {}
                     # Names are not unique in NCBI (e.g. Bacillus the bacterium and the stick
                     # insect), so a shared name only resolves when the provided ID disambiguates it
-                    shared_names_ci = {}
-                    for t in allowed_terms:
-                        if "|" in t:
-                            tid, tname = t.split("|", 1)
-                            tid = tid.strip()
-                            tname = tname.strip().lower()
-                            allowed_by_id[tid] = t
-                            first = allowed_by_name_ci.setdefault(tname, t)
-                            if first != t:
-                                shared_names_ci.setdefault(tname, {first}).add(t)
+                    def _build_ncbi(terms=allowed_terms):
+                        allowed_by_id = {}
+                        allowed_by_name_ci = {}
+                        shared_names_ci = {}
+                        for t in terms:
+                            if "|" in t:
+                                tid, tname = t.split("|", 1)
+                                tid = tid.strip()
+                                tname = tname.strip().lower()
+                                allowed_by_id[tid] = t
+                                first = allowed_by_name_ci.setdefault(tname, t)
+                                if first != t:
+                                    shared_names_ci.setdefault(tname, {first}).add(t)
+                        return set(terms), allowed_by_id, allowed_by_name_ci, shared_names_ci
+                    allowed_set, allowed_by_id, allowed_by_name_ci, shared_names_ci = _cached('ncbi', allowed_terms, _build_ncbi)
                     division_by_id = {}
 
                     def name_hit(name, oid):
@@ -435,6 +482,145 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     return df[keys_to_include]
 
+# Values submitters commonly use for a term the vocabulary spells differently
+# (keys are lower case). Only mappings that do not change the meaning.
+_VALUE_SYNONYMS = {
+    'Country': {
+        'usa': 'United States of America', 'us': 'United States of America', 'u.s.a.': 'United States of America',
+        'u.s.': 'United States of America', 'united states': 'United States of America',
+        'uk': 'United Kingdom', 'u.k.': 'United Kingdom', 'great britain': 'United Kingdom',
+        'england': 'United Kingdom', 'scotland': 'United Kingdom', 'wales': 'United Kingdom',
+        'northern ireland': 'United Kingdom',
+    },
+    'SampleType': {
+        'standard': 'molecular_standards', 'culture_mamalian': 'culture_mammalian',
+        'deceased animal': 'animal', 'blank': 'blank_analysis', 'pool': 'pool_QC', 'qc': 'pool_QC',
+    },
+    'IonizationSourceAndPolarity': {
+        'heated electrospray ionization (positive)': 'electrospray ionization (positive)',
+        'heated electrospray ionization (negative)': 'electrospray ionization (negative)',
+        'heated electrospray ionization (alternating)': 'electrospray ionization (alternating)',
+    },
+    'ChromatographyAndPhase': {
+        'reverse phase (polar c18)': 'reverse phase (C18)',
+    },
+}
+
+# Prefixes of the first-generation ReDU template (e.g. 'ATTRIBUTE_Curated_SampleType',
+# 'Subject_BiologicalSex', 'Analysis_MassSpectrometer') in front of current field names
+_LEGACY_COLUMN_PREFIXES = ('ATTRIBUTE_Curated_', 'ATTRIBUTE_', 'Subject_', 'Analysis_', 'Study_', 'Curated_')
+
+_MISSING_LIKE = {'', 'nan', 'na', 'n/a', 'none', 'missing value', 'missing_value', 'not specified', 'not collected',
+                 'not applicable', 'not_applicable', 'ml import: not available', 'not available'}
+
+
+def _is_missing_like(value):
+    return str(value).strip().lower() in _MISSING_LIKE
+
+
+def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon_synonym_table=None,
+                            envo_tables=(), NCBIRankDivision_table=None):
+    """Repairs common, unambiguous deviations in submitted GNPS/ReDU metadata files before
+    validation, so the values are kept instead of being replaced by 'missing value'."""
+    df = df.copy()
+
+    # first-generation template column names -> current names
+    for column in list(df.columns):
+        if column in allowedTerm_dict:
+            continue
+        for prefix in _LEGACY_COLUMN_PREFIXES:
+            name = column[len(prefix):]
+            if column.startswith(prefix) and name in allowedTerm_dict and name not in df.columns:
+                df = df.rename(columns={column: name})
+                print(f"Renamed legacy column {column} -> {name}")
+                break
+
+    # files without a dataset column: the accession is known from the file name
+    if 'MassiveID' not in df.columns and dataset_accession:
+        df['MassiveID'] = dataset_accession
+        print(f"Added MassiveID {dataset_accession} from the file name")
+
+    def _ci_lookup(mapping, value):
+        return mapping.get(str(value).strip().lower())
+
+    for key, synonyms in _VALUE_SYNONYMS.items():
+        if key in df.columns:
+            df[key] = df[key].map(lambda v: _ci_lookup(synonyms, v) or v)
+
+    # SampleTypeSub1 values (e.g. biofluid, tissue, reference material_chemicalstandard)
+    # entered as SampleType: move them, and infer SampleType only when unambiguous
+    if 'SampleType' in df.columns:
+        sample_types = set(allowedTerm_dict['SampleType']['allowed_values'])
+        sub1_types = set(allowedTerm_dict['SampleTypeSub1']['allowed_values'])
+        if 'SampleTypeSub1' not in df.columns:
+            df['SampleTypeSub1'] = ''
+        is_sub1 = df['SampleType'].isin(sub1_types - sample_types) & df['SampleTypeSub1'].map(_is_missing_like)
+        if is_sub1.any():
+            moved = df.loc[is_sub1, 'SampleType']
+            df.loc[is_sub1, 'SampleTypeSub1'] = moved
+            prefix = moved.str.rsplit('_', n=1).str[0]
+            inferred = prefix.where(prefix.isin(sample_types) & (prefix != moved), '')
+            # biofluid/tissue: animal when the organism is an animal
+            if NCBIRankDivision_table is not None and 'NCBITaxonomy' in df.columns:
+                division = _cached('division', NCBIRankDivision_table, lambda: dict(zip(
+                    NCBIRankDivision_table['TaxonID'].astype(str), NCBIRankDivision_table['NCBIDivision'])))
+                animal_divisions = {'Primates', 'Rodents', 'Mammals', 'Vertebrates', 'Invertebrates'}
+                taxid = df.loc[is_sub1, 'NCBITaxonomy'].astype(str).str.split('|').str[0].str.strip()
+                is_animal = taxid.map(division).isin(animal_divisions)
+                inferred = inferred.mask(moved.isin(['biofluid', 'tissue']) & is_animal, 'animal')
+            df.loc[is_sub1, 'SampleType'] = inferred
+            print(f"Moved {is_sub1.sum()} SampleTypeSub1 values out of SampleType")
+
+    # 'healthy' entered as a disease
+    if 'DOIDCommonName' in df.columns:
+        healthy = df['DOIDCommonName'].astype(str).str.strip().str.lower() == 'healthy'
+        if healthy.any():
+            if 'HealthStatus' not in df.columns:
+                df['HealthStatus'] = ''
+            no_status = df['HealthStatus'].map(_is_missing_like)
+            df.loc[healthy & no_status, 'HealthStatus'] = 'healthy'
+            df.loc[healthy, 'DOIDCommonName'] = ''
+
+    # 'lat | lon' with spaces, Excel float years
+    if 'LatitudeandLongitude' in df.columns:
+        df['LatitudeandLongitude'] = df['LatitudeandLongitude'].astype(str).str.replace(r'\s*\|\s*', '|', regex=True).str.strip()
+    if 'YearOfAnalysis' in df.columns:
+        df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str).str.replace(r'^\s*(\d{4})\.0+\s*$', r'\1', regex=True)
+
+    # UBERON: exact synonyms and case variants of labels -> label
+    if uberon_synonym_table is not None and 'UBERONBodyPartName' in df.columns:
+        labels = _cached('uberon_labels', uberon_synonym_table,
+                         lambda: set(allowedTerm_dict['UBERONBodyPartName']['allowed_values']))
+
+        def _build_to_labels():
+            to_labels = {}
+            for label, synonym in zip(uberon_synonym_table['Label'].astype(str), uberon_synonym_table['Synonym'].astype(str)):
+                if label in labels:
+                    to_labels.setdefault(label.strip().lower(), set()).add(label)
+                    # short synonyms are abbreviations ('NA' = nasal artery) that collide
+                    # with placeholders, so only longer synonyms are used
+                    if len(synonym.strip()) > 3:
+                        to_labels.setdefault(synonym.strip().lower(), set()).add(label)
+            return to_labels
+        to_labels = _cached('uberon_synonyms', uberon_synonym_table, _build_to_labels)
+        df['UBERONBodyPartName'] = df['UBERONBodyPartName'].map(
+            lambda v: v if v in labels or _is_missing_like(v) else (
+                next(iter(to_labels[str(v).strip().lower()]))
+                if len(to_labels.get(str(v).strip().lower(), ())) == 1 else v))
+
+    # ENVO fields given as ontology IDs (ENVO:00000446) -> label
+    envo_by_id = {}
+    for table in envo_tables:
+        index_column = [c for c in table.columns if c.endswith('Index')][0]
+        for index, label in zip(table[index_column].astype(str), table['Label'].astype(str)):
+            envo_by_id[index.replace('_', ':')] = label
+    for key in ['ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale']:
+        if key in df.columns:
+            df[key] = df[key].map(lambda v: envo_by_id.get(str(v).strip(), v))
+
+    return df
+
+
 def process_filename(filename):
     path_parts = filename.split('/')
     for part in path_parts:
@@ -490,6 +676,9 @@ if __name__ == '__main__':
     NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)
     NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
 
+    # all synonyms (the table above keeps one row per label)
+    uberon_synonym_table = pd.read_csv(args.path_to_uberon_cl_po_csv, index_col=False, dtype=str)
+
 
     print('Starting tsv processing.')
     #for file_path in glob.glob(f"{args.path_to_github_metadata}/redu_*.tsv"):
@@ -516,6 +705,14 @@ if __name__ == '__main__':
             if 'ATTRIBUTE_DatasetAccession' in df.columns:
                 df.rename(columns={'ATTRIBUTE_DatasetAccession': 'MassiveID'}, inplace=True)
 
+            # GitHub files are named <MSV>.tsv, MassIVE downloads <MSV>_<n>_gnps_metadata.tsv
+            accession = re.match(r'(MSV\d+)', os.path.basename(file_path))
+            df = normalize_gnps_metadata(df, allowed_terms,
+                                         dataset_accession=accession.group(1) if accession else None,
+                                         uberon_synonym_table=uberon_synonym_table,
+                                         envo_tables=(ENVOEnvironmentBiomeIndex_table, ENVOEnvironmentMaterialIndex_table),
+                                         NCBIRankDivision_table=NCBIRankDivision_table)
+
             #generate extra columns, add missing columns and remove values which are not in allowed terms
             df = complete_and_fill_REDU_table(df, 
                                               allowed_terms, 
@@ -524,7 +721,8 @@ if __name__ == '__main__':
                                               NCBIRankDivision_table=NCBIRankDivision_table,
                                               ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                               ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
-                                              attempt_adding_file_extensions=True)
+                                              attempt_adding_file_extensions=True,
+                                              case_insensitive_terms=True)
             
             if len(df) > 0:
             
