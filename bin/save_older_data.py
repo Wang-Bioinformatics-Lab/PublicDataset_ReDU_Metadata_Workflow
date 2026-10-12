@@ -16,12 +16,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     df_current = pd.read_csv(args.input_new_data, dtype=str, sep = '\t')
+    # Only a missing/empty older file means "no history"; any other read error must fail
+    # the run rather than silently discarding all older data.
     try:
         df_older = pd.read_csv(args.older_data, dtype=str, sep = '\t')
-        #use re.sub(r'\?VersionId.*', '', value) to alter USI values if DataSource is NORMAN
-        df_older.loc[df_older['DataSource'] == 'NORMAN', 'USI'] = df_older.loc[df_older['DataSource'] == 'NORMAN', 'USI'].apply(lambda x: re.sub(r'\?VersionId.*', '', x))
-    except:
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        print(f"No older data found at {args.older_data}, continuing without it")
         df_older = pd.DataFrame()
+    if 'DataSource' in df_older.columns:
+        #strip ?VersionId... from USI values if DataSource is NORMAN
+        is_norman = df_older['DataSource'] == 'NORMAN'
+        df_older.loc[is_norman, 'USI'] = df_older.loc[is_norman, 'USI'].str.replace(r'\?VersionId.*', '', regex=True)
 
     df_merged = pd.concat([df_current, df_older], ignore_index=True)
 
@@ -52,8 +57,11 @@ if __name__ == "__main__":
             df_merged = df_merged.drop(index=stale).reset_index(drop=True)
             print(f"MetaboLights stale-path rows dropped: {len(stale)}")
 
-    #unique by USI column
-    df_merged["USI_noext"] = df_merged["USI"].str.replace(r"(\.[^.]+)+$", "", regex=True)
+    #unique by USI column, ignoring the file extension (e.g. x.raw vs x.mzML). Only known
+    #MS file extensions are stripped: dots elsewhere in folder or file names (e.g.
+    #'S.epidermidis/A.mzML', 'QC_1.5uL.mzML') belong to the identity of the file.
+    df_merged["USI_noext"] = df_merged["USI"].str.replace(
+        r"(\.(mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|d|gz|zip))+$", "", regex=True, case=False)
     df_merged = df_merged.drop_duplicates(subset=["USI_noext"]).drop(columns=["USI_noext"])
 
 

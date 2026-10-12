@@ -170,8 +170,7 @@ process mlFiles {
 
     """
     python $TOOL_FOLDER/getAllMetabolights_file_paths.py \
-    --output_filename MetabolightsFilePaths_ALL.tsv \
-    --user_token e6db13e8-bfa7-452c-83dd-92ddf10677c1
+    --output_filename MetabolightsFilePaths_ALL.tsv
     """
 }
 
@@ -201,8 +200,6 @@ process normanRun {
     conda "$TOOL_FOLDER/conda_env.yml"
 
     publishDir "./nf_output", mode: 'copy'
-
-    errorStrategy 'ignore'
 
     input:
     path uberon_po_cl_csv_path

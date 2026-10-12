@@ -462,13 +462,13 @@ def main(output_filename, study_id, **kwargs):
                                 instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('c18') & 
                                                         ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (C18)'
                                 instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('c8') & 
-                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += 'reverse phase (C8)'
+                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (C8)'
                                 instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('c30') & 
-                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += 'reverse phase (C30)'
+                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (C30)'
 
                                 # If 'ChromatographyAndPhase' has 'reverse phase' but no specific type, append '(NOS)'
                                 instrumentsetup_sheet.loc[instrumentsetup_sheet['ChromatographyAndPhase'].str.contains('reverse phase') & 
-                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] += 'reverse phase (NOS)'
+                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (NOS)'
 
                                 # Ensure HILIC is not combined with C18, C8, or C30
                                 instrumentsetup_sheet.loc[
@@ -583,7 +583,10 @@ def main(output_filename, study_id, **kwargs):
         combined_df.to_csv(output_filename, sep='\t', index=False)
         print(f"\nCombined data saved to {output_filename}")
     else:
+        # Still write an (empty) output so the workflow can merge the other sources and
+        # carry the previous NORMAN rows forward
         print("No file data found across datasets.")
+        open(output_filename, 'w').close()
 
     # Print errors 
     if errors:

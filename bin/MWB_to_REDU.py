@@ -156,7 +156,7 @@ def get_enviromental_water(x):
             return ['environmental', 'water_ground']
         if 'storm' in x:
             return ['environmental', 'water_storm']
-        if 'sea' in x or 'ocean' in x or 'coast':
+        if 'sea' in x or 'ocean' in x or 'coast' in x:
             return ['environmental', 'water_seawater']
         else:
             return [None, None]
@@ -416,6 +416,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df_additional['Key'] = df_additional['Key'].str.lower()
 
     print(f"Rest length is {len(rest_response)}")
+    df_rest = pd.DataFrame(columns=['ID', 'Study ID', 'MB Sample ID', 'Local Sample ID', 'Factor Name', 'Factor Value', 'raw_data_source'])
     if len(rest_response) > 0:
         data_list = []
         for id, item in rest_response.items():
@@ -455,6 +456,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     df_rest['script_id'] = df_rest.groupby('Local Sample ID').ngroup()
 
     # Appending rows from `df` to `df_rest` where raw_data is missing
+    new_rows = []
     for _, row in df_filtered.iterrows():
         if not df_rest[(df_rest['Local Sample ID'] == row['filename']) & (df_rest['Factor Name'] == 'raw_data')]['Factor Value'].any():
             
@@ -470,7 +472,9 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                     'script_id': row['script_id'],
                     'raw_data_source': 'mwTab'
                 }
-                df_rest = df_rest.append(new_row, ignore_index=True)
+                new_rows.append(new_row)
+    if new_rows:
+        df_rest = pd.concat([df_rest, pd.DataFrame(new_rows)], ignore_index=True)
 
     df_rest['SubjectIdentifierAsRecorded'] = ""
 
@@ -1706,6 +1710,7 @@ if __name__ == '__main__':
         study_list = list(set(study_list))
 
         all_results_list = []
+        failed_studies = []
         for study_id in tqdm(study_list):
             print("Processing ", study_id)
 
@@ -1720,13 +1725,15 @@ if __name__ == '__main__':
                                           ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
                                           polarity_table=polarity_table,
                                           NCBIRankDivision_table=NCBIRankDivision_table)
-                print('Extracted information for {} samples.'.format(len(result)))
-                if len(result) > 1:
+                if result is not None and len(result) > 0:
+                    print('Extracted information for {} samples.'.format(len(result)))
                     all_results_list.append(result)
             except KeyboardInterrupt:
                 raise
-            except:
-                pass
+            except Exception as e:
+                print(f"Failed to process {study_id}: {type(e).__name__}: {e}")
+                failed_studies.append(study_id)
+        print(f"{len(failed_studies)} of {len(study_list)} studies failed to process")
         merged_df = pd.concat(all_results_list, ignore_index=True)
         merged_df.to_csv('REDU_from_MWB_all.tsv', sep='\t', index=False, header=True)
 
