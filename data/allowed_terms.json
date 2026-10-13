@@ -814,7 +814,7 @@
         "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) formula which generates massive ID number & SubjectID",
-        "example": "MSV000080673_1527",
+        "example": "MSV000080673_subject_1",
         "source": "-",
         "allowed_values": [
             "00"
@@ -1002,7 +1002,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment biome.",
-        "example": "ENVO:00000446",
+        "example": "ENVO:00000873",
         "source": "-",
         "allowed_values": []
     },
@@ -1011,7 +1011,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment material.",
-        "example": "ENVO:00002007",
+        "example": "ENVO:00001998",
         "source": "-",
         "allowed_values": []
     },
@@ -1020,7 +1020,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOLocalScale.",
-        "example": "soil",
+        "example": "ENVO:00000873",
         "source": "",
         "allowed_values": []
     },
@@ -1029,7 +1029,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOBroadScale.",
-        "example": "soil",
+        "example": "ENVO:00000873",
         "source": "",
         "allowed_values": []
     },
@@ -1038,7 +1038,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOMediumScale.",
-        "example": "soil",
+        "example": "ENVO:00001998",
         "source": "",
         "allowed_values": []
     },
