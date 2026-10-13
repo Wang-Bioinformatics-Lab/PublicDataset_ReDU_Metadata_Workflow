@@ -16,6 +16,39 @@ params.old_redu = './data/empty_redu.tsv'
 params.source_timeout = '20h'
 
 
+// First step: sets up all reference data in data/ (ontologies, NCBI taxonomy, MASST
+// tables) as listed in data/reference_data.json. Files already present in the listed
+// version are kept; missing, outdated or unrecorded files (e.g. from an earlier manual
+// get_data.sh run) are downloaded. Outputs are links to the files in data/.
+process fetchReferenceData {
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    // always check the sources, also with -resume
+    cache false
+
+    output:
+    path 'uberon.owl', emit: uberon
+    path 'po.owl', emit: po
+    path 'cl.owl', emit: cl
+    path 'doid.owl', emit: doid
+    path 'ms.owl', emit: ms
+    path 'biome-hierarchy.owl', emit: biome
+    path 'material-hierarchy.owl', emit: material
+    path 'microbe_masst_table.csv', emit: microbe_masst
+    path 'plant_masst_table.csv', emit: plant_masst
+    path 'names.dmp', emit: names
+    path 'nodes.dmp', emit: nodes
+    path 'division.dmp', emit: division
+    path 'hp.obo', emit: hp
+    path 'ecto.obo', emit: ecto
+    path 'peco.obo', emit: peco
+
+    """
+    python $TOOL_FOLDER/fetch_reference_data.py $DATA_FOLDER/reference_data.json $DATA_FOLDER --link_dir .
+    """
+}
+
+
 process updateAllowedTerms {
     publishDir "./nf_output", mode: 'copy'
 
@@ -32,6 +65,9 @@ process updateAllowedTerms {
     path ms_owl
     path material_owl
     path biome_owl
+    path hp_obo
+    path ecto_obo
+    path peco_obo
 
     output:
     file 'allowed_terms.json'
@@ -46,7 +82,10 @@ process updateAllowedTerms {
     --path_to_doid_owl ${doid_owl} \
     --path_to_ms_owl ${ms_owl} \
     --path_to_material_envs_owl ${material_owl} \
-    --path_to_biome_envs_owl ${biome_owl}
+    --path_to_biome_envs_owl ${biome_owl} \
+    --path_to_hp_obo ${hp_obo} \
+    --path_to_ecto_obo ${ecto_obo} \
+    --path_to_peco_obo ${peco_obo}
     """
 }
 
@@ -297,6 +336,9 @@ process prepare_ontologies {
     path material_owl
     path nodes_dmp
     path division_dmp
+    path hp_obo
+    path ecto_obo
+    path peco_obo
 
     output:
     path 'UBERON_CL_PO_ontology.csv'
@@ -304,6 +346,8 @@ process prepare_ontologies {
     path 'ENVO_biome_ontology.csv'
     path 'ENVO_material_ontology.csv'
     path 'NCBI_Rank_Division.csv'
+    path 'HPO_ontology.csv'
+    path 'Exposure_ontology.csv'
 
     """
     python $TOOL_FOLDER/prepare_ontologies.py \
@@ -314,7 +358,10 @@ process prepare_ontologies {
     --path_to_biome_envs_owl ${biome_owl} \
     --path_to_material_envs_owl ${material_owl} \
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
-    --path_to_ncbi_division_dmp ${division_dmp}
+    --path_to_ncbi_division_dmp ${division_dmp} \
+    --path_to_hp_obo ${hp_obo} \
+    --path_to_ecto_obo ${ecto_obo} \
+    --path_to_peco_obo ${peco_obo}
     """
 }
 
@@ -401,31 +448,6 @@ process gnpsInstruments {
     """
 }
 
-
-// The MASST tables grow with every new MASST-indexed dataset, so they are fetched on
-// each run; the copies in data/ (from get_data.sh) are only a fallback
-process fetchMasstTables {
-    input:
-    path microbe_masst_fallback, stageAs: 'fallback/microbe_masst_table.csv'
-    path plant_masst_fallback, stageAs: 'fallback/plant_masst_table.csv'
-
-    output:
-    path 'microbe_masst_table.csv'
-    path 'plant_masst_table.csv'
-
-    """
-    for table in microbe_masst_table plant_masst_table; do
-        if curl -fsSL --retry 3 --max-time 600 -o \${table}.part \
-            https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/\${table}.csv \
-            && [ -s \${table}.part ]; then
-            mv \${table}.part \${table}.csv
-        else
-            echo "WARNING: could not fetch \${table}.csv; using the copy in data/" >&2
-            cp fallback/\${table}.csv \${table}.csv
-        fi
-    done
-    """
-}
 
 // Getting microbmemasst data and putting it in a tentaive redu format
 process MASST_to_REDU {
@@ -557,22 +579,21 @@ process enrich_ncbi_information {
 }
 
 
-// Reference data fetched by data/get_data.sh; fail early with a clear message if it is missing
+// Files tracked in data/ (allowed terms seed); fail early with a clear message if one is missing
 def dataFile(name) {
     file("$DATA_FOLDER/$name", checkIfExists: true)
 }
 
 workflow {
 
-    //  Prepare ontologies
-    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division) = prepare_ontologies(
-        dataFile('uberon.owl'), dataFile('cl.owl'), dataFile('po.owl'), dataFile('doid.owl'),
-        dataFile('biome-hierarchy.owl'), dataFile('material-hierarchy.owl'),
-        dataFile('nodes.dmp'), dataFile('division.dmp'))
+    //  Reference data, then ontologies
+    ref = fetchReferenceData()
+    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, hpo_onto, exposure_onto) = prepare_ontologies(
+        ref.uberon, ref.cl, ref.po, ref.doid, ref.biome, ref.material,
+        ref.nodes, ref.division, ref.hp, ref.ecto, ref.peco)
     allowed_terms = updateAllowedTerms(
-        dataFile('allowed_terms.json'), dataFile('names.dmp'), dataFile('uberon.owl'), dataFile('po.owl'),
-        dataFile('cl.owl'), dataFile('doid.owl'), dataFile('ms.owl'),
-        dataFile('material-hierarchy.owl'), dataFile('biome-hierarchy.owl'))
+        dataFile('allowed_terms.json'), ref.names, ref.uberon, ref.po, ref.cl, ref.doid, ref.ms,
+        ref.material, ref.biome, ref.hp, ref.ecto, ref.peco)
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
@@ -581,10 +602,8 @@ workflow {
     gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
     // MicrobeMASST and PlantMASST
-    (microbe_masst_table, plant_masst_table) = fetchMasstTables(
-        dataFile('microbe_masst_table.csv'), dataFile('plant_masst_table.csv'))
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
-        microbe_masst_table, plant_masst_table, dataFile('nodes.dmp'))
+        ref.microbe_masst, ref.plant_masst, ref.nodes)
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench

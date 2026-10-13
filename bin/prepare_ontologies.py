@@ -7,6 +7,7 @@ import tqdm
 import os
 import argparse
 import json
+from obo_tables import hpo_table, exposure_table
 
 # owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
 # declares an IRI as both a property and a class/individual. Patch _load_properties
@@ -161,6 +162,9 @@ if __name__ == '__main__':
     parser.add_argument('--path_to_material_envs_owl')
     parser.add_argument('--path_to_ncbi_nodes_dmp')
     parser.add_argument('--path_to_ncbi_division_dmp')
+    parser.add_argument('--path_to_hp_obo', default='none')
+    parser.add_argument('--path_to_ecto_obo', default='none')
+    parser.add_argument('--path_to_peco_obo', default='none')
 
     args = parser.parse_args()
 
@@ -199,6 +203,11 @@ if __name__ == '__main__':
 
 
 
+    # health conditions (HPO) and exposures (ECTO, PECO); empty tables if a file is missing
+    print('Processing HPO, ECTO and PECO,..')
+    hpo_ontology_table = hpo_table(args.path_to_hp_obo)
+    exposure_ontology_table = exposure_table(args.path_to_ecto_obo, args.path_to_peco_obo)
+
     #create ncbi - rank - division sheet
     print('Loading and processing NCBI rank file,..')
     df_ncbi_rank = pd.read_csv(args.path_to_ncbi_nodes_dmp, sep='\t\|\t', engine='python', header=None, index_col=False, comment='#')
@@ -221,6 +230,8 @@ if __name__ == '__main__':
 
     uberon_ontology_table.to_csv('UBERON_CL_PO_ontology.csv', index=False)
     doid_ontology_table.to_csv('DOID_ontology.csv', index=False)
+    hpo_ontology_table.to_csv('HPO_ontology.csv', index=False)
+    exposure_ontology_table.to_csv('Exposure_ontology.csv', index=False)
     envBiome_onto.to_csv('ENVO_biome_ontology.csv', index=False)
     envMaterial_onto.to_csv('ENVO_material_ontology.csv', index=False)
     df_ncbi_rank_divisions.to_csv('NCBI_Rank_Division.csv', index=False)

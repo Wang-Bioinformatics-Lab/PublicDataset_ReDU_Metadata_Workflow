@@ -1,0 +1,11 @@
+# reference data downloaded by bin/fetch_reference_data.py (see reference_data.json)
+*.owl
+*.obo
+*.dmp
+*.part
+taxdmp.zip
+microbe_masst_table.csv
+plant_masst_table.csv
+.reference_data_state.json
+.reference_data.lock
+get_data.log

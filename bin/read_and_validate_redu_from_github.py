@@ -80,6 +80,16 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     
     doid_ontology_table['Label'] = doid_ontology_table['Label'].astype(str)
 
+    #prepare HPO (health conditions) and exposure (ECTO/PECO) tables
+    hpo_ontology_table = kwargs.get('HPOOntologyIndex_table')
+    if hpo_ontology_table is None:
+        hpo_ontology_table = pd.DataFrame(columns=['Label', 'HPOOntologyIndex'])
+    hpo_ontology_table['Label'] = hpo_ontology_table['Label'].astype(str)
+    exposure_ontology_table = kwargs.get('ExposureIndex_table')
+    if exposure_ontology_table is None:
+        exposure_ontology_table = pd.DataFrame(columns=['Label', 'ExposureIndex'])
+    exposure_ontology_table['Label'] = exposure_ontology_table['Label'].astype(str)
+
     #prepare environment biome table
     if 'ENVOEnvironmentBiomeIndex_table' in kwargs.keys():
         envome_biome_ontology_table = kwargs['ENVOEnvironmentBiomeIndex_table']
@@ -176,7 +186,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         # blanks, pooled QCs and standards are not samples of the study's subjects/organisms
         mask = df['SampleType'].str.contains('blank', case=False) | \
             df['SampleType'].isin(['pool_QC', 'reference material', 'molecular_standards'])
-        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
+        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
         df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
         if '_recorded_LifeStage' in df.columns:
             df.loc[mask, '_recorded_LifeStage'] = ''
@@ -438,6 +448,16 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'DOIDOntologyIndex':
                 df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']].drop_duplicates('Label'), left_on='DOIDCommonName', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
+            if key == 'HPOOntologyIndex':
+                if 'HPOCommonName' not in df.columns:
+                    df['HPOCommonName'] = allowedTerm_dict.get('HPOCommonName', {}).get('missing', missing_value)
+                df = df.merge(hpo_ontology_table[['Label', 'HPOOntologyIndex']].drop_duplicates('Label'), left_on='HPOCommonName', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'ExposureIndex':
+                if 'Exposure' not in df.columns:
+                    df['Exposure'] = allowedTerm_dict.get('Exposure', {}).get('missing', missing_value)
+                df = df.merge(exposure_ontology_table[['Label', 'ExposureIndex']].drop_duplicates('Label'), left_on='Exposure', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOEnvironmentBiomeIndex':
                 df = df.merge(envome_biome_ontology_table[['Label', 'ENVOEnvironmentBiomeIndex']].drop_duplicates('Label'), left_on='ENVOEnvironmentBiome', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
@@ -476,7 +496,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     # ontology indexes of unmatched labels come out of the merges as NaN
     for key, value in allowedTerm_dict.items():
-        if key.endswith('OntologyIndex') or (key.startswith('ENVO') and key.endswith('Index')):
+        if key.endswith('OntologyIndex') or key == 'ExposureIndex' or (key.startswith('ENVO') and key.endswith('Index')):
             if key in df.columns:
                 df[key] = df[key].fillna(value['missing']).replace('', value['missing'])
 
@@ -494,7 +514,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     
     columns_to_consider = ["SampleType", "SampleTypeSub1", "NCBITaxonomy", "UBERONBodyPartName", "BiologicalSex", 
                            "AgeInYears", "LifeStage", "Country", "HealthStatus", "SampleExtractionMethod", 
-                           "SampleCollectionMethod", "ComorbidityListDOIDIndex", "DOIDCommonName", 
+                           "SampleCollectionMethod", "ComorbidityListDOIDIndex", "DOIDCommonName", "HPOCommonName", "Exposure", 
                            "DepthorAltitudeMeters", "HumanPopulationDensity", "LatitudeandLongitude",
                            "ENVOEnvironmentBiome", "ENVOEnvironmentMaterial"]
     

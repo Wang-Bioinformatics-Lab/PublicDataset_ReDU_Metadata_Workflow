@@ -523,6 +523,24 @@
             "DOID:526|DOID:635"
         ]
     },
+    "HPOCommonName": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "A health condition or phenotype of the subject that is not a disease, e.g. sepsis, cachexia or acute kidney injury. Diseases go to DOIDCommonName. Terms are the labels of the 'Phenotypic abnormality' branch of the Human Phenotype Ontology (HPO); you can find all allowed terms in the resource link.",
+        "example": "Sepsis",
+        "source": "https://www.ebi.ac.uk/ols4/ontologies/hp (terms below HP:0000118 'Phenotypic abnormality')",
+        "allowed_values": []
+    },
+    "Exposure": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "What the subject was exposed to, as an experimental treatment or as an environmental or lifestyle exposure, e.g. exposure to ozone or exposure to particulate matter. Terms are the labels of the Environmental Conditions, Treatments and Exposures Ontology (ECTO); for plants also of the Plant Experimental Conditions Ontology (PECO). You can find all allowed terms in the resource links.",
+        "example": "exposure to ozone",
+        "source": "ECTO: https://www.ebi.ac.uk/ols4/ontologies/ecto \nPECO: https://www.ebi.ac.uk/ols4/ontologies/peco",
+        "allowed_values": []
+    },
     "SampleCollectionDateandTime": {
         "generate": "False",
         "type": "general",
@@ -834,6 +852,24 @@
         "description": "(automatically generated) The index of the DOID common name.",
         "example": "DOID:9351",
         "source": "-",
+        "allowed_values": []
+    },
+    "HPOOntologyIndex": {
+        "generate": "True",
+        "type": "generated",
+        "missing": "missing value",
+        "description": "(automatically generated) The index of the HPO common name.",
+        "example": "HP:0100806",
+        "source": "https://www.ebi.ac.uk/ols4/ontologies/hp",
+        "allowed_values": []
+    },
+    "ExposureIndex": {
+        "generate": "True",
+        "type": "generated",
+        "missing": "missing value",
+        "description": "(automatically generated) The index of the exposure term (ECTO or PECO).",
+        "example": "ECTO:9000052",
+        "source": "ECTO: https://www.ebi.ac.uk/ols4/ontologies/ecto \nPECO: https://www.ebi.ac.uk/ols4/ontologies/peco",
         "allowed_values": []
     },
     "NCBIRank": {

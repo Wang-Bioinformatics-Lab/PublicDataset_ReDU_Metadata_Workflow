@@ -3,6 +3,7 @@ import argparse
 import json
 from REDU_conversion_functions import get_uberon_table
 from REDU_conversion_functions import get_ontology_table
+from obo_tables import hpo_table, exposure_table
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='update allowed terms json')
@@ -15,6 +16,9 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_ms_owl', default = 'none')
     parser.add_argument('--path_to_biome_envs_owl', default = 'none')
     parser.add_argument('--path_to_material_envs_owl', default = 'none')
+    parser.add_argument('--path_to_hp_obo', default = 'none')
+    parser.add_argument('--path_to_ecto_obo', default = 'none')
+    parser.add_argument('--path_to_peco_obo', default = 'none')
     args = parser.parse_args()
 
     #ncbi_dump can be downloaded from https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip 
@@ -156,6 +160,25 @@ if __name__ == "__main__":
         allowedTerm_dict['DOIDOntologyIndex']['allowed_values'] = unique_doid_indexes
 
 
+
+    #hp_obo, ecto_obo and peco_obo: http://purl.obolibrary.org/obo/{hp,ecto,peco}.obo (fetched by the workflow)
+    if args.path_to_hp_obo != 'none':
+        print('Updating HPO health conditions!')
+        hpo_df = hpo_table(args.path_to_hp_obo)
+        if len(hpo_df) > 0:
+            allowedTerm_dict['HPOCommonName']['allowed_values'] = hpo_df['Label'].unique().tolist()
+            allowedTerm_dict['HPOOntologyIndex']['allowed_values'] = hpo_df['HPOOntologyIndex'].unique().tolist()
+        else:
+            print('WARNING: no HPO terms found, HPOCommonName keeps its previous allowed values')
+
+    if args.path_to_ecto_obo != 'none' or args.path_to_peco_obo != 'none':
+        print('Updating exposures!')
+        exposure_df = exposure_table(args.path_to_ecto_obo, args.path_to_peco_obo)
+        if len(exposure_df) > 0:
+            allowedTerm_dict['Exposure']['allowed_values'] = exposure_df['Label'].unique().tolist()
+            allowedTerm_dict['ExposureIndex']['allowed_values'] = exposure_df['ExposureIndex'].unique().tolist()
+        else:
+            print('WARNING: no ECTO/PECO terms found, Exposure keeps its previous allowed values')
 
     if args.path_to_ms_owl != 'none':
 

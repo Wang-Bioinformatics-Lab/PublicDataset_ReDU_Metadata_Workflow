@@ -1,0 +1,19 @@
+{
+    "_comment": "Reference data the workflow needs in data/. Fetched automatically by the first workflow step (bin/fetch_reference_data.py). 'pinned': the file is replaced only when 'url' changes here, so bump the URL to update. 'latest': re-downloaded when the server reports a new version (ETag / Last-Modified / size). 'required': false means the workflow runs without it (the column it feeds stays empty).",
+    "files": [
+        {"name": "uberon.owl", "url": "http://aber-owl.net/media/ontologies/UBERON/311/uberon.owl", "mode": "pinned", "check": "owl", "required": true},
+        {"name": "po.owl", "url": "http://aber-owl.net/media/ontologies/PO/29/po.owl", "mode": "pinned", "check": "owl", "required": true},
+        {"name": "cl.owl", "url": "http://aber-owl.net/media/ontologies/CL/120/cl.owl", "mode": "pinned", "check": "owl", "required": true},
+        {"name": "doid.owl", "url": "http://aber-owl.net/media/ontologies/DOID/706/doid.owl", "mode": "pinned", "check": "owl", "required": true},
+        {"name": "ms.owl", "url": "http://aber-owl.net/media/ontologies/MS/237/ms.owl", "mode": "pinned", "check": "owl", "required": true},
+        {"name": "biome-hierarchy.owl", "url": "https://raw.githubusercontent.com/EnvironmentOntology/envo/master/subsets/biome-hierarchy.owl", "mode": "latest", "check": "owl", "required": true},
+        {"name": "material-hierarchy.owl", "url": "https://raw.githubusercontent.com/EnvironmentOntology/envo/master/subsets/material-hierarchy.owl", "mode": "latest", "check": "owl", "required": true},
+        {"name": "microbe_masst_table.csv", "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv", "mode": "latest", "check": "text", "required": true},
+        {"name": "plant_masst_table.csv", "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/plant_masst_table.csv", "mode": "latest", "check": "text", "required": true},
+        {"name": "taxdmp.zip", "url": "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip", "mode": "latest", "check": "zip", "required": true,
+         "extract": ["names.dmp", "nodes.dmp", "division.dmp"]},
+        {"name": "hp.obo", "url": "http://purl.obolibrary.org/obo/hp.obo", "mode": "latest", "check": "obo", "required": false},
+        {"name": "ecto.obo", "url": "http://purl.obolibrary.org/obo/ecto.obo", "mode": "latest", "check": "obo", "required": false},
+        {"name": "peco.obo", "url": "http://purl.obolibrary.org/obo/peco.obo", "mode": "latest", "check": "obo", "required": false}
+    ]
+}
