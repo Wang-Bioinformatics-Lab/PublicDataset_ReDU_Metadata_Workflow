@@ -252,6 +252,7 @@ process mlFiles {
     """
     timeout ${params.source_timeout} python $TOOL_FOLDER/getAllMetabolights_file_paths.py \
     --output_filename MetabolightsFilePaths_ALL.tsv \
+    --include_compressed \
     || { echo "WARNING: mlFiles failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > MetabolightsFilePaths_ALL.tsv; }
     """
 }

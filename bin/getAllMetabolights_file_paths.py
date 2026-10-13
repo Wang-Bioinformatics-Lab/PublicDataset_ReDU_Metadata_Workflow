@@ -44,7 +44,7 @@ def safe_api_request(url, retries=3, expected_codes={200}):
   return None
 
 
-def get_all_files(study_id, headers):
+def get_all_files(study_id, headers, include_compressed=False):
     base_url = f'https://www.ebi.ac.uk:443/metabolights/ws/studies/{study_id}/public-data-files'
     # Two complementary broad patterns are BOTH required to list a study completely:
     #   - 'FILES/*'     matches files that sit directly under FILES/
@@ -69,6 +69,11 @@ def get_all_files(study_id, headers):
         'FILES/**/*.wiff',
         'FILES/**/*.wiff.scan'
     ]
+    if include_compressed:
+        # compressed MS files (x.mzXML.gz, x.CDF.gz, x.mzXML.lzma ...); *.zip is already listed above.
+        # Opt-in (ReDU only): the broad patterns already list these files, so only the
+        # fallback used for very large studies changes
+        fallback_patterns += ['FILES/**/*.' + c for c in ('gz', 'GZ', 'lzma', 'bz2', '7z', 'xz', 'rar')]
 
     all_files = []
     seen = set()
@@ -170,6 +175,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_filename", type=str, help="tsv file name for output", default="none")
     parser.add_argument("--user_token", type=str, help="user token you can get from metabolights account", default="none")
     parser.add_argument("--existing_datasets", type=str, help="path to a file of datasets already indexed", default="none")
+    parser.add_argument("--include_compressed", action="store_true",
+                        help="also query compressed MS files (.gz, .lzma, .bz2, .7z, .xz, .rar) when the broad listing of a "
+                             "large study times out; off by default so other users of this script get the same output")
     
     args = parser.parse_args()
         
@@ -193,7 +201,7 @@ if __name__ == "__main__":
             print("Skipping", study_id, "Already indexed")
             continue
 
-        files_list = get_all_files(study_id, headers)  
+        files_list = get_all_files(study_id, headers, include_compressed=args.include_compressed)
         if files_list['failed']:
             failed_studies.append(study_id)
         

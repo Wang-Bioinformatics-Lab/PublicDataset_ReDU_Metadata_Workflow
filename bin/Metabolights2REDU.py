@@ -26,13 +26,29 @@ from ms_instrument_matching import match_mass_spectrometer
 
 
 
+# MS file formats REDU indexes, and the compression suffixes MetaboLights uses for them
+# (x.raw.zip, x.d.zip, x.cdf.gz, x.mzXML.lzma ...). A compressed file is listed under its
+# real path; only single files of a supported format qualify (a bare x.zip is not indexed).
+MS_FILE_EXTENSIONS = ['.mzml', '.mzxml', '.cdf', '.raw', '.wiff', '.d']
+COMPRESSION_SUFFIXES = ['.zip', '.gz', '.lzma', '.bz2', '.7z', '.xz', '.rar']
+COMPRESSED_MS_FILE_EXTENSIONS = [e + c for e in MS_FILE_EXTENSIONS for c in COMPRESSION_SUFFIXES]
+_MS_FILE_RE = re.compile(r'\.(%s)(%s)?$' % ('|'.join(e[1:] for e in MS_FILE_EXTENSIONS),
+                                            '|'.join(re.escape(c) for c in COMPRESSION_SUFFIXES)), re.I)
+
+
 def prefer_extension(group):
-    extensions = group['extension'].values
-    if 'mzml' in extensions or 'mzxml' in extensions:
-        group['keep'] = (group['extension'] == 'mzml') | (group['extension'] == 'mzxml')
+    # An uncompressed file is always preferred over a compressed one, so assay rows that name
+    # an uncompressed file are resolved exactly as before; among compressed files only, the
+    # same rule is applied to the inner format (x.mzML.gz over x.raw.zip)
+    candidates = ~group['compressed']
+    if not candidates.any():
+        candidates = pd.Series(True, index=group.index)
+    preferred = candidates & group['extension'].isin(['mzml', 'mzxml'])
+    if preferred.any():
+        group['keep'] = preferred
     else:
-        # Mark only the first row to keep if no preferred extension found
-        group['keep'] = [True] + [False] * (len(group) - 1)
+        # Mark only the first candidate to keep if no preferred extension found
+        group['keep'] = candidates & (candidates.cumsum() == 1)
     return group
 
 
@@ -1597,27 +1613,19 @@ def Metabolights2REDU(study_id, **kwargs):
         # Ensure the filename is a string and lowercase
         df_study['filename_lower'] = df_study['filename'].astype(str).str.lower()
 
-        # Perform the split operation with expansion to get two columns
-        split_values = df_study['filename_lower'].str.rsplit('.', n=1, expand=True)
-
-        # List of allowed extensions
-        allowed_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
-        df_study = df_study[df_study['filename_lower'].apply(lambda x: any(x.endswith(ext) for ext in allowed_extensions))]
+        # Keep supported MS files, uncompressed or compressed (x.raw, x.raw.zip, x.mzML.gz ...)
+        _ms_match = df_study['filename_lower'].str.extract(_MS_FILE_RE)
+        df_study = df_study[_ms_match[0].notna()].copy()
 
         print(f'Assay table has {len(df_study)} rows and {len(df_study.columns)} columns.')
 
         if len(df_study) == 0:
-            # e.g. only .zip archives or .xls tables listed, nothing REDU can index
+            # e.g. only bare .zip archives or .xls tables listed, nothing REDU can index
             return pd.DataFrame()
 
-        # Assign the split columns to 'base' and 'extension'
-        df_study['base'] = split_values[0]
-
-        # Initially set 'extension' to None to handle rows without an extension
-        df_study['extension'] = None
-
-        # Only update 'extension' for rows where a split occurred
-        df_study.loc[split_values[1].notna(), 'extension'] = split_values[1]
+        # 'extension' is the MS format (inner format for a compressed file)
+        df_study['extension'] = _ms_match.loc[df_study.index, 0]
+        df_study['compressed'] = _ms_match.loc[df_study.index, 1].notna()
 
         df_study = df_study.groupby('row_id').apply(prefer_extension)
         df_study = df_study[df_study['keep']]
@@ -2627,7 +2635,7 @@ def Metabolights2REDU(study_id, **kwargs):
                     _index_tables[_arg] = _tab.drop_duplicates(subset=['Label'])[['Label', _id]].copy()
             df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                     ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,NCBIRankDivision_table=NCBIRankDivision_table, add_usi = True, 
-                                                    other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'], **_index_tables)
+                                                    other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'] + COMPRESSED_MS_FILE_EXTENSIONS, **_index_tables)
             
             df_study = df_study.drop_duplicates() 
 

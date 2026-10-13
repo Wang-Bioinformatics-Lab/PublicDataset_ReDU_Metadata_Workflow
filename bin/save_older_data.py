@@ -53,8 +53,13 @@ if __name__ == "__main__":
         if valid_usi:
             is_mtbls = df_merged['USI'].str.startswith('mzspec:MTBLS', na=False)
             mt = df_merged.loc[is_mtbls, ['USI']].copy()
-            # identity independent of the differing folder: dataset + basename (incl extension)
+            # identity independent of the differing folder: dataset + basename (incl extension).
+            # A compression suffix is not part of the identity: MetaboLights re-packed files
+            # (FILES/RAW_FILES/x.d -> FILES/x.d.zip), so the older uncompressed path is stale
+            # once the compressed file is listed
             id_key = mt['USI'].str.replace(r'^mzspec:([^:]+):.*/', r'\1/', regex=True)
+            id_key = id_key.str.replace(r'(\.(mzml|mzxml|cdf|raw|wiff|d))\.(zip|gz|lzma|bz2|7z|xz|rar)$', r'\1',
+                                        regex=True, case=False)
             valid = mt['USI'].isin(valid_usi)
             group_has_valid = valid.groupby(id_key).transform('any')
             stale = mt.index[group_has_valid & (~valid)]
@@ -71,7 +76,7 @@ if __name__ == "__main__":
     #MS file extensions are stripped: dots elsewhere in folder or file names (e.g.
     #'S.epidermidis/A.mzML', 'QC_1.5uL.mzML') belong to the identity of the file.
     df_merged["USI_noext"] = df_merged["USI"].str.replace(
-        r"(\.(mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|d|gz|zip))+$", "", regex=True, case=False)
+        r"(\.(mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|d|gz|zip|lzma|bz2|7z|xz|rar))+$", "", regex=True, case=False)
     df_merged = df_merged.drop_duplicates(subset=["USI_noext"]).drop(columns=["USI_noext"])
 
 
