@@ -8,6 +8,7 @@ import os
 import json
 from io import StringIO
 from REDU_conversion_functions import age_category, normalize_redu_datetime
+from blank_qc_names import apply_filename_blank_qc
 
 def _canonical_term(value):
     """Case-, space- and separator-insensitive form used to match submitted values to
@@ -221,7 +222,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         # blanks, pooled QCs and standards are not samples of the study's subjects/organisms
         mask = df['SampleType'].str.contains('blank', case=False) | \
             df['SampleType'].isin(['pool_QC', 'reference material', 'molecular_standards'])
-        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex']
+        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex', 'ColonizationStatus']
         df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
         if '_recorded_LifeStage' in df.columns:
             df.loc[mask, '_recorded_LifeStage'] = ''
@@ -611,6 +612,10 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         if value.get('generate') == 'True' and key not in df.columns and key not in ('USI',):
             if key in ('OrganismExposureAgent', 'OrganismExposureAgentIndex'):
                 df[key] = value['missing']
+            elif key == 'FoodOntologyIndex':
+                # WebProtege ID of the GFOP food ontology term (translation_sheets/GFOP_food_ontology.csv)
+                terms = df['FoodOntologyTerm'] if 'FoodOntologyTerm' in df.columns else pd.Series('', index=df.index)
+                df[key] = terms.map(_gfop_index()).fillna(value['missing'])
 
     # ontology indexes of unmatched labels come out of the merges as NaN
     for key, value in allowedTerm_dict.items():
@@ -687,6 +692,21 @@ _LEGACY_COLUMN_ALIASES = {
     'sampletype_sub1': 'SampleTypeSub1', 'comorbidity_listdoids': 'ComorbidityListDOIDIndex',
     'massiveid': 'MassiveID', 'datasetaccession': 'MassiveID',
 }
+
+
+_GFOP_SHEET = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'translation_sheets', 'GFOP_food_ontology.csv')
+
+
+def _gfop_index():
+    """GFOP food ontology label -> FoodOntologyIndex (empty if the sheet is missing)."""
+    if 'gfop_index' not in _LOOKUP_CACHE:
+        try:
+            sheet = pd.read_csv(_GFOP_SHEET, dtype=str, keep_default_na=False)
+            _LOOKUP_CACHE['gfop_index'] = dict(zip(sheet['Label'], sheet['FoodOntologyIndex']))
+        except (OSError, KeyError, pd.errors.EmptyDataError):
+            print(f"WARNING: {_GFOP_SHEET} not readable; FoodOntologyIndex stays missing")
+            _LOOKUP_CACHE['gfop_index'] = {}
+    return _LOOKUP_CACHE['gfop_index']
 
 
 def _template_column(column, allowedTerm_dict):
@@ -1159,6 +1179,8 @@ if __name__ == '__main__':
                                          uberon_synonym_table=uberon_synonym_table,
                                          envo_tables=(ENVOEnvironmentBiomeIndex_table, ENVOEnvironmentMaterialIndex_table),
                                          NCBIRankDivision_table=NCBIRankDivision_table)
+            # files named as blanks / pooled QCs (BLANK_5_9_B, PoolQC_03) that are labelled as samples
+            df, _ = apply_filename_blank_qc(df)
 
             #generate extra columns, add missing columns and remove values which are not in allowed terms
             df = complete_and_fill_REDU_table(df, 

@@ -65,6 +65,34 @@
             "refresh": "every_run"
         },
         {
+            "name": "food_masst_table.csv",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/food_masst_table.csv",
+            "check": "text",
+            "required": false,
+            "refresh": "every_run"
+        },
+        {
+            "name": "food_masst_table_full.tsv",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/food_masst_table_full.tsv",
+            "check": "text",
+            "required": false,
+            "refresh": "every_run"
+        },
+        {
+            "name": "personalCareProduct_masst_table.csv",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/personalCareProduct_masst_table.csv",
+            "check": "text",
+            "required": false,
+            "refresh": "every_run"
+        },
+        {
+            "name": "microbiome_masst_table.tsv",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbiome_masst_table.tsv",
+            "check": "text",
+            "required": false,
+            "refresh": "every_run"
+        },
+        {
             "name": "taxdmp.zip",
             "url": "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump_archive/taxdmp_2026-10-01.zip",
             "sha256": "d744af371c0b9fc7269d80b49546b6ac4c9ddc52a2fd97bcbfd02783edb5c9eb",

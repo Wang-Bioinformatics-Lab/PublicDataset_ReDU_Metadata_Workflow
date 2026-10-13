@@ -43,6 +43,10 @@ process fetchReferenceData {
     path 'material-hierarchy.owl', emit: material
     path 'microbe_masst_table.csv', emit: microbe_masst
     path 'plant_masst_table.csv', emit: plant_masst
+    path 'food_masst_table.csv', emit: food_masst
+    path 'food_masst_table_full.tsv', emit: food_masst_full
+    path 'personalCareProduct_masst_table.csv', emit: personal_care_masst
+    path 'microbiome_masst_table.tsv', emit: microbiome_masst
     path 'names.dmp', emit: names
     path 'nodes.dmp', emit: nodes
     path 'division.dmp', emit: division
@@ -485,7 +489,8 @@ process gnpsInstruments {
 }
 
 
-// Getting microbmemasst data and putting it in a tentaive redu format
+// MASST tables (microbe, plant, food, personal care products, microbiome) in ReDU format, for
+// files no GNPS metadata file describes; a missing or empty table is skipped with a warning
 process MASST_to_REDU {
     publishDir "./nf_output", mode: 'copy'
 
@@ -497,7 +502,15 @@ process MASST_to_REDU {
     path allowed_terms
     path microbe_masst_table
     path plant_masst_table
+    path food_masst_table
+    path food_masst_table_full
+    path personal_care_masst_table
+    path microbiome_masst_table
     path nodes_dmp
+    path names_dmp
+    path uberon_cl_po_csv
+    path doid_csv
+    path exposure_csv
 
     output:
     file 'adjusted_metadata_folder'
@@ -509,9 +522,17 @@ process MASST_to_REDU {
     adjusted_metadata_folder \
     --path_microbeMASST ${microbe_masst_table} \
     --path_plantMASST ${plant_masst_table} \
+    --path_foodMASST ${food_masst_table} \
+    --path_foodMASST_full ${food_masst_table_full} \
+    --path_personalCareProductMASST ${personal_care_masst_table} \
+    --path_microbiomeMASST ${microbiome_masst_table} \
     --path_ncbiRanksDivisions ${ncbi_rank_division} \
     --AllowedTermJson_path ${allowed_terms} \
     --path_ncbi_nodes ${nodes_dmp} \
+    --path_ncbi_names ${names_dmp} \
+    --path_to_uberon_cl_po_csv ${uberon_cl_po_csv} \
+    --path_to_doid_csv ${doid_csv} \
+    --path_to_exposure_csv ${exposure_csv} \
     || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; true; }
     """
 }
@@ -638,9 +659,10 @@ workflow {
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
     gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
-    // MicrobeMASST and PlantMASST
+    // MASST tables: microbeMASST, plantMASST, foodMASST, personalCareProductMASST, microbiomeMASST
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
-        ref.microbe_masst, ref.plant_masst, ref.nodes)
+        ref.microbe_masst, ref.plant_masst, ref.food_masst, ref.food_masst_full, ref.personal_care_masst,
+        ref.microbiome_masst, ref.nodes, ref.names, uberon_cl_co_onto, doid_onto, exposure_onto)
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench
