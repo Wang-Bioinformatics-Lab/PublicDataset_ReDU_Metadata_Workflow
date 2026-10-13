@@ -452,13 +452,14 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The tobacco smoking status of the subject at the time of sampling.",
+        "description": "The tobacco smoking status of the subject at the time of sampling. 'non-smoker' is used when the source only states that the subject does not currently smoke, without saying whether they never or formerly smoked.",
         "example": "never smoker",
         "source": "-",
         "allowed_values": [
             "current smoker",
             "former smoker",
-            "never smoker"
+            "never smoker",
+            "non-smoker"
         ]
     },
     "BodyMassIndex": {
@@ -795,7 +796,7 @@
         "type": "generated",
         "missing": "missing value",
         "description": "(automatically generated) formula which generates massive ID number & SubjectID",
-        "example": "MSV000080673_1527",
+        "example": "MSV000080673_subject_1",
         "source": "-",
         "allowed_values": [
             "00"
@@ -886,7 +887,11 @@
             "subkingdom",
             "superphylum",
             "subsection",
-            "pathogroup"
+            "pathogroup",
+            "subvariety",
+            "realm",
+            "cellular root",
+            "acellular root"
         ]
     },
     "NCBIDivision": {
@@ -961,7 +966,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment biome.",
-        "example": "ENVO:00000446",
+        "example": "ENVO:00000873",
         "source": "-",
         "allowed_values": []
     },
@@ -970,7 +975,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVO environment material.",
-        "example": "ENVO:00002007",
+        "example": "ENVO:00001998",
         "source": "-",
         "allowed_values": []
     },
@@ -979,7 +984,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOLocalScale.",
-        "example": "soil",
+        "example": "ENVO:00000873",
         "source": "",
         "allowed_values": []
     },
@@ -988,7 +993,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOBroadScale.",
-        "example": "soil",
+        "example": "ENVO:00000873",
         "source": "",
         "allowed_values": []
     },
@@ -997,7 +1002,7 @@
         "type": "environmental",
         "missing": "missing value",
         "description": "(automatically generated) The index of the ENVOMediumScale.",
-        "example": "soil",
+        "example": "ENVO:00001998",
         "source": "",
         "allowed_values": []
     },
