@@ -19,6 +19,7 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_hp_obo', default = 'none')
     parser.add_argument('--path_to_ecto_obo', default = 'none')
     parser.add_argument('--path_to_peco_obo', default = 'none')
+    parser.add_argument('--path_to_cellosaurus_tsv', default = 'none')
     args = parser.parse_args()
 
     #ncbi_dump can be downloaded from https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip 
@@ -183,6 +184,18 @@ if __name__ == "__main__":
                     allowedTerm_dict[key]['allowed_values'] = agents[column].unique().tolist()
         else:
             print('WARNING: no ECTO/PECO terms found, Exposure keeps its previous allowed values')
+
+    #cellosaurus_tsv: the pinned table shipped in data/ (built by build_cellosaurus_table.py)
+    if args.path_to_cellosaurus_tsv != 'none':
+        print('Updating cell lines!')
+        from cellosaurus import load_cellosaurus_table
+        cello_df = load_cellosaurus_table(args.path_to_cellosaurus_tsv)
+        if cello_df is not None and len(cello_df) > 0:
+            first = cello_df.drop_duplicates(subset=['CellLineIndex'])
+            allowedTerm_dict['CellLine']['allowed_values'] = first['CellLine'].unique().tolist()
+            allowedTerm_dict['CellLineIndex']['allowed_values'] = first['CellLineIndex'].tolist()
+        else:
+            print('WARNING: no cell lines found, CellLine keeps its previous allowed values')
 
     if args.path_to_ms_owl != 'none':
 

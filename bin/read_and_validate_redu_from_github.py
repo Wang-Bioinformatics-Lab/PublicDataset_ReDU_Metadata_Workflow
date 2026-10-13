@@ -180,6 +180,13 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     # strains) to an allowed term, or returns None
     ncbi_name_resolver = kwargs.get('NCBI_name_resolver')
 
+    # Cellosaurus table (build_cellosaurus_table.py): checks CellLine, gives CellLineIndex
+    cellosaurus_table = kwargs.get('CellLineIndex_table')
+    cellosaurus_index = None
+    if cellosaurus_table is not None and len(cellosaurus_table):
+        from cellosaurus import CellosaurusIndex
+        cellosaurus_index = _cached('cellosaurus', cellosaurus_table, lambda: CellosaurusIndex(cellosaurus_table))
+
     # Convert all columns to String (missing values become '' rather than the string 'nan')
     df = df.fillna('').astype(str)
 
@@ -214,7 +221,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         # blanks, pooled QCs and standards are not samples of the study's subjects/organisms
         mask = df['SampleType'].str.contains('blank', case=False) | \
             df['SampleType'].isin(['pool_QC', 'reference material', 'molecular_standards'])
-        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
+        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex']
         df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
         if '_recorded_LifeStage' in df.columns:
             df.loc[mask, '_recorded_LifeStage'] = ''
@@ -256,6 +263,27 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 value_map = {v: normalize_doid_list(v, doid_ids, missing_value) for v in unique_values}
                 df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
                 filtered_map = {k: v for k, v in value_map.items() if k != v}
+                if filtered_map:
+                    print(f"{key}:")
+                    for k, v in filtered_map.items():
+                        print(f"  {k}: {v}")
+                continue
+
+            if key == 'CellLine':
+                # the Cellosaurus recommended name: the name itself, its accession, the name
+                # in other case or a synonym of exactly one line; else missing. Without the
+                # table only allowed names are kept.
+                def _cell_line(v):
+                    if str(v).strip() in ('', missing_value):
+                        return missing_value
+                    if cellosaurus_index is not None:
+                        hit = cellosaurus_index.canonical(v)
+                        return hit[0] if hit else missing_value
+                    allowed_set = _cached('cellline_names', allowed_terms, lambda: set(allowed_terms))
+                    return v if v in allowed_set else missing_value
+                value_map = {v: _cell_line(v) for v in unique_values}
+                df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
+                filtered_map = {k: v for k, v in value_map.items() if k != v and k != ''}
                 if filtered_map:
                     print(f"{key}:")
                     for k, v in filtered_map.items():
@@ -500,6 +528,13 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'DOIDOntologyIndex':
                 df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']].drop_duplicates('Label'), left_on='DOIDCommonName', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
+            if key == 'CellLineIndex':
+                if 'CellLine' not in df.columns:
+                    df['CellLine'] = allowedTerm_dict.get('CellLine', {}).get('missing', missing_value)
+                if cellosaurus_index is not None:
+                    df[key] = df['CellLine'].map(cellosaurus_index.by_name).fillna(missing_value)
+                else:
+                    df[key] = missing_value
             if key == 'HPOOntologyIndex':
                 if 'HPOCommonName' not in df.columns:
                     df['HPOCommonName'] = allowedTerm_dict.get('HPOCommonName', {}).get('missing', missing_value)
@@ -1055,6 +1090,8 @@ if __name__ == '__main__':
     parser.add_argument('--path_to_exposure_csv', default='none')
     parser.add_argument('--path_to_ncbi_names_dmp', default='none',
                         help='NCBI names.dmp; resolves synonyms, merged taxa and strains of NCBITaxonomy names')
+    parser.add_argument('--path_to_cellosaurus_tsv', default='none',
+                        help='Cellosaurus table from build_cellosaurus_table.py; checks CellLine and gives CellLineIndex')
     args = parser.parse_args()
 
     with open(args.AllowedTermJson_path, 'r') as json_file:
@@ -1067,6 +1104,8 @@ if __name__ == '__main__':
     # HPO (HPOCommonName) and ECTO/PECO (Exposure) tables; optional
     hpo_ontology_table = pd.read_csv(args.path_to_hpo_csv, dtype=str) if args.path_to_hpo_csv != 'none' else None
     exposure_ontology_table = pd.read_csv(args.path_to_exposure_csv, dtype=str) if args.path_to_exposure_csv != 'none' else None
+    from cellosaurus import load_cellosaurus_table
+    cellosaurus_table = load_cellosaurus_table(args.path_to_cellosaurus_tsv)
     doid_ontology_table = doid_ontology_table.drop_duplicates(subset=['Label'])
 
     ENVOEnvironmentBiomeIndex_table = pd.read_csv(args.path_to_envo_biome_csv, index_col=False)
@@ -1133,7 +1172,8 @@ if __name__ == '__main__':
                                               ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
                                               attempt_adding_file_extensions=True,
                                               case_insensitive_terms=True,
-                                              NCBI_name_resolver=ncbi_name_resolver)
+                                              NCBI_name_resolver=ncbi_name_resolver,
+                                              CellLineIndex_table=cellosaurus_table)
             
             if len(df) > 0:
             

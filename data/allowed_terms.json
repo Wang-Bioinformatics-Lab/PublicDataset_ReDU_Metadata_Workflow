@@ -579,6 +579,15 @@
             "00"
         ]
     },
+    "CellLine": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The cell line the sample comes from, as the Cellosaurus recommended name (one cell line per sample). Cellosaurus accessions (CVCL_...) and synonyms of exactly one cell line are converted to the recommended name. You can find all allowed terms in the resource link.",
+        "example": "Hep-G2",
+        "source": "https://www.cellosaurus.org/ \nhttps://www.expasy.org/resources/cellosaurus",
+        "allowed_values": []
+    },
     "SampleCollectionDateandTime": {
         "generate": "False",
         "type": "general",
@@ -917,6 +926,15 @@
         "description": "(automatically generated) The ontology ID of the exposure agent (CHEBI, ENVO, NCBITaxon, FOODON, MAXO, ...).",
         "example": "CHEBI:6801",
         "source": "ECTO: https://www.ebi.ac.uk/ols4/ontologies/ecto",
+        "allowed_values": []
+    },
+    "CellLineIndex": {
+        "generate": "True",
+        "type": "generated",
+        "missing": "missing value",
+        "description": "(automatically generated) The Cellosaurus accession of the cell line.",
+        "example": "CVCL_0027",
+        "source": "https://www.cellosaurus.org/",
         "allowed_values": []
     },
     "NCBIRank": {

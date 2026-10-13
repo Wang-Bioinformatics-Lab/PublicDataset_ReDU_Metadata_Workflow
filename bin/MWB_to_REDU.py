@@ -2425,6 +2425,237 @@ def study_fasting_from_texts(joined):
 _NCBI_NAME_CACHE = {}
 
 
+# ---- CellLine (Cellosaurus) and cell types (Cell Ontology) ----
+# Cell-line names under sample factor keys ('Cell line', 'cell_type', ...) and in the
+# study-level CELL_STRAIN_DETAILS; matched to the shipped Cellosaurus table (exact
+# name / exact synonym / normalised name, checked against the study organism). Values
+# that are cell types ('macrophages', 'PBMC') go to UBERONBodyPartName as Cell Ontology
+# terms instead.
+# Cellosaurus table (DataFrame); set from --path_to_cellosaurus_tsv
+CELLOSAURUS_TABLE = None
+_CELLOSAURUS_INDEX_CACHE = {}
+_CELL_KEY_RE = re.compile(r'cell[ _-]?(?:lines?|types?|strains?|names?|models?|source)\b|^cells?$|cellosaurus|^cell[ _]?line')
+_CELL_KEY_EXCLUDE_RE = re.compile(r'count|number|passage|density|viab|conc|volume|seed|size|cycle|confluen|amount|#|'
+                                  r'harvest|date|time|fraction|stage|media|medium')
+_CELL_VALUE_SEP = '\x1f'
+# Cell Ontology labels too generic for a body part
+_CL_TOO_GENERIC = {'cell', 'native cell', 'eukaryotic cell', 'animal cell', 'somatic cell', 'cultured cell',
+                   'cell in vitro', 'primary cultured cell', 'experimentally modified cell in vitro', 'cell line cell',
+                   'nucleate cell', 'mononuclear cell', 'single nucleate cell', 'motile cell', 'non-terminally differentiated cell'}
+_CL_PREFIX_RE = re.compile(r'^(?:(?:primary|human|mouse|murine|rat|cultured|isolated)\s+)+')
+_CL_LOOKUP_CACHE = {}
+# allowed Cell Ontology labels (set by _cl_lookup)
+_CL_LABELS = set()
+
+
+def _cellosaurus_index():
+    from cellosaurus import CellosaurusIndex
+    table = CELLOSAURUS_TABLE
+    if table is None or len(table) == 0:
+        return None
+    key = (id(table), len(table))
+    if key not in _CELLOSAURUS_INDEX_CACHE:
+        _CELLOSAURUS_INDEX_CACHE.clear()
+        _CELLOSAURUS_INDEX_CACHE[key] = CellosaurusIndex(table)
+    return _CELLOSAURUS_INDEX_CACHE[key]
+
+
+def is_cell_line_key(key):
+    k = str(key).strip().lower()
+    return bool(_CELL_KEY_RE.search(k)) and not _CELL_KEY_EXCLUDE_RE.search(k)
+
+
+def is_cultured_cell_study(subject_type):
+    """SUBJECT_TYPE of cultured (non-microbial) cells: 'Cultured cells', 'Cells', 'Human cells', ..."""
+    s = _norm_value(subject_type)
+    return bool(re.search(r'\b(?:cells?|cell lines?|cultured|cultures?)\b', s)) and \
+        not re.search(r'bacteri|yeast|fung|microb|plant|alga|archae', s)
+
+
+def _cl_lookup(ontology_table, allowedTerm_dict):
+    """lower-case Cell Ontology label / synonym (> 3 characters) -> label, for names of
+    exactly one allowed, not too generic CL label."""
+    key = (id(ontology_table), len(ontology_table))
+    if key in _CL_LOOKUP_CACHE:
+        return _CL_LOOKUP_CACHE[key]
+    allowed = set((allowedTerm_dict.get('UBERONBodyPartName') or {}).get('allowed_values') or [])
+    names = {}
+    labels = set()
+    if ontology_table is not None and 'Synonym' in ontology_table.columns:
+        cl = ontology_table[ontology_table['UBERONOntologyIndex'].astype(str).str.startswith('CL:')]
+        for label, syn in cl[['Label', 'Synonym']].itertuples(index=False):
+            if not isinstance(label, str) or label not in allowed or label.lower().startswith('obsolete') \
+                    or label.lower() in _CL_TOO_GENERIC:
+                continue
+            labels.add(label.strip().lower())
+            for n in (label, syn):
+                if isinstance(n, str) and len(n.strip()) > 3:
+                    names.setdefault(n.strip().lower(), set()).add(label)
+    # a name that is a UBERON/PO label too is left alone
+    other = set()
+    if ontology_table is not None:
+        other = set(ontology_table.loc[~ontology_table['UBERONOntologyIndex'].astype(str).str.startswith('CL:'), 'Label']
+                    .dropna().astype(str).str.strip().str.lower())
+    lookup = {n: next(iter(v)) for n, v in names.items() if len(v) == 1 and (n in labels or n not in other)}
+    _CL_LABELS.clear()
+    _CL_LABELS.update(lookup.values())
+    _CL_LOOKUP_CACHE.clear()
+    _CL_LOOKUP_CACHE[key] = lookup
+    return lookup
+
+
+def cell_type_term(value, ontology_table, allowedTerm_dict):
+    """Allowed Cell Ontology label a value names exactly (case-insensitive; also the
+    plural and with a leading 'primary' / 'human' / 'mouse'), else None."""
+    v = ' '.join(str(value).strip().lower().split())
+    if len(v) <= 3:
+        return None
+    lookup = _cl_lookup(ontology_table, allowedTerm_dict)
+    if not lookup:
+        return None
+    base = _CL_PREFIX_RE.sub('', v)
+    for s in dict.fromkeys([v, base]):
+        if len(s) <= 3:
+            continue
+        for cand in (s, re.sub(r'cells$', 'cell', s), re.sub(r'(?<=[a-z])s$', '', s)):
+            if cand in lookup:
+                return lookup[cand]
+    return None
+
+
+def sample_cell_values(df, ontology_table, allowedTerm_dict):
+    """(cell-line values, cell type) per row of df: the sample's distinct values under
+    cell-line keys that are no Cell Ontology cell type ('\\x1f'-joined), and the one CL
+    label its values name (None if none or several)."""
+    keys = df['Key'].astype(str)
+    is_cell = keys.map(is_cell_line_key)
+    if not is_cell.any():
+        empty = pd.Series(None, index=df.index, dtype=object)
+        return empty, empty.copy()
+    sub = pd.DataFrame({'filename': df.loc[is_cell, 'filename'],
+                        'v': df.loc[is_cell, 'Value'].astype(str).str.strip()})
+    sub = sub[sub['v'] != '']
+    sub['ct'] = sub['v'].map(lambda v: cell_type_term(v, ontology_table, allowedTerm_dict))
+    lines = (sub[sub['ct'].isna()].groupby('filename')['v']
+             .agg(lambda s: _CELL_VALUE_SEP.join(sorted(set(s)))))
+    types = (sub.dropna(subset=['ct']).groupby('filename')['ct']
+             .agg(lambda s: s.iloc[0] if s.nunique() == 1 else None).dropna())
+    return df['filename'].map(lines), df['filename'].map(types)
+
+
+def _lineage(taxid):
+    import REDU_conversion_functions as _rcf
+    return _rcf._get_ncbi_lineage(str(taxid))
+
+
+def assign_cell_lines(MWB_table):
+    """CellLine (Cellosaurus recommended name), Cell Ontology cell types for an empty
+    UBERONBodyPartName and SampleType 'culture_mammalian' for rows given a mammalian
+    cell line. Sample-level values first; the study-level CELL_STRAIN_DETAILS only when
+    it names exactly one line and no sample-level value names another. Blanks/QC get
+    nothing; a line has to come from the study organism (see CellosaurusIndex.match)."""
+    t = MWB_table
+    t['CellLine'] = np.nan
+    n = len(t)
+    if n == 0:
+        return t
+    st = t['SampleType'].astype(str) if 'SampleType' in t.columns else pd.Series('', index=t.index)
+    not_subject = st.str.contains(r'blank|qc|pool', case=False) | st.isin(['reference material', 'molecular_standards'])
+    subject_type = t['SUBJECT_TYPE'].iloc[0] if 'SUBJECT_TYPE' in t.columns else ''
+    cultured = is_cultured_cell_study(subject_type)
+
+    def _missing(col):
+        if col not in t.columns:
+            t[col] = np.nan
+        return t[col].isna() | t[col].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'na', 'missing value'])
+
+    sample_type_cl = t['MWB_celltype'] if 'MWB_celltype' in t.columns else pd.Series(None, index=t.index, dtype=object)
+    celltype = sample_type_cl
+    if 'STUDY_celltype' in t.columns and celltype.isna().all():
+        celltype = t['STUDY_celltype']
+    values = t['MWB_cellline_values'] if 'MWB_cellline_values' in t.columns else pd.Series(None, index=t.index, dtype=object)
+
+    def _fill_cell_types(line_ac):
+        # cell types -> UBERONBodyPartName (Cell Ontology), only where empty. Sample-level
+        # cell types only when every sample with a cell value got a cell type or a line
+        # (no half-labelled designs, e.g. 'Reticulocyte' vs an unmatched 'Mature erythrocyte')
+        from cellosaurus import is_rejected_value
+        if sample_type_cl.notna().any():
+            open_value = values.map(lambda v: isinstance(v, str) and any(
+                not is_rejected_value(x) for x in v.split(_CELL_VALUE_SEP)))
+            unresolved = open_value & sample_type_cl.isna() & line_ac.isna() & ~not_subject
+            if unresolved.any():
+                print(f"[CellLine] cell types not used: {int(unresolved.sum())} rows have other unmatched cell values")
+                return
+        fill = _missing('UBERONBodyPartName') & celltype.notna() & ~not_subject
+        if fill.any():
+            t.loc[fill, 'UBERONBodyPartName'] = celltype[fill]
+            print(f"[CellLine] cell type as UBERONBodyPartName for {int(fill.sum())} rows: {sorted(set(celltype[fill]))}")
+
+    index = _cellosaurus_index()
+    if index is None:
+        _fill_cell_types(pd.Series(None, index=t.index, dtype=object))
+        return t
+    taxon = t['NCBITaxonomy'] if 'NCBITaxonomy' in t.columns else pd.Series(None, index=t.index, dtype=object)
+    taxon = taxon.where(taxon.astype(str).str.contains(r'^\d+\|', regex=True), '')
+    cache = {}
+    log = {}
+
+    def _resolve(value, tax):
+        k = (value, tax)
+        if k not in cache:
+            tid, _, tname = str(tax).partition('|')
+            ac, reason = index.match(value, tid, tname, cultured=cultured, lineage_fn=_lineage)
+            cache[k] = ac
+            log[value] = (index.info[ac]['name'] if ac else None, reason)
+        return cache[k]
+
+    sample_ac = pd.Series(None, index=t.index, dtype=object)
+    if 'MWB_cellline_values' in t.columns:
+        for i, vals, tax in zip(t.index, t['MWB_cellline_values'], taxon):
+            if not isinstance(vals, str) or not vals or not_subject[i]:
+                continue
+            found = {_resolve(v, tax) for v in vals.split(_CELL_VALUE_SEP)} - {None}
+            if len(found) == 1:
+                sample_ac[i] = next(iter(found))
+            elif len(found) > 1:
+                log[vals.replace(_CELL_VALUE_SEP, ' / ')] = (None, 'several cell lines in one sample')
+    ac = sample_ac.copy()
+    study_value = str(t['CELL_STRAIN_DETAILS'].iloc[0]).strip() if 'CELL_STRAIN_DETAILS' in t.columns else ''
+    study_is_type = 'STUDY_celltype' in t.columns and t['STUDY_celltype'].notna().any()
+    if study_value and study_value.lower() not in ('na', 'nan', 'none', '-', '') and not study_is_type:
+        study_ac = pd.Series([_resolve(study_value, tax) for tax in taxon], index=t.index, dtype=object)
+        lines = set(study_ac[~not_subject]) - {None}
+        other = set(sample_ac.dropna()) - lines
+        if len(lines) == 1 and study_ac[~not_subject].notna().all() and not other:
+            fill = ac.isna() & ~not_subject
+            ac[fill] = next(iter(lines))
+        elif len(lines) == 1 and other:
+            log[study_value] = (None, 'study-level line disagrees with sample-level lines')
+    for value, (name, reason) in sorted(log.items()):
+        print(f"[CellLine] {value!r}: {name if name else 'not assigned'} ({reason})")
+    _fill_cell_types(ac)
+    has = ac.notna()
+    if not has.any():
+        return t
+    t.loc[has, 'CellLine'] = ac[has].map(lambda a: index.info[a]['name'])
+    print(f"[CellLine] {int(has.sum())} rows: {dict(Counter(t.loc[has, 'CellLine']))}")
+
+    # SampleType culture_mammalian for mammalian lines, only over 'animal' / no type;
+    # outside cultured-cell studies only for rows that are cells (no body part, or a cell type)
+    mammal = ac.map(lambda a: bool(a) and index.info[a]['mammal'] if isinstance(a, str) else False).astype(bool)
+    open_type = t['SampleType'].isna() | t['SampleType'].astype(str).str.strip().str.lower().isin(
+        ['animal', '', 'nan', 'none', 'missing value'])
+    is_cells = pd.Series(cultured, index=t.index) | _missing('UBERONBodyPartName') | t['UBERONBodyPartName'].isin(
+        _CL_LABELS | set(celltype.dropna()))
+    change = has & mammal & open_type & ~not_subject & is_cells
+    if change.any():
+        t.loc[change, 'SampleType'] = 'culture_mammalian'
+        t.loc[change, 'SampleTypeSub1'] = 'culture_mammalian'
+        print(f"[CellLine] SampleType culture_mammalian for {int(change.sum())} rows")
+    return t
+
+
 def _ncbi_name_lookup(allowedTerm_dict):
     """lower-cased NCBI name -> first allowed 'ID|Name' term with that name."""
     terms = allowedTerm_dict['NCBITaxonomy']['allowed_values']
@@ -3359,6 +3590,13 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     except Exception as e:
         print(f"Could not extract fasting states: {type(e).__name__}: {e}")
         df['MWB_fasting'] = None
+    # cell lines and cell types named per sample (resolved in translate_MWB_to_REDU_by_logic)
+    try:
+        df['MWB_cellline_values'], df['MWB_celltype'] = sample_cell_values(df, ontology_table, allowedTerm_dict)
+    except Exception as e:
+        print(f"Could not extract cell lines: {type(e).__name__}: {e}")
+        df['MWB_cellline_values'] = None
+        df['MWB_celltype'] = None
     try:
         _groups = sample_group_texts(data)
         if _groups:
@@ -3626,7 +3864,8 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
         'ACQUISITION_DATE': _section(MWB_mwTAB_dict, 'ANALYSIS').get('ACQUISITION_DATE', 'NA'),
         'CREATED_ON': _section(MWB_mwTAB_dict, 'METABOLOMICS WORKBENCH').get('CREATED_ON', 'NA'),
         'STUDY_ID': _section(MWB_mwTAB_dict, 'METABOLOMICS WORKBENCH').get('STUDY_ID', 'NA'),
-        'STUDY_FASTING': study_fasting_text(MWB_mwTAB_dict)
+        'STUDY_FASTING': study_fasting_text(MWB_mwTAB_dict),
+        'CELL_STRAIN_DETAILS': str(_section(MWB_mwTAB_dict, 'SUBJECT').get('CELL_STRAIN_DETAILS', '') or '').strip()
 
     }
 
@@ -3638,6 +3877,12 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     df_outer = pd.DataFrame(entry, index=[0])
     df_outer['STUDY_uberon_exact'] = uberon_exact_name(df_outer['SAMPLE_TYPE'], ontology_table, allowedTerm_dict).values
     df_outer['STUDY_envo_exact'] = envo_material_exact_name(df_outer['SAMPLE_TYPE'], allowedTerm_dict).values
+    try:
+        df_outer['STUDY_celltype'] = [cell_type_term(v, ontology_table, allowedTerm_dict) if v else None
+                                      for v in df_outer['CELL_STRAIN_DETAILS']]
+    except Exception as e:
+        print(f"Could not check CELL_STRAIN_DETAILS for a cell type: {type(e).__name__}: {e}")
+        df_outer['STUDY_celltype'] = None
 
     #add NCBITaxonomy on dataset level
     #######
@@ -4232,6 +4477,13 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
 
     MWB_table = MWB_table.drop(columns=['sampletype', 'tissue_vs_biofluid'])
 
+    # cell lines (Cellosaurus) and cell types; a problem here must never cost the study its rows
+    try:
+        MWB_table = assign_cell_lines(MWB_table)
+    except Exception as e:
+        print(f"Could not assign cell lines: {type(e).__name__}: {e}")
+        MWB_table['CellLine'] = np.nan
+
 
     # List of columns to check and add if not present
     columns_to_check = ['NCBITaxonomy', 'SampleCollectionMethod', 'SampleExtractionMethod',
@@ -4239,7 +4491,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
                         'BiologicalSex', 'UBERONBodyPartName', 'HealthStatus', 'DOIDCommonName',
                         'ComorbidityListDOIDIndex', 'Country', 'HumanPopulationDensity',
                         'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'HPOCommonName', 'Exposure',
-                        'TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus']
+                        'TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus', 'CellLine']
 
     # Iterate through each column in the list
     for column in columns_to_check:
@@ -4367,7 +4619,9 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
     # curated study-level disease category ('Cancer', 'Diabetes', ...); a missing or
     # unreadable answer only means no study-level disease
-    global _STUDY_DISEASE, _STUDY_HPO, HPO_TABLE, EXPOSURE_TABLE
+    global _STUDY_DISEASE, _STUDY_HPO, HPO_TABLE, EXPOSURE_TABLE, CELLOSAURUS_TABLE
+    if kwargs.get('CellLineIndex_table') is not None:
+        CELLOSAURUS_TABLE = kwargs['CellLineIndex_table']
     _STUDY_DISEASE = None
     _STUDY_HPO = None
     if kwargs.get('HPOOntologyIndex_table') is not None:
@@ -4479,7 +4733,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         _subject_cols = ['NCBITaxonomy', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'AgeInYears', 'UniqueSubjectID',
                          'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'DOIDOntologyIndex', 'BiologicalSex',
                          'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'LifeStage',
-                         'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus']
+                         'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'CellLine']
         redu_df_final.loc[_not_subject, [c for c in _subject_cols if c in redu_df_final.columns]] = 'missing value'
 
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
@@ -4496,6 +4750,9 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         if _table is not None and len(_table):
             # the exposure table also carries the exposure agent (OrganismExposureAgent / Index)
             doid_kwargs[_key] = _table.drop_duplicates(subset=['Label'])[['Label', _col] + [c for c in ('OrganismExposureAgentIndex', 'OrganismExposureAgent') if c in _table.columns]].copy()
+    # Cellosaurus table, so complete_and_fill_REDU_table can check CellLine and generate CellLineIndex
+    if CELLOSAURUS_TABLE is not None and len(CELLOSAURUS_TABLE):
+        doid_kwargs['CellLineIndex_table'] = CELLOSAURUS_TABLE
     redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, **doid_kwargs,
                                                  ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table.drop_duplicates(subset=["Label"]),
                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table.drop_duplicates(subset=["Label"]),
@@ -4624,7 +4881,8 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                             "Exposure",
                             "TimePointHoursRelativeToEvent",
                             "SampleGroupFreeText",
-                            "FastingStatus"
+                            "FastingStatus",
+                            "CellLine"
                             ]
     
     complete_df['ENVOEnvironmentMaterial'] = complete_df['ENVOEnvironmentMaterial'].replace({np.nan: 'missing value', None: 'missing value'})
@@ -4672,6 +4930,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                            "TimePointHoursRelativeToEvent",
                            "SampleGroupFreeText",
                            "FastingStatus",
+                           "CellLine",
                            "UniqueSubjectID",
                            "LifeStage",
                            "UBERONOntologyIndex",
@@ -4698,6 +4957,7 @@ if __name__ == '__main__':
     parser.add_argument("--path_to_doid_parents_csv", type=str, help="DOID is_a links from prepare_ontologies.py (optional); enables the most specific disease term", default='none')
     parser.add_argument("--path_to_hpo_csv", type=str, help="Prepared HPO ontology csv (optional); enables health conditions (HPOCommonName)", default='none')
     parser.add_argument("--path_to_exposure_csv", type=str, help="Prepared ECTO/PECO ontology csv (optional); enables exposures (Exposure)", default='none')
+    parser.add_argument("--path_to_cellosaurus_tsv", type=str, help="Cellosaurus table from build_cellosaurus_table.py (optional); enables CellLine / CellLineIndex", default='none')
 
     print('Starting MWB2REDU script,..')
 
@@ -4728,6 +4988,9 @@ if __name__ == '__main__':
         HPO_TABLE = pd.read_csv(args.path_to_hpo_csv, dtype=str)
     if args.path_to_exposure_csv != 'none':
         EXPOSURE_TABLE = pd.read_csv(args.path_to_exposure_csv, dtype=str)
+    if args.path_to_cellosaurus_tsv != 'none':
+        from cellosaurus import load_cellosaurus_table
+        CELLOSAURUS_TABLE = load_cellosaurus_table(args.path_to_cellosaurus_tsv)
    
     # Read NCBI rank and division csv
     NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)

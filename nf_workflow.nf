@@ -15,6 +15,11 @@ params.old_redu = './data/empty_redu.tsv'
 // the 23.5 h celery time limit so the merge steps still run.
 params.source_timeout = '20h'
 
+// Cellosaurus cell lines (CellLine / CellLineIndex): a pinned table shipped in data/
+// (built by bin/build_cellosaurus_table.py; Expasy only serves the current release).
+// Release, sha256 and the CC BY 4.0 attribution are in data/cellosaurus_<version>.json.
+CELLOSAURUS_TABLE = 'cellosaurus_56.0_cell_lines.tsv.gz'
+
 
 // First step: sets up all reference data in data/ (ontologies, NCBI taxonomy, MASST
 // tables) in the versions pinned in data/reference_data.json (url + sha256), i.e. the
@@ -70,6 +75,7 @@ process updateAllowedTerms {
     path hp_obo
     path ecto_obo
     path peco_obo
+    path cellosaurus_tsv
 
     output:
     file 'allowed_terms.json'
@@ -87,7 +93,8 @@ process updateAllowedTerms {
     --path_to_biome_envs_owl ${biome_owl} \
     --path_to_hp_obo ${hp_obo} \
     --path_to_ecto_obo ${ecto_obo} \
-    --path_to_peco_obo ${peco_obo}
+    --path_to_peco_obo ${peco_obo} \
+    --path_to_cellosaurus_tsv ${cellosaurus_tsv}
     """
 }
 
@@ -134,6 +141,7 @@ process mwbRun {
     path doid_parents_csv
     path hpo_csv
     path exposure_csv
+    path cellosaurus_tsv
 
     output:
     file 'REDU_from_MWB_all.tsv'
@@ -153,6 +161,7 @@ process mwbRun {
     --path_to_doid_parents_csv ${doid_parents_csv} \
     --path_to_hpo_csv ${hpo_csv} \
     --path_to_exposure_csv ${exposure_csv} \
+    --path_to_cellosaurus_tsv ${cellosaurus_tsv} \
     || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; }
     """
 }
@@ -216,6 +225,9 @@ process mlRun {
     path doid_parents_csv
     path hpo_csv
     path exposure_csv
+    // staged for the MetaboLights cell lines; Metabolights2REDU.py does not take
+    // --path_to_cellosaurus_tsv yet (its CellLine / CellLineIndex are 'missing value')
+    path cellosaurus_tsv
 
     output:
     file 'Metabolights2REDU_ALL.tsv'
@@ -399,6 +411,7 @@ process gnpsHarmonize {
     path hpo_csv
     path exposure_csv
     path names_dmp
+    path cellosaurus_tsv
 
     output:
     file 'adjusted_metadata_folder'
@@ -417,6 +430,7 @@ process gnpsHarmonize {
     --path_to_hpo_csv ${hpo_csv} \
     --path_to_exposure_csv ${exposure_csv} \
     --path_to_ncbi_names_dmp ${names_dmp} \
+    --path_to_cellosaurus_tsv ${cellosaurus_tsv} \
     || { echo "WARNING: gnpsHarmonize failed or timed out; GNPS rows from earlier runs are kept" >&2; true; }
     """
 }
@@ -601,7 +615,7 @@ process enrich_ncbi_information {
 }
 
 
-// Files tracked in data/ (allowed terms seed); fail early with a clear message if one is missing
+// Files tracked in data/ (allowed terms seed, Cellosaurus table); fail early with a clear message if one is missing
 def dataFile(name) {
     file("$DATA_FOLDER/$name", checkIfExists: true)
 }
@@ -613,13 +627,14 @@ workflow {
     (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, hpo_onto, exposure_onto, doid_parents) = prepare_ontologies(
         ref.uberon, ref.cl, ref.po, ref.doid, ref.biome, ref.material,
         ref.nodes, ref.division, ref.hp, ref.ecto, ref.peco)
+    cellosaurus = dataFile(CELLOSAURUS_TABLE)
     allowed_terms = updateAllowedTerms(
         dataFile('allowed_terms.json'), ref.names, ref.uberon, ref.po, ref.cl, ref.doid, ref.ms,
-        ref.material, ref.biome, ref.hp, ref.ecto, ref.peco)
+        ref.material, ref.biome, ref.hp, ref.ecto, ref.peco, cellosaurus)
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
-    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names)
+    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names, cellosaurus)
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
     gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
@@ -629,12 +644,12 @@ workflow {
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto)
+    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus)
     mwb_files_ch = mwbFiles(1)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto)
+    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus)
     ml_files_ch = mlFiles(1)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 

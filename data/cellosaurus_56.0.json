@@ -1,0 +1,27 @@
+{
+    "resource": "Cellosaurus",
+    "version": "56.0",
+    "release_date": "25-June-2026",
+    "source_url": "https://ftp.expasy.org/databases/cellosaurus/cellosaurus.txt",
+    "source_sha256": "b225da548b65e8db10597759bc152c78b1b9d23e123494744510d7569cf4ab3b",
+    "source_bytes": 122297334,
+    "table": "cellosaurus_56.0_cell_lines.tsv.gz",
+    "table_sha256": "fde8fe3debef46f01adcf764f1246bc0eff8622477be79de81724c6d9c0d234b",
+    "cell_lines": 168970,
+    "rows": 297497,
+    "columns": [
+        "CellLineIndex",
+        "CellLine",
+        "Synonym",
+        "NCBITaxonIDs",
+        "Species",
+        "Category",
+        "BTO",
+        "Problematic",
+        "Mammalian"
+    ],
+    "license": "CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+    "attribution": "Cellosaurus, SIB Swiss Institute of Bioinformatics (https://www.cellosaurus.org/). Bairoch A. The Cellosaurus, a cell-line knowledge resource. J Biomol Tech. 2018;29(2):25-38. doi:10.7171/jbt.18-2902-002",
+    "changes": "Reduced to accession, recommended name, names/synonyms, species of origin (IDs and names), category, BTO cross-references and the problematic-cell-line note; Mammalian derived from NCBI Taxonomy.",
+    "build": "bin/build_cellosaurus_table.py"
+}
