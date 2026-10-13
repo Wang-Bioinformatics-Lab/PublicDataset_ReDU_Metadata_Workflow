@@ -30,7 +30,8 @@ def _parse_obo(path):
             if not in_term:
                 continue
             if line.startswith('id: '):
-                current = {'id': line[4:].strip(), 'name': None, 'synonyms': [], 'parents': [], 'obsolete': False}
+                current = {'id': line[4:].strip(), 'name': None, 'synonyms': [], 'parents': [], 'obsolete': False,
+                           'stimuli': {}}
                 terms[current['id']] = current
             elif current is None:
                 continue
@@ -44,13 +45,19 @@ def _parse_obo(path):
                     current['synonyms'].append(synonym)
             elif line.startswith('is_a: '):
                 current['parents'].append(line[6:].split('!')[0].strip())
+            elif line.startswith(('relationship: RO:0002309 ', 'intersection_of: RO:0002309 ')):
+                # ECTO: 'has exposure stimulus' <id> ! has exposure stimulus <label>
+                rest = line.split('RO:0002309 ', 1)[1]
+                stimulus_id = rest.split('!')[0].strip()
+                label = rest.split('! has exposure stimulus', 1)[1].strip() if '! has exposure stimulus' in rest else ''
+                current['stimuli'].setdefault(stimulus_id, label)
             elif line.startswith('is_obsolete: true'):
                 current['obsolete'] = True
     return terms
 
 
-def obo_table(path, prefix, index_column, root=None):
-    columns = [index_column, 'Label', 'Synonym']
+def obo_table(path, prefix, index_column, root=None, with_stimulus=False):
+    columns = [index_column, 'Label', 'Synonym'] + (['OrganismExposureAgentIndex', 'OrganismExposureAgent'] if with_stimulus else [])
     if not path or path == 'none' or not os.path.exists(path) or os.path.getsize(path) == 0:
         return pd.DataFrame(columns=columns)
 
@@ -74,8 +81,12 @@ def obo_table(path, prefix, index_column, root=None):
     rows = []
     for t in sorted(keep):
         info = terms[t]
+        stimulus = {}
+        if with_stimulus and len(info['stimuli']) == 1:
+            stimulus_id, stimulus_label = next(iter(info['stimuli'].items()))
+            stimulus = {'OrganismExposureAgentIndex': stimulus_id, 'OrganismExposureAgent': stimulus_label}
         for synonym in [info['name']] + [s for s in info['synonyms'] if s != info['name']]:
-            rows.append({index_column: t, 'Label': info['name'], 'Synonym': synonym})
+            rows.append({index_column: t, 'Label': info['name'], 'Synonym': synonym, **stimulus})
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -85,5 +96,7 @@ def hpo_table(path):
 
 def exposure_table(ecto_path, peco_path):
     # ECTO first: for the few labels both ontologies use, the general ECTO term is kept
-    return pd.concat([obo_table(ecto_path, 'ECTO:', 'ExposureIndex'),
-                      obo_table(peco_path, 'PECO:', 'ExposureIndex')], ignore_index=True)
+    # ECTO terms name what the organism was exposed to ('has exposure stimulus', e.g.
+    # exposure to metformin -> CHEBI:6801 metformin); PECO terms have no such link
+    return pd.concat([obo_table(ecto_path, 'ECTO:', 'ExposureIndex', with_stimulus=True),
+                      obo_table(peco_path, 'PECO:', 'ExposureIndex', with_stimulus=True)], ignore_index=True)

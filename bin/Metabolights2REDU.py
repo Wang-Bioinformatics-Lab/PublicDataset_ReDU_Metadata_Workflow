@@ -2632,7 +2632,8 @@ def Metabolights2REDU(study_id, **kwargs):
                                     ('HPOOntologyIndex_table', kwargs.get('hpo_table'), 'HPOOntologyIndex'),
                                     ('ExposureIndex_table', kwargs.get('exposure_table'), 'ExposureIndex')):
                 if _tab is not None and len(_tab):
-                    _index_tables[_arg] = _tab.drop_duplicates(subset=['Label'])[['Label', _id]].copy()
+                    # the exposure table also carries the exposure agent (OrganismExposureAgent / Index)
+                    _index_tables[_arg] = _tab.drop_duplicates(subset=['Label'])[['Label', _id] + [c for c in ('OrganismExposureAgentIndex', 'OrganismExposureAgent') if c in _tab.columns]].copy()
             df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                     ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,NCBIRankDivision_table=NCBIRankDivision_table, add_usi = True, 
                                                     other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'] + COMPRESSED_MS_FILE_EXTENSIONS, **_index_tables)

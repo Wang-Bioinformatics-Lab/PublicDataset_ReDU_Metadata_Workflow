@@ -214,7 +214,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         # blanks, pooled QCs and standards are not samples of the study's subjects/organisms
         mask = df['SampleType'].str.contains('blank', case=False) | \
             df['SampleType'].isin(['pool_QC', 'reference material', 'molecular_standards'])
-        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
+        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
         df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
         if '_recorded_LifeStage' in df.columns:
             df.loc[mask, '_recorded_LifeStage'] = ''
@@ -525,8 +525,15 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         labels = ecto_by_name.get(str(value).strip().lower(), set())
                         return next(iter(labels)) if len(labels) == 1 else allowedTerm_dict['Exposure']['missing']
                     df.loc[on_peco, 'Exposure'] = df.loc[on_peco, 'Exposure'].map(_to_ecto)
-                df = df.merge(exposure_ontology_table[['Label', 'ExposureIndex']].drop_duplicates('Label'), left_on='Exposure', right_on='Label', how='left')
+                # ECTO terms also give what the organism was exposed to (OrganismExposureAgent)
+                agent_columns = [c for c in ('OrganismExposureAgentIndex', 'OrganismExposureAgent')
+                                 if c in exposure_ontology_table.columns and c in allowedTerm_dict]
+                df = df.drop(columns=[c for c in agent_columns if c in df.columns])
+                df = df.merge(exposure_ontology_table[['Label', 'ExposureIndex'] + agent_columns].drop_duplicates('Label'), left_on='Exposure', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
+                for c in ('OrganismExposureAgentIndex', 'OrganismExposureAgent'):
+                    if c in allowedTerm_dict and c not in df.columns:
+                        df[c] = allowedTerm_dict[c]['missing']
             if key == 'ENVOEnvironmentBiomeIndex':
                 df = df.merge(envome_biome_ontology_table[['Label', 'ENVOEnvironmentBiomeIndex']].drop_duplicates('Label'), left_on='ENVOEnvironmentBiome', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
@@ -563,9 +570,17 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
 
 
+    # generated columns without their own rule (e.g. OrganismExposureAgent without an
+    # exposure table) still have to exist
+    for key, value in allowedTerm_dict.items():
+        if value.get('generate') == 'True' and key not in df.columns and key not in ('USI',):
+            if key in ('OrganismExposureAgent', 'OrganismExposureAgentIndex'):
+                df[key] = value['missing']
+
     # ontology indexes of unmatched labels come out of the merges as NaN
     for key, value in allowedTerm_dict.items():
-        if key.endswith('OntologyIndex') or key == 'ExposureIndex' or (key.startswith('ENVO') and key.endswith('Index')):
+        if key.endswith('OntologyIndex') or key in ('ExposureIndex', 'OrganismExposureAgent', 'OrganismExposureAgentIndex') \
+                or (key.startswith('ENVO') and key.endswith('Index')):
             if key in df.columns:
                 df[key] = df[key].fillna(value['missing']).replace('', value['missing'])
 

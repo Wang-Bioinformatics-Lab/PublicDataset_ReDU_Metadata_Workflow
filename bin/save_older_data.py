@@ -69,7 +69,8 @@ if __name__ == "__main__":
     # rows from earlier runs may have empty ontology indexes; use the missing-value term
     # (and none for columns added later, e.g. HPOCommonName / Exposure)
     for col in [c for c in df_merged.columns if c.endswith('OntologyIndex') or (c.startswith('ENVO') and c.endswith('Index'))
-                or c in ('HPOCommonName', 'Exposure', 'ExposureIndex')]:
+                or c in ('HPOCommonName', 'Exposure', 'ExposureIndex', 'OrganismExposureAgent', 'OrganismExposureAgentIndex',
+                         'TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus')]:
         df_merged[col] = df_merged[col].fillna('missing value').replace('', 'missing value')
 
     #unique by USI column, ignoring the file extension (e.g. x.raw vs x.mzML). Only known

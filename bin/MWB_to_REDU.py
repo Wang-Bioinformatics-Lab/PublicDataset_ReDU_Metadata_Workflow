@@ -1967,6 +1967,461 @@ def _drop_label_subject_ids(df):
     return sid.where(~bad, '')
 
 
+# ---------------------------------------------------------------------------
+# TimePointHoursRelativeToEvent, SampleGroupFreeText, FastingStatus
+# ---------------------------------------------------------------------------
+# hours per unit; a month is 730 h (8760 h / 12), a year 8760 h (365 days)
+_TP_UNIT_HOURS = {'s': 1 / 3600, 'min': 1 / 60, 'h': 1, 'd': 24, 'w': 168, 'mo': 730, 'y': 8760}
+_TP_UNIT_WORDS = {
+    's': 's', 'sec': 's', 'secs': 's', 'second': 's', 'seconds': 's',
+    'min': 'min', 'mins': 'min', 'minute': 'min', 'minutes': 'min',
+    'h': 'h', 'hr': 'h', 'hrs': 'h', 'hour': 'h', 'hours': 'h', 'hpi': 'h',
+    'd': 'd', 'day': 'd', 'days': 'd', 'dpi': 'd',
+    'w': 'w', 'wk': 'w', 'wks': 'w', 'week': 'w', 'weeks': 'w',
+    'mo': 'mo', 'month': 'mo', 'months': 'mo',
+    'y': 'y', 'yr': 'y', 'year': 'y', 'years': 'y'}
+_TP_WORD_NUMBERS = {'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8,
+                    'nine': 9, 'ten': 10, 'eleven': 11, 'twelve': 12, 'fourteen': 14, 'twenty': 20, 'thirty': 30}
+# keys about the time of sampling (also words glued to 'time': 'timedraw', 'samplingtimepoint')
+_TP_KEY_RE = re.compile(r'time|\b(?:tp|timept|day|days|week|weeks|wk|wks|hour|hours|hr|hrs|minute|minutes|min|mins|'
+                        r'month|months|hpi|dpi|seconds|post|after|since)\b')
+# keys giving how long a treatment / exposure / diet lasted until sampling (used only
+# where no time-point key gives a value)
+_TP_DURATION_KEY_RE = re.compile(r'\b(?:duration|period|on diet|of exposure|exposure time)\b')
+# time keys that are not the sampling time relative to an event: ages and development,
+# storage, extraction / incubation / LC run, clock times and dates, clinical history and
+# outcome, frequencies, fasting durations, ...
+_TP_KEY_EXCLUDE_RE = re.compile(
+    r'\b(?:age|aged|ages|ga|ega|gestation\w*|postnatal|postconceptional|postmenstrual|embryonic|developmental|'
+    r'development|adulthood|hpf|dpf|in vitro|div|storage|store|stored|fridge|freezer|frozen|freez\w*|thaw\w*|ice|'
+    r'incubation|incubated|extraction|extracted|retention|gradient|run|runs|acquisition|injection order|doubling|'
+    r'ischemia|ischemic|pmi|postmortem|mortem|death|died|survival|os|censor\w*|mortality|outcome|rebound|follow|'
+    r'followed|until|onset|sick|illness|dialysis|art|ati|diagnosis|btwn|between|date|dates|clock|zt|zeitgeber|'
+    r'zietgeber|circadian|year|years|season|per|past|frequency|drinks|exercise|stools?|well being|interval|cycle|'
+    r'caseindex|mgit|positive|difference|stab|subculture|preculture|sleep|fasting|fast|fasted|starvation|starved|'
+    r'lag|delay|processing|centrifug\w*|transport|shipping|stability|elapsed|half life|ventilation|icu|copies|tb|'
+    r'bmi|weight|fev1|fvc|fev1fvc|glucose|calprotectin|defensin|of day|hour of|draw hour|caffeine|use|kinetic|raw|'
+    r'file|files|fraction|intensity|vo2\w*|mg|ml|kg|g|ug|um|nm|mm|mol|number)\b|ageat|ageof|µ'
+    r'|\b(?:time|times|days?|weeks?|months?|hours?) to\b|\bfrom\b.*\bto\b')
+_TP_NUM = r'(\d+(?:\.\d+)?|' + '|'.join(_TP_WORD_NUMBERS) + r')'
+_TP_UNIT = r'(' + '|'.join(sorted(_TP_UNIT_WORDS, key=len, reverse=True)) + r')'
+# '24 h', '2hr', '30_min', '0-h', '24hrpost', '1 wk after FI', '2 h before surgery'
+_TP_NUM_UNIT_RE = re.compile(r'([-+]?)\s*' + _TP_NUM + r'\s*[-_]?\s*' + _TP_UNIT + r'\.?'
+                             r'(?:\s*[-_]?\s*(post|after|following|later|pi|pre|before)\b.{0,40})?')
+# 'day 7', 'D7', 'week 4', 'month 3', 'day -1', 'day one'
+_TP_UNIT_NUM_RE = re.compile(r'(day|days|d|week|wk|month|hour|hr|h)\s*[-_]?\s*([-+]?)\s*' + _TP_NUM)
+_TP_BARE_NUM_RE = re.compile(r'([-+]?)\s*(\d+(?:\.\d+)?)')
+
+
+def _tp_number(text):
+    return float(_TP_WORD_NUMBERS[text]) if text in _TP_WORD_NUMBERS else float(text)
+
+
+def timepoint_key_tier(key):
+    """1 for keys about the time point of sampling, 2 for treatment / exposure durations,
+    None for other keys."""
+    nk = _norm_key(key)
+    if not nk or _TP_KEY_EXCLUDE_RE.search(nk):
+        return None
+    if _TP_DURATION_KEY_RE.search(nk):
+        return 2
+    if _TP_KEY_RE.search(nk):
+        return 1
+    return None
+
+
+def _timepoint_key_unit(key):
+    """The one time unit a key states ('time (h)', 'days post infection'), else None.
+    A key that only is a unit word that may also mean a clock hour ('hour') gives none."""
+    nk = _norm_key(key)
+    if nk in {'hour', 'month', 'months', 'year', 'years'}:  # also clock hours / calendar months
+        return None
+    units = {_TP_UNIT_WORDS[t] for t in nk.split() if t in _TP_UNIT_WORDS}
+    return units.pop() if len(units) == 1 else None
+
+
+def timepoint_hours(value, key):
+    """Hours of the sampling time relative to the study's reference event, from one
+    factor value with an explicit number and time unit (in the value, or a number
+    under a key that states the unit). None for anything else (baseline, pre, T1,
+    ranges, several values, clock times)."""
+    if timepoint_key_tier(key) is None:
+        return None
+    v = ' '.join(str(value).strip().lower().replace('−', '-').split())
+    v = ' '.join(re.sub(r'\(\s*([a-z]+)\s*\)$', r' \1', v).split())  # '144(hrs)'
+    v = re.sub(r'^(?:post|after)\s+(?=\d)', '', v)  # 'post 4 hr'
+    if not v or ':' in v or '/' in v or '>' in v or '<' in v or '~' in v:
+        return None
+    m = _TP_NUM_UNIT_RE.fullmatch(v)
+    if m:
+        sign, num, unit, qual = m.group(1), m.group(2), m.group(3), m.group(4)
+        hours = _tp_number(num) * _TP_UNIT_HOURS[_TP_UNIT_WORDS[unit]]
+        if sign == '-' or qual in ('pre', 'before'):
+            if sign == '-' and qual in ('pre', 'before'):
+                return None
+            hours = -hours
+        return round(hours, 4)
+    m = _TP_UNIT_NUM_RE.fullmatch(v)
+    if m:
+        unit = _TP_UNIT_WORDS[m.group(1)]
+        hours = _tp_number(m.group(3)) * _TP_UNIT_HOURS[unit]
+        return round(-hours if m.group(2) == '-' else hours, 4)
+    m = _TP_BARE_NUM_RE.fullmatch(v)
+    if m:
+        unit = _timepoint_key_unit(key)
+        if unit is None:
+            return None
+        hours = float(m.group(2)) * _TP_UNIT_HOURS[unit]
+        return round(-hours if m.group(1) == '-' else hours, 4)
+    return None
+
+
+_TP_AGE_VALUE_RE = re.compile(r'postnatal|\bage\b|\bold\b|\bembryonic\b|^p ?\d+d?$|^e ?\d+(?:\.\d+)?$')
+_TP_AGE_TEXT_RE = re.compile(r'\bage[- ]?matched|\b(?:months?|years?|yrs?)[- ]old\b|\b(?:months?|years?) of age\b', re.I)
+
+
+def sample_timepoint_hours(df, study_text=''):
+    """Per-sample TimePointHoursRelativeToEvent (Series on df's rows): time-point keys
+    first, durations only for samples without one; the sample's values must agree.
+    A key is not used where its values give ages ('postnatal day 7', 'P21', 'E12.5') or,
+    for months / years, where the study describes its subjects by age ('6-month-old',
+    'age matched')."""
+    keys = df['Key'].astype(str)
+    tiers = keys.map(timepoint_key_tier)
+    age_keys = {k for k, v in zip(keys[tiers.notna()], df.loc[tiers.notna(), 'Value'].astype(str))
+                if _TP_AGE_VALUE_RE.search(' '.join(v.strip().lower().split()))}
+    tiers = tiers.where(~keys.isin(age_keys))
+    rows = tiers.notna()
+    if not rows.any():
+        return pd.Series(np.nan, index=df.index, dtype=object)
+    hours = pd.Series([timepoint_hours(v, k) for k, v in zip(keys[rows], df.loc[rows, 'Value'])],
+                      index=df.index[rows], dtype=object)
+    if study_text and _TP_AGE_TEXT_RE.search(study_text):
+        # months / years (multiples of 730 h) in a study about subjects of some age
+        long_keys = set(keys[rows][hours.map(lambda h: h is not None and abs(h) >= 730 and abs(h) % 730 == 0)])
+        hours = hours.where(~keys[rows].isin(long_keys))
+    t = pd.DataFrame({'filename': df.loc[rows, 'filename'], 'tier': tiers[rows], 'h': hours}).dropna()
+    if len(t) == 0:
+        return pd.Series(np.nan, index=df.index, dtype=object)
+    t = t.drop_duplicates()
+    t = t[t['tier'] == t.groupby('filename')['tier'].transform('min')]
+    agreed = t.groupby('filename')['h'].agg(lambda s: s.iloc[0] if s.nunique() == 1 else None).dropna()
+    return df['filename'].map(agreed)
+
+
+# ---- FastingStatus ----
+_FAST_KEY_RE = re.compile(r'\b(?:fast|fasted|fasting|feeding|feeding state|feeding status|nutritional state|'
+                          r'nutritional status|prandial state|prandial status|fed or fasted|fed vs fasted)\b')
+_FAST_KEY_EXCLUDE_RE = re.compile(r'glucose|insulin|glyc|lipid|cholesterol|triglycer|\btg\b|hba1c|level|concentration|'
+                                  r'breast|period|\bdha\b|\bmg\b|\bml\b|after|re ?feed|refed|\btime\b|\bduration\b|'
+                                  r'\bweeks?\b|\bwk\b|\bdays?\b')
+# keys that name the groups of the study design (fasting values are taken there only
+# when the value is a fasting state and nothing else)
+_FAST_GENERIC_KEY_RE = re.compile(r'^(?:groups?|factors?|conditions?|class|classes|categor(?:y|ies)|arms?|study arms?|'
+                                  r'treatments?|treatment groups?|treamtent group|experimental factors?|experimental groups?|'
+                                  r'experimental conditions?|interventions?|diets?|diet groups?|sampling|sample groups?|'
+                                  r'time ?points?|time|state|status|nutrition|nutritional status)$')
+_FASTED_PART_RE = re.compile(r'(?:(?:\d+(?:\.\d+)? ?(?:h|hr|hrs|hours?) ?)?(?:fasted|fasting|fast)'
+                             r'(?: ?(?:for )?\d+(?:\.\d+)? ?(?:h|hr|hrs|hours?))?(?: overnight)?|'
+                             r'overnight (?:fasted|fasting|fast)|morning fasting|fasting overnight)')
+_NONFASTED_PART_RE = re.compile(r'(?:fed|non ?fasted|nonfasted|unfasted|not fasted|postprandial|post prandial|sated|satiated)')
+
+
+def _fasting_text(value):
+    v = str(value).strip().lower().replace('-', ' ').replace('_', ' ')
+    v = re.sub(r'(\d)([a-z])', r'\1 \2', v)
+    v = re.sub(r'([a-z])(\d)', r'\1 \2', v)
+    return ' '.join(v.split())
+
+
+def fasting_status(value, key):
+    """'fasted' / 'non-fasted' from one per-sample value, else None."""
+    nk = _norm_key(key)
+    if not nk:
+        return None
+    v = _fasting_text(value)
+    if not v:
+        return None
+    if _is_fasting_key(key):
+        if re.search(r'\bintermittent\b|\bpre\b|\bpost fast|\bre ?fe[de]', v):
+            return None
+        if _FASTED_PART_RE.fullmatch(v) or v in {'overnight', 'over night', 'overnight fast'}:
+            return 'fasted'
+        if _NONFASTED_PART_RE.fullmatch(v) or v in {'ad lib', 'ad libitum', 'ad lib fed', 'fed ad libitum'}:
+            return 'non-fasted'
+        # yes / no only where the key asks whether the subject fasted
+        if re.fullmatch(r'(?:subject )?(?:fast|fasted|fasting)(?: status| state)?', nk):
+            if v in {'yes', 'y', 'true'}:
+                return 'fasted'
+            if v in {'no', 'n', 'false'}:
+                return 'non-fasted'
+        return None
+    if _FAST_GENERIC_KEY_RE.match(nk):
+        # the value, or one part of it ('Fasted/Saline', 'WT - 16h fast', 'LKO_Fast'), is
+        # only a fasting state; parts with both states leave it open
+        parts = [p.strip() for p in re.split(r'\s*(?:/|;|,|\||\+| and )\s*', str(value).strip().lower()) if p.strip()]
+        parts = [q for p in parts for q in re.split(r'\s+-\s+|_', p) if q.strip()]
+        found = set()
+        for p in parts:
+            t = _fasting_text(p)
+            if _FASTED_PART_RE.fullmatch(t):
+                found.add('fasted')
+            elif _NONFASTED_PART_RE.fullmatch(t):
+                found.add('non-fasted')
+            elif re.search(r'fast|\bfed\b|feed|prandial', t):
+                return None
+        if len(found) == 1:
+            whole = _fasting_text(value)
+            if re.search(r'\bintermittent\b|\bpre\b|\bpost fast|\bre ?fe[de]', whole):
+                return None
+            return found.pop()
+    return None
+
+
+def fasting_hours_status(value, key):
+    """Fasting duration in hours under a key that gives it ('fasting prior to blood
+    draw (hours)'): 0 -> non-fasted, >= 8 h -> fasted, else None."""
+    nk = _norm_key(key)
+    if not re.search(r'\b(?:fast|fasted|fasting)\b', nk) or re.search(r'glucose|insulin|glyc|lipid', nk):
+        return None
+    if _timepoint_key_unit(key) != 'h':
+        return None
+    v = str(value).strip()
+    if not re.fullmatch(r'\d+(?:\.\d+)?', v):
+        return None
+    h = float(v)
+    return 'non-fasted' if h == 0 else 'fasted' if h >= 8 else None
+
+
+def _is_fasting_key(key):
+    nk = _norm_key(key)
+    return bool(_FAST_KEY_RE.search(nk)) and not _FAST_KEY_EXCLUDE_RE.search(nk)
+
+
+def sample_fasting_status(df):
+    """Per-sample FastingStatus (Series on df's rows); the sample's values must agree.
+    Under a key that is not about fasting ('Treatment', 'Condition'), 'fed' / 'sated'
+    count only where the same key also names fasted samples ('Fed' alone can be a
+    feeding treatment)."""
+    keys = df['Key'].astype(str)
+    vals = [fasting_status(v, k) or fasting_hours_status(v, k) for k, v in zip(keys, df['Value'])]
+    s = pd.Series(vals, index=df.index, dtype=object)
+    nkeys = keys.map(_norm_key)
+    generic = ~keys.map(_is_fasting_key)
+    fasted_keys = set(nkeys[s.eq('fasted')])
+    s = s.where(~(generic & s.eq('non-fasted') & ~nkeys.isin(fasted_keys)))
+    t = pd.DataFrame({'filename': df['filename'], 'f': s}).dropna()
+    if len(t) == 0:
+        return pd.Series(np.nan, index=df.index, dtype=object)
+    agreed = t.groupby('filename')['f'].agg(lambda x: x.iloc[0] if x.nunique() == 1 else None).dropna()
+    return df['filename'].map(agreed)
+
+
+_STUDY_FAST_UNCLEAR_RE = re.compile(r'intermittent|ramadan|likely|maybe|possibl|probabl|some|subset|\bfor (?:the )?\w+ '
+                                    r'(?:study|test|experiment|group)|first sample|inoculation|challenge|larva|do not feed|'
+                                    r'\bif\b|unless|\bor\b|varied|various|depend|not required|no fasting required|'
+                                    r'not controlled|not specified|unknown|breakfast|\bbut\b|incubator|dietary|diet\b')
+_STUDY_FAST_EVENT_RE = re.compile(r'\b(?:before|prior to)\s+(?:the\s+)?(?:\w+\s+)?(\w+)')
+_STUDY_FAST_EVENT_OK = re.compile(r'(?:sampl|collect|sacrific|euthan|end|blood|serum|plasma|necrops|dissect|harvest|'
+                                  r'experiment|kill|surgery|tissue|draw|study|being studied|test|measure)')
+
+
+def study_fasting_status(text):
+    """FastingStatus from the study-level ANIMAL_FASTING / HUMAN_FASTING text when it
+    states one fasting condition for all subjects ('Overnight', '12 h', 'non-fasted',
+    ...); None for mixed or unclear statements. A bare 'no'/'none' is None too: in this
+    field it often means 'no information' rather than 'not fasted'."""
+    if not isinstance(text, str):
+        return None
+    v = ' '.join(text.strip().lower().replace(' ', ' ').split()).rstrip('.')
+    if not v or v in {'na', 'n/a', 'n a', 'not applicable', 'not available', '-', 'nan', 'unknown', 'not specified'}:
+        return None
+    if '|' in v or _STUDY_FAST_UNCLEAR_RE.search(v):
+        return None
+    if v in {'no', 'none'}:
+        return None
+    if re.fullmatch(r'(?:no fasting|non[- ]?fasted|not fasted|unfasted|fed|ad lib(?:itum)?|ad libitum fed|'
+                    r'fed ad lib(?:itum)?|free feeding)', v):
+        return 'non-fasted'
+    if re.search(r'\b(?:no|not|non|without|un)[- ]?fast', v):
+        return None
+    for m in _STUDY_FAST_EVENT_RE.finditer(v):
+        if not _STUDY_FAST_EVENT_OK.match(m.group(1)):
+            return None
+    nums = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*(?:-\s*\d+(?:\.\d+)?\s*)?(?:h|hr|hrs|hours?)\b', v)]
+    words = {'six': 6, 'eight': 8, 'twelve': 12, 'four': 4, 'five': 5, 'ten': 10, 'sixteen': 16}
+    nums += [words[w] for w in re.findall(r'\b(' + '|'.join(words) + r')\s*(?:h|hr|hrs|hours?)\b', v)]
+    if re.search(r'\b(?:0|zero)\s*(?:-|to)', v):
+        return None
+    if nums:
+        return 'fasted' if min(nums) >= 4 else None
+    if re.search(r'\b(?:yes|fasted|fasting|fast|overnight|over night|one night)\b', v) or v in {'y'}:
+        return 'fasted'
+    return None
+
+
+# ---- SampleGroupFreeText ----
+# factor keys whose information has a ReDU column of its own (sex, age, life stage,
+# organism, body part / sample type, disease / health, smoking, BMI, diet, location,
+# dates and times, fasting, instrument / LC / polarity, methods, QC / blank class) or
+# that are not groups (batch, replicate, run order, injection, plate / well, raw files,
+# subject IDs)
+_GROUP_KEY_EXCLUDE_RE = re.compile(
+    r'time|visit|\b(?:day|days|week|weeks|hour|hours|hr|hrs|month|months|tp|timept)\b|'
+    r'\b(?:batch|batches|replicate|replicates|rep|reps|replication|run|runs|order|injection|inj|plate|well|position|'
+    r'vial|tray|rack|sequence|seq|block|polarity|ion mode|ionization|ionisation|column|chromatography|lc|ms|'
+    r'instrument|platform|method|methods|extraction|protocol|date|raw|file|files|mzml|id|ids|identifier|identifiers|'
+    r'sex|gender|age|aged|ages|life stage|lifestage|developmental stage|species|organism|organisms|taxon|taxonomy|'
+    r'tissue|tissues|organ|organs|body part|bodypart|body site|sample type|sample types|sampletype|sample source|'
+    r'source|matrix|specimen|specimens|biofluid|fluid|material|biospecimen|disease|diseases|diagnosis|diagnoses|'
+    r'health|healthy|smok\w*|tobacco|bmi|body mass|diet|diets|dietary|chow|feed|feeding|fed|fasting|fasted|fast|'
+    r'country|location|site|region|latitude|longitude|lat|lon|depth|altitude|elevation|collection|season|year|'
+    r'qc|blank|blanks|quality|sample class|samle type|subject|subjects|cage|cages|moment|duration|ion model)\b|'
+    r'^age(?!nt)|\bage(?:months?|years?|weeks?|days?|at\w*)|collection\w*|ionmode|tissue\w*|\w*duration\w*')
+_GROUP_ID_KEY_RE = re.compile(r'(?:subject|participant|individual|donor|person)s?|'
+                              r'(?:subject|participant|patient|animal|mouse|mice|rat|individual|donor|sample|pig|cow|'
+                              r'fish|plant|tree|person|host)s? (?:no|number|num|nr|name|code|label)')
+# design keys that are dropped where the study's ReDU columns already tell their groups
+# apart (treatment -> Exposure, group -> DOIDCommonName, phenotype -> HPOCommonName, ...)
+# (every factor except genotype / strain / cell line / cultivar-like ones, which the ReDU
+# columns never describe)
+_GROUP_INDEPENDENT_KEY_RE = re.compile(
+    r'genotyp\w*|\b(?:strains?|lines?|cell lines?|mutants?|mutations?|knock ?outs?|ko|clones?|cultivars?|variet(?:y|ies)|'
+    r'accessions?|alleles?|transgen\w*|construct|plasmid|sirna|shrna|crispr|wt)\b')
+_GROUP_NA_VALUES = {'', '-', '--', 'na', 'n/a', 'nan', 'null'}
+# internal form until the study-level check: sample ID \x1d key \x1e value \x1f key \x1e value
+_GROUP_SID, _GROUP_KV, _GROUP_PART = '\x1d', '\x1e', '\x1f'
+# ReDU columns that may already tell a design factor's groups apart
+_GROUP_REDU_COLUMNS = ['SampleType', 'SampleTypeSub1', 'NCBITaxonomy', 'UBERONBodyPartName', 'BiologicalSex',
+                       'HealthStatus', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'Diet', 'SmokingStatus',
+                       'LifeStage', 'Country', 'ENVOEnvironmentMaterial', 'FastingStatus',
+                       'TimePointHoursRelativeToEvent']
+
+
+def sample_group_texts(data):
+    """Sample ID -> the sample's grouping factors from the mwTab SUBJECT_SAMPLE_FACTORS
+    'Factors', in the study's order and wording (internal form, see
+    finalize_sample_groups). Factors that have a ReDU column of their own, that are no
+    groups, and factors with a different value for nearly every sample are left out.
+    ';' inside a key or value becomes ','."""
+    items = [(str(it.get('Sample ID', '')).strip(), it.get('Factors') or {})
+             for it in (data or []) if isinstance(it, dict)]
+    items = [(sid, f) for sid, f in items if sid and isinstance(f, dict)]
+    if not items:
+        return {}
+    values = {}
+    for _, f in items:
+        for k, v in f.items():
+            values.setdefault(str(k).strip(), []).append(str(v).strip())
+    n = len({sid for sid, _ in items})
+    drop = set()
+    for k, vs in values.items():
+        nk = _norm_key(k)
+        if not nk or _GROUP_KEY_EXCLUDE_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) \
+                or is_variant_raw_file_key(k.lower()) or k.lower() in _EXACT_RAW_KEYS:
+            drop.add(k)
+            continue
+        filled = [x for x in vs if x.lower() not in _GROUP_NA_VALUES]
+        if n >= 8 and len(set(filled)) >= 0.9 * n:
+            drop.add(k)
+    clean = lambda x: ' '.join(str(x).replace(';', ',').replace(_GROUP_SID, ' ').replace(_GROUP_KV, ' ')
+                               .replace(_GROUP_PART, ' ').split())
+    out = {}
+    for sid, f in items:
+        parts = []
+        for k, v in f.items():
+            k, v = str(k).strip(), clean(v)
+            if k in drop or v.lower() in _GROUP_NA_VALUES:
+                continue
+            parts.append(clean(k) + _GROUP_KV + v)
+        text = _GROUP_PART.join(parts)
+        if sid in out and out[sid] != text:
+            out[sid] = None  # one Sample ID listed with different factors
+        elif sid not in out:
+            out[sid] = text or None
+    return {sid: clean(sid) + _GROUP_SID + t for sid, t in out.items() if t}
+
+
+def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing value', study_id=''):
+    """Turns the internal sample groups into 'Key: value; Key: value' for one study.
+    Factors (other than genotype / strain / cell line-like ones) whose groups the
+    study's ReDU columns already tell apart are dropped; the column is filled only where the real
+    samples (no QC / blanks) form at least 2 groups and at most half as many groups as
+    samples. Never removes rows."""
+    if column not in df.columns or len(df) == 0:
+        return df
+    df = df.copy()
+    raw = df[column].astype(str)
+    has = raw.str.contains(_GROUP_SID, regex=False)
+    if not has.any():
+        df[column] = missing
+        return df
+    sid = raw.where(has).str.split(_GROUP_SID, n=1).str[0]
+    parts = raw.where(has).str.split(_GROUP_SID, n=1).str[1].fillna('').map(
+        lambda t: [p.split(_GROUP_KV, 1) for p in t.split(_GROUP_PART) if _GROUP_KV in p])
+    sample_type = df['SampleType'].astype(str) if 'SampleType' in df.columns else pd.Series('', index=df.index)
+    real = has & ~(sample_type.isin(['pool_QC', 'reference material']) | sample_type.str.contains('blank', case=False))
+    # design keys whose value is a function of the ReDU columns over the real samples
+    redu_cols = [c for c in _GROUP_REDU_COLUMNS if c in df.columns]
+    redu_tuple = df[redu_cols].astype(str).agg('\x1f'.join, axis=1) if redu_cols else pd.Series('', index=df.index)
+    keys = list(dict.fromkeys(k for ps in parts[real] for k, _ in ps))
+    dropped = set()
+    for k in keys:
+        if _GROUP_INDEPENDENT_KEY_RE.search(_norm_key(k)):
+            continue
+        kv = parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None))
+        t = pd.DataFrame({'redu': redu_tuple[real], 'v': kv, 'sid': sid[real]}).dropna().drop_duplicates(['sid'])
+        if len(t) and t['v'].nunique() > 1 and (t.groupby('redu')['v'].nunique() <= 1).all():
+            dropped.add(k)
+    text = parts.map(lambda ps: '; '.join(f'{k}: {v}' for k, v in ps if k not in dropped))
+    text = text.where(has & (text != ''))
+    groups = pd.DataFrame({'sid': sid[real], 'g': text[real]}).dropna().drop_duplicates('sid')
+    n_samples, n_groups = len(groups), groups['g'].nunique()
+    reason = None
+    if n_groups < 2:
+        reason = 'fewer than 2 groups'
+    elif n_groups > n_samples / 2:
+        reason = 'groups > half of the samples'
+    if dropped:
+        print(f"[SampleGroupFreeText] {study_id}: dropped as covered by ReDU columns: {sorted(dropped)}")
+    if reason:
+        print(f"[SampleGroupFreeText] {study_id}: not filled ({reason}; {n_groups} groups, {n_samples} samples)")
+        df[column] = missing
+        return df
+    print(f"[SampleGroupFreeText] {study_id}: filled ({n_groups} groups, {n_samples} samples)")
+    df[column] = text.fillna(missing)
+    return df
+
+
+def study_fasting_text(mwtab):
+    """The study-level ANIMAL_FASTING / HUMAN_FASTING statements (TREATMENT, else
+    SUBJECT section), joined by ' || '."""
+    texts = []
+    for section in ('TREATMENT', 'SUBJECT'):
+        for key in ('ANIMAL_FASTING', 'HUMAN_FASTING'):
+            value = _section(mwtab, section).get(key)
+            if isinstance(value, str) and value.strip():
+                texts.append(' '.join(value.split()))
+    return ' || '.join(dict.fromkeys(texts))
+
+
+def study_fasting_from_texts(joined):
+    """One FastingStatus from all study-level fasting statements, or None if any of
+    them is unclear or they disagree."""
+    if not isinstance(joined, str) or not joined.strip():
+        return None
+    found = set()
+    for text in joined.split(' || '):
+        t = text.strip().lower()
+        if t in {'na', 'n/a', 'n a', 'not applicable', 'not available', '-', 'nan'}:
+            continue
+        status = study_fasting_status(text)
+        if status is None:
+            return None
+        found.add(status)
+    return found.pop() if len(found) == 1 else None
+
+
 _NCBI_NAME_CACHE = {}
 
 
@@ -2890,6 +3345,27 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         for col in ['MWB_depth', 'MWB_collection_date', 'MWB_healthy', 'MWB_doid', 'MWB_lifestage']:
             if col in df.columns:
                 df = df.drop(columns=[col])
+    # time point, fasting state and the study's own sample group; a problem here must
+    # never cost the study its rows
+    for _col in ['MWB_timepoint', 'MWB_fasting', 'MWB_samplegroup']:
+        df[_col] = None
+    try:
+        df['MWB_timepoint'] = sample_timepoint_hours(df, _STUDY_TEXT_REST)
+    except Exception as e:
+        print(f"Could not extract time points: {type(e).__name__}: {e}")
+        df['MWB_timepoint'] = None
+    try:
+        df['MWB_fasting'] = sample_fasting_status(df)
+    except Exception as e:
+        print(f"Could not extract fasting states: {type(e).__name__}: {e}")
+        df['MWB_fasting'] = None
+    try:
+        _groups = sample_group_texts(data)
+        if _groups:
+            df['MWB_samplegroup'] = df['filename'].map(_groups)
+    except Exception as e:
+        print(f"Could not build sample groups: {type(e).__name__}: {e}")
+        df['MWB_samplegroup'] = None
     # study-level disease for the samples of case groups and healthy-control groups
     # (filled in translate_MWB_to_REDU_by_logic where nothing per-sample was found)
     df['MWB_study_health'] = None
@@ -3149,7 +3625,8 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
         'TAXONOMY_ID': _section(MWB_mwTAB_dict, 'SUBJECT').get('TAXONOMY_ID', 'NA'),
         'ACQUISITION_DATE': _section(MWB_mwTAB_dict, 'ANALYSIS').get('ACQUISITION_DATE', 'NA'),
         'CREATED_ON': _section(MWB_mwTAB_dict, 'METABOLOMICS WORKBENCH').get('CREATED_ON', 'NA'),
-        'STUDY_ID': _section(MWB_mwTAB_dict, 'METABOLOMICS WORKBENCH').get('STUDY_ID', 'NA')
+        'STUDY_ID': _section(MWB_mwTAB_dict, 'METABOLOMICS WORKBENCH').get('STUDY_ID', 'NA'),
+        'STUDY_FASTING': study_fasting_text(MWB_mwTAB_dict)
 
     }
 
@@ -3700,6 +4177,28 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
     except Exception as e:
         print(f"Could not derive additional sample fields: {type(e).__name__}: {e}")
 
+    # time point, sample group and fasting state
+    try:
+        if 'MWB_timepoint' in MWB_table.columns:
+            MWB_table['TimePointHoursRelativeToEvent'] = MWB_table['MWB_timepoint']
+        if 'MWB_samplegroup' in MWB_table.columns:
+            MWB_table['SampleGroupFreeText'] = MWB_table['MWB_samplegroup']
+        # fasting: whole animals (humans included) only, no cultured cells, plants or
+        # microbes; the study-level statement only for studies without per-sample values
+        animal = MWB_table['SampleType'].astype(str).eq('animal') \
+            if 'SampleType' in MWB_table.columns else pd.Series(False, index=MWB_table.index)
+        if 'SUBJECT_TYPE' in MWB_table.columns:
+            animal &= ~MWB_table['SUBJECT_TYPE'].astype(str).str.contains(r'cell|cultur|synthetic|water', case=False)
+        fasting = MWB_table['MWB_fasting'] if 'MWB_fasting' in MWB_table.columns \
+            else pd.Series(None, index=MWB_table.index, dtype=object)
+        if fasting.isna().all() and 'STUDY_FASTING' in MWB_table.columns:
+            fasting = MWB_table['STUDY_FASTING'].map(study_fasting_from_texts)
+        MWB_table['FastingStatus'] = fasting.where(animal)
+    except Exception as e:
+        print(f"Could not derive time points / sample groups / fasting states: {type(e).__name__}: {e}")
+        for _col in ['TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus']:
+            MWB_table[_col] = np.nan
+
     # ENVO environmental material, exact label/synonym of the Sample Source (else the
     # study SAMPLE_TYPE), only in studies of environmental samples
     if 'SUBJECT_TYPE' in MWB_table.columns:
@@ -3739,7 +4238,8 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
                         'InternalStandardsUsed', 'SubjectIdentifierAsRecorded', 'AgeInYears',
                         'BiologicalSex', 'UBERONBodyPartName', 'HealthStatus', 'DOIDCommonName',
                         'ComorbidityListDOIDIndex', 'Country', 'HumanPopulationDensity',
-                        'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'HPOCommonName', 'Exposure']
+                        'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'HPOCommonName', 'Exposure',
+                        'TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus']
 
     # Iterate through each column in the list
     for column in columns_to_check:
@@ -3979,7 +4479,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         _subject_cols = ['NCBITaxonomy', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'AgeInYears', 'UniqueSubjectID',
                          'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'DOIDOntologyIndex', 'BiologicalSex',
                          'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'LifeStage',
-                         'HPOCommonName', 'Exposure']
+                         'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus']
         redu_df_final.loc[_not_subject, [c for c in _subject_cols if c in redu_df_final.columns]] = 'missing value'
 
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
@@ -3994,7 +4494,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     for _key, _table, _col in [('HPOOntologyIndex_table', HPO_TABLE, 'HPOOntologyIndex'),
                                ('ExposureIndex_table', EXPOSURE_TABLE, 'ExposureIndex')]:
         if _table is not None and len(_table):
-            doid_kwargs[_key] = _table.drop_duplicates(subset=['Label'])[['Label', _col]].copy()
+            # the exposure table also carries the exposure agent (OrganismExposureAgent / Index)
+            doid_kwargs[_key] = _table.drop_duplicates(subset=['Label'])[['Label', _col] + [c for c in ('OrganismExposureAgentIndex', 'OrganismExposureAgent') if c in _table.columns]].copy()
     redu_df_final = complete_and_fill_REDU_table(redu_df_final, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, **doid_kwargs,
                                                  ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table.drop_duplicates(subset=["Label"]),
                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table.drop_duplicates(subset=["Label"]),
@@ -4002,6 +4503,11 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
                                                  add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
 
     redu_df_final = apply_sex_distribution_guard(redu_df_final, rest_response, study_id=str(study_id))
+    try:
+        redu_df_final = finalize_sample_groups(redu_df_final, study_id=str(study_id))
+    except Exception as e:
+        print(f"Could not finalize sample groups: {type(e).__name__}: {e}")
+        redu_df_final['SampleGroupFreeText'] = 'missing value'
 
     if export_to_tsv == True:
         redu_df_final.to_csv('{}_REDU_from_MWB.tsv'.format(study_id), sep='\t', index=False, header=True)
@@ -4115,7 +4621,10 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                             "BodyMassIndex",
                             "Diet",
                             "HPOCommonName",
-                            "Exposure"
+                            "Exposure",
+                            "TimePointHoursRelativeToEvent",
+                            "SampleGroupFreeText",
+                            "FastingStatus"
                             ]
     
     complete_df['ENVOEnvironmentMaterial'] = complete_df['ENVOEnvironmentMaterial'].replace({np.nan: 'missing value', None: 'missing value'})
@@ -4160,6 +4669,9 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                            "Diet",
                            "HPOCommonName",
                            "Exposure",
+                           "TimePointHoursRelativeToEvent",
+                           "SampleGroupFreeText",
+                           "FastingStatus",
                            "UniqueSubjectID",
                            "LifeStage",
                            "UBERONOntologyIndex",

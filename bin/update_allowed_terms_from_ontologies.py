@@ -177,6 +177,10 @@ if __name__ == "__main__":
         if len(exposure_df) > 0:
             allowedTerm_dict['Exposure']['allowed_values'] = exposure_df['Label'].unique().tolist()
             allowedTerm_dict['ExposureIndex']['allowed_values'] = exposure_df['ExposureIndex'].unique().tolist()
+            agents = exposure_df.dropna(subset=['OrganismExposureAgentIndex']) if 'OrganismExposureAgentIndex' in exposure_df.columns else exposure_df.iloc[0:0]
+            for key, column in (('OrganismExposureAgent', 'OrganismExposureAgent'), ('OrganismExposureAgentIndex', 'OrganismExposureAgentIndex')):
+                if key in allowedTerm_dict and len(agents):
+                    allowedTerm_dict[key]['allowed_values'] = agents[column].unique().tolist()
         else:
             print('WARNING: no ECTO/PECO terms found, Exposure keeps its previous allowed values')
 

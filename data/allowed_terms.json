@@ -536,6 +536,49 @@
         "source": "ECTO: https://www.ebi.ac.uk/ols4/ontologies/ecto \nPECO: https://www.ebi.ac.uk/ols4/ontologies/peco",
         "allowed_values": []
     },
+    "OrganismExposureAgent": {
+        "generate": "True",
+        "type": "generated",
+        "missing": "missing value",
+        "description": "(automatically generated) What the organism was exposed to, taken from the ECTO term in Exposure ('has exposure stimulus'): a chemical (ChEBI), environmental material (ENVO), organism (NCBITaxon), food (FOODON) or procedure (MAXO). Empty for PECO terms, which do not name an agent.",
+        "example": "metformin",
+        "source": "ECTO: https://www.ebi.ac.uk/ols4/ontologies/ecto \nChEBI: https://www.ebi.ac.uk/ols4/ontologies/chebi",
+        "allowed_values": []
+    },
+    "TimePointHoursRelativeToEvent": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "Time of sampling in hours relative to the study's reference event (e.g. start of treatment, infection or intervention). Negative values are before the event. Only filled from values that state a number with a time unit (1 day = 24 h, 1 week = 168 h, 1 month = 730 h).",
+        "example": "24",
+        "source": "-",
+        "allowed_values": [
+            "numeric"
+        ]
+    },
+    "FastingStatus": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "Whether the subject was fasted before sampling.",
+        "example": "fasted",
+        "source": "-",
+        "allowed_values": [
+            "fasted",
+            "non-fasted"
+        ]
+    },
+    "SampleGroupFreeText": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The sample's experimental group as defined by the study, in the study's own wording, from grouping factors that no other ReDU column covers (e.g. genotype, intervention arm, cohort). Several grouping factors are separated by ';' as 'Factor: value; Factor: value'. Only filled when the study has at least 2 groups and on average at least 2 samples per group.",
+        "example": "Genotype: WT; Treatment: vehicle",
+        "source": "-",
+        "allowed_values": [
+            "00"
+        ]
+    },
     "SampleCollectionDateandTime": {
         "generate": "False",
         "type": "general",
@@ -865,6 +908,15 @@
         "description": "(automatically generated) The index of the exposure term (ECTO or PECO).",
         "example": "ECTO:9000052",
         "source": "ECTO: https://www.ebi.ac.uk/ols4/ontologies/ecto \nPECO: https://www.ebi.ac.uk/ols4/ontologies/peco",
+        "allowed_values": []
+    },
+    "OrganismExposureAgentIndex": {
+        "generate": "True",
+        "type": "generated",
+        "missing": "missing value",
+        "description": "(automatically generated) The ontology ID of the exposure agent (CHEBI, ENVO, NCBITaxon, FOODON, MAXO, ...).",
+        "example": "CHEBI:6801",
+        "source": "ECTO: https://www.ebi.ac.uk/ols4/ontologies/ecto",
         "allowed_values": []
     },
     "NCBIRank": {
