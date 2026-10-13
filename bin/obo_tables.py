@@ -39,7 +39,9 @@ def _parse_obo(path):
             elif line.startswith('synonym: '):
                 match = re.match(r'synonym: "((?:[^"\\]|\\.)*)" EXACT', line)
                 if match:
-                    current['synonyms'].append(match.group(1).replace('\\"', '"'))
+                    # some PECO synonyms carry the scope in the text too: "UVB exposure (exact)"
+                    synonym = re.sub(r'\s*\(exact\)$', '', match.group(1).replace('\\"', '"'), flags=re.I)
+                    current['synonyms'].append(synonym)
             elif line.startswith('is_a: '):
                 current['parents'].append(line[6:].split('!')[0].strip())
             elif line.startswith('is_obsolete: true'):

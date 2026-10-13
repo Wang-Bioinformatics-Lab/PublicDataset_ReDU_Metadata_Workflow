@@ -1,0 +1,26 @@
+alias,column,term,note
+water deficit,Exposure,drought exposure,PECO: exposure of plants to a prolonged dry period (water deficit)
+heat,Exposure,high temperature exposure,PECO: exposure to above optimal temperature
+cold,Exposure,cold temperature exposure,PECO: exposure to cold or sub-optimal temperature
+low temperature,Exposure,cold temperature exposure,PECO: exposure to cold or sub-optimal temperature
+high light,Exposure,high light intensity exposure,PECO label wording
+uv-b,Exposure,UV-B light exposure,PECO synonym 'UVB exposure'
+cholesterol gallstones,HPOCommonName,,gallstones (cholelithiasis) are a DOID disease
+pigment gallstones,HPOCommonName,,gallstones (cholelithiasis) are a DOID disease
+drug resistance,HPOCommonName,,HPO synonym of 'Refractory drug response'; in MetaboLights the drug resistance of cells or microbes
+frail,HPOCommonName,Frailty,adjective of the HPO label
+hyperlipidaemia,HPOCommonName,Hyperlipidemia,British spelling
+hypercholesterolaemia,HPOCommonName,Hypercholesterolemia,British spelling
+hypertriglyceridaemia,HPOCommonName,Hypertriglyceridemia,British spelling
+hyperglycaemia,HPOCommonName,Hyperglycemia,British spelling
+hyperuricaemia,HPOCommonName,Hyperuricemia,British spelling
+sucrose,Exposure,,sugars are diets (own column) or the vehicle of a treatment in drinking water
+glucose,Exposure,,sugars are diets (own column) or the vehicle of a treatment in drinking water
+fructose,Exposure,,sugars are diets (own column) or the vehicle of a treatment in drinking water
+preterm birth,HPOCommonName,,in MetaboLights the pregnancy outcome of the sampled mother; HPO 'Premature birth' is a phenotype of the infant
+premature birth,HPOCommonName,,in MetaboLights the pregnancy outcome of the sampled mother; HPO 'Premature birth' is a phenotype of the infant
+social isolation,HPOCommonName,,HPO synonym of 'Diminishment of relationship seeking'; in MetaboLights an experimental housing condition of animals
+methanol,Exposure,,extraction / LC solvent (abbreviated MeOH in protocols)
+acetonitrile,Exposure,,extraction / LC solvent (abbreviated ACN in protocols)
+chloroform,Exposure,,extraction solvent (CHCl3 in protocols)
+methyl tert-butyl ether,Exposure,,extraction solvent (MTBE in protocols)

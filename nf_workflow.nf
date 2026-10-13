@@ -132,6 +132,8 @@ process mwbRun {
     path allowed_terms
     path doid_csv
     path doid_parents_csv
+    path hpo_csv
+    path exposure_csv
 
     output:
     file 'REDU_from_MWB_all.tsv'
@@ -149,6 +151,8 @@ process mwbRun {
     --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv \
     --path_to_doid_csv ${doid_csv} \
     --path_to_doid_parents_csv ${doid_parents_csv} \
+    --path_to_hpo_csv ${hpo_csv} \
+    --path_to_exposure_csv ${exposure_csv} \
     || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; }
     """
 }
@@ -210,6 +214,8 @@ process mlRun {
     path allowed_terms
     path doid_csv
     path doid_parents_csv
+    path hpo_csv
+    path exposure_csv
 
     output:
     file 'Metabolights2REDU_ALL.tsv'
@@ -226,6 +232,8 @@ process mlRun {
     --path_ncbi_rank_division ${ncbi_rank_division} \
     --path_to_doid_csv ${doid_csv} \
     --path_to_doid_parents_csv ${doid_parents_csv} \
+    --path_to_hpo_csv ${hpo_csv} \
+    --path_to_exposure_csv ${exposure_csv} \
     || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; }
     """
 }
@@ -387,6 +395,8 @@ process gnpsHarmonize {
     path ENVO_material_csv
     path ncbi_rank_division
     path allowed_terms
+    path hpo_csv
+    path exposure_csv
 
     output:
     file 'adjusted_metadata_folder'
@@ -402,6 +412,8 @@ process gnpsHarmonize {
     --path_to_doid_csv ${DOID_ontology_csv} \
     --path_to_envo_biome_csv ${ENVO_bio_csv} \
     --path_to_envo_material_csv ${ENVO_material_csv} \
+    --path_to_hpo_csv ${hpo_csv} \
+    --path_to_exposure_csv ${exposure_csv} \
     || { echo "WARNING: gnpsHarmonize failed or timed out; GNPS rows from earlier runs are kept" >&2; true; }
     """
 }
@@ -604,7 +616,7 @@ workflow {
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
-    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
+    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto)
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
     gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
@@ -614,12 +626,12 @@ workflow {
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents)
+    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto)
     mwb_files_ch = mwbFiles(1)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents)
+    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto)
     ml_files_ch = mlFiles(1)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 

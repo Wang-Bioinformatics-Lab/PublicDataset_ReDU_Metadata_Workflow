@@ -1,0 +1,4 @@
+procedure,abbreviation,column,term,note
+cecal ligation and puncture,CLP,HPOCommonName,Sepsis,standard polymicrobial sepsis model; used only where the study text names the procedure
+caecal ligation and puncture,CLP,HPOCommonName,Sepsis,British spelling of cecal ligation and puncture
+cecal ligation puncture,CLP,HPOCommonName,Sepsis,wording variant of cecal ligation and puncture

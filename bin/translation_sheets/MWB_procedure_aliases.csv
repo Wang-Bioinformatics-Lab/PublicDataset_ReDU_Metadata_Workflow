@@ -1,0 +1,5 @@
+Procedure,Abbreviation,Column,REDU
+cecal ligation and puncture,CLP,HPOCommonName,Sepsis
+caecal ligation and puncture,CLP,HPOCommonName,Sepsis
+middle cerebral artery occlusion,MCAO,DOIDCommonName,ischemic stroke
+bile duct ligation,BDL,DOIDCommonName,cholestasis

@@ -494,6 +494,8 @@ def get_uberon_table(owl_path):
 
     df = df[(df["Label"].notna() | df["Synonym"].notna()) & ((df["Label"] != '') | (df["Synonym"] != ''))]
     df = df[df['UBERONOntologyIndex'].str.startswith('UBERON_', na=False)]
+    # obsolete classes keep their label as 'obsolete <name>'; they must not be assigned
+    df = df[~df['Label'].astype(str).str.lower().str.startswith('obsolete')]
 
     return df
 
@@ -542,6 +544,8 @@ def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_n
     df = pd.DataFrame(data)
     df = df[(df["Label"].notna() | df["Synonym"].notna()) & ((df["Label"] != '') | (df["Synonym"] != ''))]
     df = df[df[index_column_name].str.startswith(ont_prefix, na=False)]
+    # obsolete classes keep their label as 'obsolete <name>'; they must not be assigned
+    df = df[~df['Label'].astype(str).str.lower().str.startswith('obsolete')]
 
     if rm_synonym_info:
         df['Synonym'] = df['Synonym'].str.replace(r' \([^)]*\)', '', regex=True)

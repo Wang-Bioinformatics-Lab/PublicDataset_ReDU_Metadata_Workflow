@@ -456,6 +456,23 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'ExposureIndex':
                 if 'Exposure' not in df.columns:
                     df['Exposure'] = allowedTerm_dict.get('Exposure', {}).get('missing', missing_value)
+                # PECO is for plants: on other samples a PECO term becomes the ECTO term with
+                # that name as label or exact synonym (e.g. PECO 'radiation exposure' ->
+                # ECTO 'exposure to radiation'), or missing if ECTO has none
+                if 'Synonym' in exposure_ontology_table.columns and 'SampleType' in df.columns:
+                    ecto = exposure_ontology_table[exposure_ontology_table['ExposureIndex'].astype(str).str.startswith('ECTO:')]
+                    ecto_by_name = {}
+                    for label, synonym in zip(ecto['Label'].astype(str), ecto['Synonym'].astype(str)):
+                        for name in (label, synonym):
+                            ecto_by_name.setdefault(name.strip().lower(), set()).add(label)
+                    peco_labels = set(exposure_ontology_table.loc[exposure_ontology_table['ExposureIndex'].astype(str).str.startswith('PECO:'), 'Label'].astype(str)) \
+                        - set(ecto['Label'].astype(str))
+                    not_plant = ~df['SampleType'].astype(str).str.lower().str.startswith('plant')
+                    on_peco = not_plant & df['Exposure'].isin(peco_labels)
+                    def _to_ecto(value):
+                        labels = ecto_by_name.get(str(value).strip().lower(), set())
+                        return next(iter(labels)) if len(labels) == 1 else allowedTerm_dict['Exposure']['missing']
+                    df.loc[on_peco, 'Exposure'] = df.loc[on_peco, 'Exposure'].map(_to_ecto)
                 df = df.merge(exposure_ontology_table[['Label', 'ExposureIndex']].drop_duplicates('Label'), left_on='Exposure', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOEnvironmentBiomeIndex':
@@ -701,6 +718,8 @@ if __name__ == '__main__':
     parser.add_argument('--path_to_envo_material_csv')
     parser.add_argument('--path_ncbi_rank_division')
     parser.add_argument('--path_to_doid_csv')
+    parser.add_argument('--path_to_hpo_csv', default='none')
+    parser.add_argument('--path_to_exposure_csv', default='none')
     args = parser.parse_args()
 
     with open(args.AllowedTermJson_path, 'r') as json_file:
@@ -710,6 +729,9 @@ if __name__ == '__main__':
     uberon_ontology_table = uberon_ontology_table.drop_duplicates(subset=['Label'])
 
     doid_ontology_table = pd.read_csv(args.path_to_doid_csv, index_col=False)
+    # HPO (HPOCommonName) and ECTO/PECO (Exposure) tables; optional
+    hpo_ontology_table = pd.read_csv(args.path_to_hpo_csv, dtype=str) if args.path_to_hpo_csv != 'none' else None
+    exposure_ontology_table = pd.read_csv(args.path_to_exposure_csv, dtype=str) if args.path_to_exposure_csv != 'none' else None
     doid_ontology_table = doid_ontology_table.drop_duplicates(subset=['Label'])
 
     ENVOEnvironmentBiomeIndex_table = pd.read_csv(args.path_to_envo_biome_csv, index_col=False)
@@ -763,6 +785,8 @@ if __name__ == '__main__':
                                               allowed_terms, 
                                               UBERONOntologyIndex_table=uberon_ontology_table, 
                                               DOIDOntologyIndex_table=doid_ontology_table, 
+                                              HPOOntologyIndex_table=hpo_ontology_table,
+                                              ExposureIndex_table=exposure_ontology_table,
                                               NCBIRankDivision_table=NCBIRankDivision_table,
                                               ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                               ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,

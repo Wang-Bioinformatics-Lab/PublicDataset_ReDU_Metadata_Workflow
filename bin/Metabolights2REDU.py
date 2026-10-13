@@ -487,6 +487,20 @@ def load_metabolights_sheets(transSheet_dir, allowedTerm_dict):
     if os.path.exists(path):
         t = pd.read_csv(path, dtype=str, keep_default_na=False)
         sheets['disease_aliases'] = dict(zip(t['alias'].str.strip().str.lower(), t['DOIDCommonName'].str.strip()))
+    # health conditions and exposures: exact-meaning aliases of HPO / ECTO / PECO terms
+    # (column HPOCommonName or Exposure; empty term = never map)
+    # standard disease-model procedures (only where the study text names the procedure)
+    path = os.path.join(transSheet_dir, 'MTBLS_procedure_aliases.csv')
+    if os.path.exists(path):
+        t = pd.read_csv(path, dtype=str, keep_default_na=False)
+        t = t[t['column'].str.strip() == 'HPOCommonName']
+        sheets['procedure_aliases'] = [(_dlabel(p), a.strip().lower(), x.strip()) for p, a, x in zip(t['procedure'], t['abbreviation'], t['term'])]
+    path = os.path.join(transSheet_dir, 'MTBLS_condition_aliases.csv')
+    if os.path.exists(path):
+        t = pd.read_csv(path, dtype=str, keep_default_na=False)
+        for column, key in (('HPOCommonName', 'hpo_aliases'), ('Exposure', 'exposure_aliases')):
+            r = t[t['column'].str.strip() == column]
+            sheets[key] = dict(zip(r['alias'].map(_dlabel), r['term'].str.strip()))
     return sheets
 
 
@@ -719,6 +733,10 @@ class _DoidIndex:
     def generic(self, label):
         return self.id_of.get(label) in _DOID_GENERIC
 
+    def foreign(self, label):
+        """A name of another vocabulary (a disease for the HPO index): never a study term."""
+        return False
+
     def related(self, a, b):
         """The more specific of a and b if one equals or descends from the other, else None."""
         if a == b or b in self.ancestors(a):
@@ -772,6 +790,330 @@ def _doid_index(doid_table, allowedTerm_dict, parents, aliases):
         _doid_index_cache.clear()
         _doid_index_cache[key] = _DoidIndex(doid_table, allowedTerm_dict['DOIDCommonName']['allowed_values'], parents, aliases)
     return _doid_index_cache[key]
+
+
+# ---------------------------------------------------------------------------------------------
+# Abbreviations a study defines for itself
+#
+# Ontology synonyms that are abbreviations ('AKI', 'LPS', 'DSS') are ambiguous across studies
+# and never matched on their own. Within one study they stand for the full name if the study
+# text (title, description, design descriptors, protocols, factor names) defines them:
+# (a) '<full name> (<ABBR>)' or '<ABBR> (<full name>)', the full name being a term of the
+# index and starting with the first letter of the abbreviation, or (b) the abbreviation is an
+# ontology synonym of a term whose label or synonym the text names.
+# ---------------------------------------------------------------------------------------------
+
+def _abbreviation_like(token):
+    t = str(token)
+    return (2 <= len(t) <= 8 and re.fullmatch(r'[A-Za-z][A-Za-z0-9\-]*', t) is not None
+            and (sum(c.isupper() for c in t) >= 2 or (any(c.isupper() for c in t) and any(c.isdigit() for c in t))))
+
+
+def _abbreviation_synonyms(table, label_col, synonym_col, allowed):
+    """lower-case abbreviation synonym -> (label, names of the term) for abbreviations of one term."""
+    names, abbr = {}, {}
+    for l, s in zip(table[label_col].astype(str), table[synonym_col].astype(str)):
+        if l not in allowed:
+            continue
+        names.setdefault(l, {_dlabel(l)})
+        if _abbreviation_like(s.strip()):
+            abbr.setdefault(s.strip().lower(), set()).add(l)
+        elif not _doid_abbreviation(s):
+            names[l].add(_dlabel(s))
+    return {a: (next(iter(ls)), sorted(names[next(iter(ls))], key=len, reverse=True)) for a, ls in abbr.items() if len(ls) == 1}
+
+
+def _study_text(content, protocols):
+    parts = [content.get('title'), content.get('description') or content.get('studyDescription')]
+    parts += [re.sub(r'^[A-Za-z]+:', '', str(d.get('description') or '')) for d in content.get('descriptors') or []]
+    parts += [f.get('name') for f in content.get('factors') or []]
+    parts += [f'{n}: {d}' for n, d in protocols]
+    return re.sub(r'<[^>]+>', ' ', '. '.join(str(p) for p in parts if p))
+
+
+def _value_tokens(df, columns):
+    """Abbreviation-like tokens of the sample labels (lower case)."""
+    out = set()
+    for c in columns:
+        for v in df[c].dropna().astype(str).unique():
+            out.update(w.lower() for w in re.split(r'[^A-Za-z0-9\-]+', v) if _abbreviation_like(w))
+            out.update(w.lower() for w in re.split(r'[^A-Za-z0-9]+', v) if _abbreviation_like(w))
+    return out
+
+
+def _defined_abbreviations(text, resolve, abbr_syn, wanted):
+    """lower-case abbreviation -> lower-case full name, for the abbreviations in wanted that the
+    study text defines; resolve(full name) is the term it names (or None)."""
+    found = {}
+    text = str(text or '')
+    if not wanted:
+        return found
+    for m in re.finditer(r"([A-Za-z][\w'\-, ]{2,120}?)\s*\(\s*([A-Za-z][A-Za-z0-9\-]{1,7}?)s?\s*\)", text):
+        ab = m.group(2)
+        if ab.lower() not in wanted or not _abbreviation_like(ab):
+            continue
+        words = m.group(1).split()
+        for L in range(min(8, len(words)), 0, -1):
+            full = _dlabel(' '.join(words[-L:]).strip(' ,'))
+            if full[:1] == ab[0].lower() and resolve(full):
+                found.setdefault(ab.lower(), set()).add(full)
+                break
+    for m in re.finditer(r"(?<![\w-])([A-Za-z][A-Za-z0-9\-]{1,7})\s*\(\s*([^()]{3,120}?)\s*\)", text):
+        ab, full = m.group(1), _dlabel(m.group(2))
+        if ab.lower() in wanted and _abbreviation_like(ab) and full[:1] == ab[0].lower() and resolve(full):
+            found.setdefault(ab.lower(), set()).add(full)
+    low = _dlabel(text)
+    for ab in wanted:
+        if ab in found or ab not in abbr_syn:
+            continue
+        label, names = abbr_syn[ab]
+        if any(re.search(r'(?<![a-z0-9])' + re.escape(n) + r'(?![a-z0-9])', low) for n in names if len(n) >= 4):
+            found[ab] = {_dlabel(label)}
+    # an abbreviation the text defines in two ways is left out
+    return {ab: next(iter(f)) for ab, f in found.items() if len(f) == 1 and resolve(next(iter(f)))}
+
+
+def _expand_abbreviations(label, abbr):
+    """The lower-case label with the study's abbreviations written out ('lps 1 mg' -> 'lipopolysaccharide 1 mg')."""
+    for ab, full in (abbr or {}).items():
+        if ab in label:
+            label = re.sub(r'(?<![a-z0-9])' + re.escape(ab) + r'(?![a-z0-9])', full, label)
+    return label
+
+
+class _StudyTerms:
+    """An index that also reads the abbreviations one study defines."""
+
+    def __init__(self, idx, abbr):
+        self._idx, self._abbr = idx, abbr
+
+    def __getattr__(self, name):
+        return getattr(self._idx, name)
+
+    def term(self, value):
+        t = self._idx.term(value)
+        if t is None and self._abbr:
+            k = _dlabel(value)
+            if k in self._abbr:
+                t = self._idx.term(self._abbr[k])
+            else:
+                k2 = _d_strip_number(k)
+                if k2 in self._abbr:
+                    t = self._idx.term(self._abbr[k2])
+        return t
+
+
+# ---------------------------------------------------------------------------------------------
+# Study-level health condition -> HPOCommonName / HealthStatus of the samples
+#
+# A condition of the individual that is not a disease (sepsis, cachexia, insulin resistance,
+# acute kidney injury): labels of the HPO 'Phenotypic abnormality' branch. The same study /
+# sample-group / subject rules as for the study disease apply, with an HPO index in place of
+# the DOID one. Diseases stay in DOIDCommonName: HPO terms named like a DOID term, neoplasms
+# and the generic 'Abnormality of ...' classes are left out, and a DOID name in a label makes
+# that group 'another disease'.
+# ---------------------------------------------------------------------------------------------
+
+_HPO_NOT_CONDITION = re.compile(r'^(?:abnormal|phenotypic abnormality)|neoplas|cancer|tumou?r|leuka?emia|metasta|carcinoid|'
+                                r'(?:carcin|lymph|sarc|gli|blast|melan|myel|aden|cyt|endym|ingi|papill|fibr|lip|terat|neur|'
+                                r'schwann|chord|hamart|thym|insulin|semin|theli|angi)omas?\b', re.I)
+_FOREIGN_TERM = '\x00disease'
+
+
+class _HpoIndex(_DoidIndex):
+    """HPO terms that are not diseases; names of DOID terms are 'foreign'."""
+
+    def __init__(self, hpo_table, allowed_labels, aliases, doid_idx):
+        self.doid = doid_idx
+        allowed = {str(l) for l in allowed_labels if not _HPO_NOT_CONDITION.search(str(l))
+                   and not (doid_idx is not None and self._names_disease(doid_idx, l))}
+        t = hpo_table.rename(columns={'HPOOntologyIndex': 'DOIDOntologyIndex'})
+        # names of the left-out terms ('Acute colitis', 'Astrocytoma') mark another condition
+        out = t[~t['Label'].astype(str).isin(allowed)]
+        self.excluded = {_dlabel(x) for x in pd.concat([out['Label'], out['Synonym']]).astype(str)}
+        t = t[t['Label'].astype(str).isin(allowed)]
+        if doid_idx is not None:
+            # a synonym that names a disease is left to DOIDCommonName
+            t = t[[not doid_idx.term(x) for x in t['Synonym'].astype(str)]]
+        super().__init__(t, allowed, None, aliases)
+        self.abbr_syn = _abbreviation_synonyms(t, 'Label', 'Synonym', allowed)
+
+    @staticmethod
+    def _names_disease(doid_idx, label):
+        """The label is a DOID term, or one with modifiers ('Acute colitis', 'Cerebral ischemia')."""
+        words = _dlabel(label).split()
+        return any(doid_idx.term(' '.join(words[i:])) for i in range(len(words)) if i == 0 or len(' '.join(words[i:])) >= 5)
+
+    def term(self, value):
+        t = super().term(value)
+        if t is None and _dlabel(value) not in self.aliases and (
+                _dlabel(value) in self.excluded or (self.doid is not None and self.doid.term(value))):
+            return _FOREIGN_TERM
+        return t
+
+    def foreign(self, label):
+        return label == _FOREIGN_TERM
+
+
+_hpo_index_cache = {}
+
+
+def _hpo_index(hpo_table, allowedTerm_dict, aliases, doid_idx):
+    key = (id(hpo_table), id(aliases), id(doid_idx))
+    if key not in _hpo_index_cache:
+        _hpo_index_cache.clear()
+        _hpo_index_cache[key] = _HpoIndex(hpo_table, allowedTerm_dict['HPOCommonName']['allowed_values'], aliases, doid_idx)
+    return _hpo_index_cache[key]
+
+
+# ---------------------------------------------------------------------------------------------
+# Exposure (ECTO; PECO for plants) of the exposed groups
+#
+# Only a sample label that names the exposure gets a term: a treatment / exposure / stress
+# column value that is an ECTO/PECO label or exact synonym, or that is one with the ontology's
+# own wording ('cisplatin' -> 'exposure to cisplatin', plants: 'drought' -> 'drought
+# exposure'), or a 'yes' in a column named after the exposure ('Cold stress = yes'). Controls,
+# vehicles, sham, untreated, ambient and recovery groups name no exposure and get nothing.
+# Animals (and humans) get ECTO terms, plants PECO terms (ECTO where PECO has none). Cultured
+# cells, microbes and diets (own column) are left out.
+# ---------------------------------------------------------------------------------------------
+
+_E_COL = re.compile(r'treat|expos|drug|compound|chemical|toxi|pollut|pesticide|herbicide|fungicide|insecticide|stress|stimul|'
+                    r'challenge|infect|inocul|administ|interven|therap|medicat|irradiat|radiation|\blight\b|temperature|'
+                    r'irrigation|watering|salin|ozone|antibiotic|inhibitor|agent|condition|group|stimulus', re.I)
+# columns about something else: diet (own column), extraction, media, analytes, the organism itself
+_E_SKIP_COL = re.compile(r'diet|feed|food|nutri|supplement|solvent|extract|standard|medium|media|substrate|carbon source|'
+                         r'source|analyte|organism|strain|genotype|species|genus|cell|tissue|time|duration|dose|concentration|'
+                         r'amount|quantity|replicate|batch|sex|gender|age\b|cultivar|variety|location|site|disease|diagnos|'
+                         r'phenotype|health|blood group|family|maternal|mother|father|donor|history|term source|term accession|'
+                         r'^unit|age group|ethnic', re.I)
+# vehicles, controls, unexposed and recovering groups
+_E_NEGATIVE = re.compile(r'\b(?:control|controls|ctrl|vehicle|sham|mock|placebo|untreated|unexposed|unstressed|non-?treated|'
+                         r'non-?exposed|without|no|not|none|normal|ambient|baseline|before|pre|recover(?:y|ed)?|rewater(?:ing|ed)?|'
+                         r'well-?watered|wild type|wt|blank|qc)\b|^-|^non-|^un', re.I)
+# ECTO/PECO terms too general to stand for an exposure, or vehicles and materials of the study
+# rather than exposures
+_E_GENERIC = {'exposure to water', 'exposure to solvent', 'exposure to dimethyl sulfoxide', 'dimethyl sulfoxide exposure',
+              'exposure to drug', 'exposure to chemical', 'exposure to chemical entity', 'exposure to molecular entity',
+              'exposure to lifestyle', 'exposure to lipid', 'exposure to peptide', 'exposure to amino acid',
+              'exposure to polysaccharide', 'exposure to blood', 'exposure to feces', 'exposure to bile', 'exposure to soil',
+              'exposure to rock', 'exposure to sand', 'exposure to tension', 'exposure to stress', 'exposure to environment',
+              'exposure to treatment', 'exposure to material entity', 'exposure to organism', 'chemical exposure',
+              'exposure to physical object', 'exposure to excreta', 'exposure to acids', 'exposure to acid',
+              'exposure to carbohydrate', 'carbohydrate exposure', 'water environment exposure', 'watering exposure', 'temperature exposure'}
+_E_BLOOD_CELLS = re.compile(r'blood|mononuclear|pbmc|erythrocyte|platelet|leukocyte|neutrophil|lymphocyte|monocyte|sperm|oocyte', re.I)
+_E_CULTURE_COL = re.compile(r'cultivation|culture|incubation|passage', re.I)
+_E_CULTURE_VALUE = re.compile(r'\b(?:medium|media|culture|cultured|in vitro)\b', re.I)
+_E_DIET = re.compile(r'\bdiet\b|via ingestion|\bfood\b|\bmeal\b|feeding', re.I)
+_E_POSITIVE = re.compile(r'(?:yes|y|true|positive|\+|exposed|treated|stressed|stress|treatment|with stress(?: treatment)?|with treatment)')
+# wording around the exposure in a sample label ('drought stress', 'treated with cisplatin')
+_E_AFFIX = re.compile(r'^(?:treated with|treatment with|exposed to|exposure to|\+)\s*|\s*(?:stress(?:ed)?|treatment|treated|exposure|exposed|'
+                      r'regimen|group|administration|challenge|condition|conditions)$')
+
+
+class _ExposureIndex:
+    """Exact ECTO/PECO label / synonym lookup with the MetaboLights condition aliases."""
+
+    def __init__(self, exposure_table, allowed_labels, aliases):
+        allowed = {str(l) for l in allowed_labels}
+        self.allowed = allowed
+        self.ont = {}
+        syn = {}
+        for i, l, s in zip(exposure_table['ExposureIndex'].astype(str), exposure_table['Label'].astype(str),
+                           exposure_table['Synonym'].astype(str)):
+            if l not in allowed or l.lower() in _E_GENERIC or _E_DIET.search(l) or l.lower().startswith('obsolete'):
+                continue
+            self.ont.setdefault(l, i.split(':')[0])
+            if not _doid_abbreviation(s):
+                syn.setdefault(_dlabel(s), set()).add(l)
+        self.by_label = {_dlabel(l): l for l in self.ont}
+        self.by_synonym = {k: next(iter(v)) for k, v in syn.items() if len(v) == 1}
+        self.aliases = {a: l for a, l in (aliases or {}).items() if not l or l in self.ont}
+        self.abbr_syn = _abbreviation_synonyms(exposure_table, 'Label', 'Synonym', set(self.ont))
+
+    def _exact(self, key, plant):
+        """(term or None, whether the key decides): PECO terms only for plants."""
+        t = self.aliases[key] if key in self.aliases else (self.by_label.get(key) or self.by_synonym.get(key))
+        if not t:
+            return None, key in self.aliases
+        return (t if self.ont[t] == 'ECTO' or plant else None), True
+
+    def term(self, value, plant, abbr=None):
+        """Exposure term a sample label names (PECO only for plants), else None. abbr: the
+        abbreviations the study defines (lower case -> full name), read as the full name."""
+        k = _expand_abbreviations(_dlabel(value), abbr)
+        if len(k) <= 3 or k in _MISSING_VALUES or _E_NEGATIVE.search(k):
+            return None
+        keys = [k]
+        stripped = _E_AFFIX.sub('', k).strip()
+        if stripped != k and len(stripped) > 3:
+            keys.append(stripped)
+        for key in keys:
+            t, decided = self._exact(key, plant)
+            if decided:
+                return t
+        # the ontology's own wording: PECO 'X exposure' for plants, ECTO 'exposure to X'
+        for key in keys:
+            for cand in ([key + ' exposure'] if plant else []) + ['exposure to ' + key]:
+                t, decided = self._exact(cand, plant)
+                if decided:
+                    return t
+        return None
+
+
+_exposure_index_cache = {}
+
+
+def _exposure_index(exposure_table, allowedTerm_dict, aliases):
+    key = (id(exposure_table), id(aliases))
+    if key not in _exposure_index_cache:
+        _exposure_index_cache.clear()
+        _exposure_index_cache[key] = _ExposureIndex(exposure_table, allowedTerm_dict['Exposure']['allowed_values'], aliases)
+    return _exposure_index_cache[key]
+
+
+def _sample_exposures(eidx, df, colkind, eligible, plant, abbr=None):
+    """Exposure term per row from the treatment / exposure columns (None where unset).
+
+    df: rows with the 'Samples_*' columns; colkind: column -> 'Characteristics' / 'Factor Value';
+    eligible: samples of an individual animal or plant; plant: plant rows. A row whose
+    columns name different exposures gets none."""
+    found = []
+    # tissue or cells kept in culture ('cultivation time' recorded): the treatment is in vitro
+    for c in df.columns:
+        if _E_CULTURE_COL.search(re.sub(r'_\d+$', '', str(c)[len('Samples_'):])) and colkind.get(c) in ('Characteristics', 'Factor Value'):
+            eligible = eligible & _is_missing(df[c])
+    for c, kind in colkind.items():
+        if c not in df.columns or kind not in ('Characteristics', 'Factor Value'):
+            continue
+        name = re.sub(r'_\d+$', '', str(c)[len('Samples_'):])
+        if _E_SKIP_COL.search(name) or not _E_COL.search(name):
+            continue
+        # a treatment given in a culture medium ('Blank medium' among the groups)
+        if df.loc[eligible, c].astype(str).str.contains(_E_CULTURE_VALUE).any():
+            continue
+        # a column named after an exposure ('Cold stress', 'Drought stress'): 'yes' names it
+        col_term = {p: eidx.term(name, p, abbr) for p in (False, True)}
+        cache = {}
+
+        def one(v, p):
+            if (v, p) not in cache:
+                lab = _dlabel(v)
+                t = eidx.term(v, p, abbr)
+                if t is None and col_term[p] and _E_POSITIVE.fullmatch(lab):
+                    t = col_term[p]
+                cache[(v, p)] = t
+            return cache[(v, p)]
+        vals = pd.Series([one(v, bool(p)) if e and isinstance(v, str) else None
+                          for v, p, e in zip(df[c], plant, eligible)], index=df.index, dtype=object)
+        if vals.notna().any():
+            found.append(vals)
+    out = pd.Series(None, index=df.index, dtype=object)
+    for vals in found:
+        clash = out.notna() & vals.notna() & (out != vals)
+        out = out.where(out.notna(), vals)
+        out[clash] = '\x00clash'
+    return out.where(out != '\x00clash')
 
 
 # ---- sample labels (matched on the lower-case label, '_' as space) ----
@@ -866,11 +1208,11 @@ def _study_disease_terms(idx, descriptors, factor_names, title):
         s = str(d or '').strip()
         m = re.match(r'^[A-Za-z]+:(.*)$', s)
         t = idx.term(m.group(1) if m else s)
-        if t and not idx.generic(t):
+        if t and not idx.generic(t) and not idx.foreign(t):
             out.setdefault(t, 'descriptor')
     for f in factor_names:
         t = idx.term(f)
-        if t and not idx.generic(t):
+        if t and not idx.generic(t) and not idx.foreign(t):
             out.setdefault(t, 'factor')
     if not out and title:
         words = re.findall(r"[\w'\-]+", str(title).lower())
@@ -883,7 +1225,9 @@ def _study_disease_terms(idx, descriptors, factor_names, title):
                     hit = (t, L)
                     break
             if hit:
-                out.setdefault(hit[0], 'title')
+                # a name of another vocabulary uses up its words ('irritable bowel syndrome')
+                if not idx.foreign(hit[0]):
+                    out.setdefault(hit[0], 'title')
                 i += hit[1]
             else:
                 i += 1
@@ -953,6 +1297,8 @@ def _disease_label_kind(idx, value, coltype, D, abbr, phrases, col_term, human):
     if t is None:
         t = abbr.get(v) or abbr.get(re.sub(r'\s*\([^)]*\)', '', v).strip())
     if t is not None:
+        if idx.foreign(t):
+            return 'other_disease', None
         if idx.generic(t):
             return 'case_generic', None
         if any(idx.related(t, d) == t for d in D):
@@ -983,12 +1329,16 @@ def _disease_label_kind(idx, value, coltype, D, abbr, phrases, col_term, human):
 _D_CASE_KINDS = ('case', 'case_generic', 'case_tumour', 'case_model')
 
 
-def _study_disease_labels(idx, df, colkind, descriptors, factor_names, title, text, eligible, human, subject=None):
+def _study_disease_labels(idx, df, colkind, descriptors, factor_names, title, text, eligible, human, subject=None,
+                          plain_control_healthy=True, extra_abbr=None):
     """DOIDCommonName and HealthStatus per row from the study disease and the sample groups.
 
     df: rows with the 'Samples_*' columns; colkind: column -> 'Characteristics' / 'Factor Value';
     eligible: rows that are samples of an individual; subject: subject identifier per row or
-    None. Returns (doid, health, info), doid and health being Series with None where unset."""
+    None; extra_abbr: further abbreviation -> term the study defines (the index reads them too);
+    plain_control_healthy: plain controls of a human case-control factor are healthy
+    (otherwise only explicitly healthy labels). Returns (doid, health, info), doid and health
+    being Series with None where unset."""
     info = {}
     none = pd.Series(None, index=df.index, dtype=object)
     D = _study_disease_terms(idx, descriptors, factor_names, title)
@@ -1002,6 +1352,7 @@ def _study_disease_labels(idx, df, colkind, descriptors, factor_names, title, te
         if _D_SKIP_COL.search(name):
             continue
         nt = idx.term(name)
+        nt = None if nt and idx.foreign(nt) else nt
         if _D_TISSUE_COL.fullmatch(name):
             ct = 'tissue'
         elif nt and not idx.generic(nt):
@@ -1018,12 +1369,14 @@ def _study_disease_labels(idx, df, colkind, descriptors, factor_names, title, te
         if ct in ('status', 'disease_factor') or re.search(r'disease|diagnos|condition|phenotype', name, re.I):
             for v in df.loc[eligible, c].dropna().unique():
                 t = idx.term(_d_strip_number(_dlabel(v))) or idx.term(v)
-                if t and not idx.generic(t):
+                if t and not idx.generic(t) and not idx.foreign(t):
                     D.setdefault(t, 'value:' + name)
     info['D'] = D
     if not D or not eligible.any():
         return none, none.copy(), info
     abbr = _text_abbreviations(idx, list(D), f'{title or ""}. {text or ""}')
+    for k, t in (extra_abbr or {}).items():
+        abbr.setdefault(k, t)
     phrases = _disease_phrases(idx, D, abbr)
     ctype = {c: ct for c, _, ct in cols}
     lab, has = {}, {}
@@ -1090,12 +1443,17 @@ def _study_disease_labels(idx, df, colkind, descriptors, factor_names, title, te
         if 'healthy' in ks:
             return 'healthy', None
         if st_ctrl:
-            ok = human and any(c in cc_cols and (k == 'control' or c in normal_ok) for k, c in st_ctrl)
+            ok = plain_control_healthy and human and any(c in cc_cols and (k == 'control' or c in normal_ok) for k, c in st_ctrl)
             return ('healthy' if ok else 'control'), None
         return ('other' if kinds else None), None
 
     keys = pd.Series(list(zip(*[df[c].map(lambda x: None if pd.isna(x) else str(x)) for c in group_cols])), index=df.index)
     decided = {k: decide(k) for k in keys[eligible].unique()}
+    # rows whose labels name the term itself (not only 'patients', a severity or 'model')
+    def named(values):
+        return any(lab[c].get(x, (None, None))[0] == 'case' for c, x in zip(group_cols, values) if isinstance(x, str))
+    _named = {k: named(k) for k in decided}
+    info['named'] = keys.map(lambda k: _named.get(k, False)) & eligible
     status = keys.map(lambda k: decided.get(k, (None, None))[0]).where(eligible)
     term = keys.map(lambda k: decided.get(k, (None, None))[1]).where(eligible)
     # health belongs to the individual: every sample of a patient is a patient sample, and a
@@ -2134,6 +2492,104 @@ def Metabolights2REDU(study_id, **kwargs):
                     _fill('DOIDCommonName', _dv.where(_case & _agree))
                     _fill('HealthStatus', _hv.where((_case | _healthy) & _agree))
 
+            # rows that are samples of an individual: no QC, cultured cells or cell types (CL)
+            # other than blood and germ cells
+            _not_cells = _real_sample & ~_disease_not_subject(df_study)
+            if 'UBERONOntologyIndex' in df_study.columns and 'UBERONBodyPartName' in df_study.columns:
+                _not_cells &= ~(df_study['UBERONOntologyIndex'].astype(str).str.startswith('CL:')
+                                & ~df_study['UBERONBodyPartName'].astype(str).str.contains(_D_PRIMARY_CELLS))
+            _kind = {c: _sample_kind.get(re.sub(r'_\d+$', '', c), _sample_kind.get(c)) for c in df_study.columns
+                     if str(c).startswith('Samples_')}
+            _content = study_details['content']
+            _text = _study_text(_content, protocols)
+            _tokens = _value_tokens(df_study, [c for c, k in _kind.items() if k in ('Characteristics', 'Factor Value')])
+
+            #add HPOCommonName / HealthStatus from the study-level health condition and the sample groups
+            #######
+            _hpo_tab = kwargs.get('hpo_table')
+            if (_hpo_tab is not None and len(_hpo_tab) and allowedTerm_dict.get('HPOCommonName', {}).get('allowed_values')
+                    and 'NCBITaxonomy' in df_study.columns and 'SampleType' in df_study.columns):
+                _doid_tab = kwargs.get('doid_table')
+                _didx = (_doid_index(_doid_tab, allowedTerm_dict, kwargs.get('doid_parents'), kwargs.get('disease_aliases'))
+                         if _doid_tab is not None and len(_doid_tab) else None)
+                _hidx = _hpo_index(_hpo_tab, allowedTerm_dict, kwargs.get('hpo_aliases'), _didx)
+                # abbreviations the study defines ('acute kidney injury (AKI)'), and standard
+                # disease-model procedures the study text names ('cecal ligation and puncture')
+                _habbr = _defined_abbreviations(_text, _hidx.term, _hidx.abbr_syn, _tokens)
+                _hdesc = [d.get('description') for d in _content.get('descriptors') or []]
+                _tl = _dlabel(_text)
+                for _proc, _pab, _pterm in kwargs.get('procedure_aliases') or []:
+                    if _hidx.term(_pterm) == _pterm and re.search(r'(?<![a-z0-9])' + re.escape(_proc) + r'(?![a-z0-9])', _tl):
+                        _habbr[_proc] = _dlabel(_pterm)
+                        if _pab:
+                            _habbr.setdefault(_pab, _dlabel(_pterm))
+                        _hdesc.append(_pterm)
+                _hextra = {k: _hidx.term(f) for k, f in _habbr.items()}
+                _hextra = {k: t for k, t in _hextra.items() if t and not _hidx.foreign(t)}
+                _hidx = _StudyTerms(_hidx, _habbr) if _habbr else _hidx
+                _taxid = df_study['NCBITaxonomy'].astype(str).str.split('|').str[0]
+                _eligible = _not_cells & (df_study['SampleType'] == 'animal') & _taxid.isin(_mammal_taxids(NCBIRankDivision_table))
+                _human = bool((_taxid[_eligible] == '9606').mean() > 0.5) if _eligible.any() else False
+                # animals given a human microbiota: condition labels describe the donors
+                if not _human and re.search(_D_MICROBIOTA_RECIPIENT, f"{_content.get('title') or ''} {_content.get('description') or ''}"):
+                    _eligible = pd.Series(False, index=df_study.index)
+                if _eligible.any():
+                    _sub = df_study['SubjectIdentifierAsRecorded'].reset_index(drop=True) if 'SubjectIdentifierAsRecorded' in df_study.columns else None
+                    _pv, _hv, _hinfo = _study_disease_labels(_hidx, df_study[list(_kind)].reset_index(drop=True), _kind,
+                                                        _hdesc,
+                                                        [f.get('name') for f in _content.get('factors') or []],
+                                                        _content.get('title'), _content.get('description') or _content.get('studyDescription'),
+                                                        _eligible.reset_index(drop=True), _human, _sub, plain_control_healthy=False,
+                                                        extra_abbr=_hextra)
+                    _pv.index = df_study.index
+                    _hv.index = df_study.index
+                    for _col in ('HPOCommonName', 'HealthStatus'):
+                        if _col not in df_study.columns:
+                            df_study[_col] = 'missing value'
+                    _case = (_hv == 'unhealthy (NOS)') & (df_study['HealthStatus'].astype(str).str.strip() != 'healthy') & _pv.notna()
+                    # a patient / severity / model label of a study with a disease stands for the disease
+                    _named = _hinfo['named'].set_axis(df_study.index) if 'named' in _hinfo else pd.Series(False, index=df_study.index)
+                    _case &= _named | _is_missing(df_study['DOIDCommonName'] if 'DOIDCommonName' in df_study.columns else pd.Series('', index=df_study.index))
+                    _healthy = (_hv == 'healthy') & _is_missing(df_study['HPOCommonName'])
+                    # a file listed for several samples gets the labels only if they agree for all of them
+                    _final = pd.DataFrame({'f': df_study['filename'].astype(str),
+                                           'p': df_study['HPOCommonName'].where(~_is_missing(df_study['HPOCommonName']), _pv.where(_case)).fillna('missing value').astype(str),
+                                           'h': df_study['HealthStatus'].where(~_is_missing(df_study['HealthStatus']), _hv.where(_case | _healthy)).fillna('missing value').astype(str)})
+                    _agree = (_final.groupby('f')['p'].transform('nunique') == 1) & (_final.groupby('f')['h'].transform('nunique') == 1)
+                    _fill('HPOCommonName', _pv.where(_case & _agree))
+                    _fill('HealthStatus', _hv.where((_case | _healthy) & _agree))
+
+            #add Exposure from the treatment / exposure / stress columns of the exposed groups
+            #######
+            _exp_tab = kwargs.get('exposure_table')
+            if (_exp_tab is not None and len(_exp_tab) and allowedTerm_dict.get('Exposure', {}).get('allowed_values')
+                    and 'SampleType' in df_study.columns):
+                _eidx = _exposure_index(_exp_tab, allowedTerm_dict, kwargs.get('exposure_aliases'))
+                _plant = df_study['SampleType'] == 'plant'
+                # with plant samples (or a PECO design descriptor) in the study, the treatments are given
+                # to the plants (insects feeding on inoculated plants are not inoculated themselves)
+                _plant_study = bool((_plant & _real_sample).any()) or any(
+                    str(d.get('description') or '').strip().upper().startswith('PECO:') for d in _content.get('descriptors') or [])
+                _e_eligible = _not_cells & (_plant | ((df_study['SampleType'] == 'animal') & (not _plant_study)))
+                # cells grown from a tissue ('bone marrow-derived macrophage', 'iPSC derived') are cultured
+                for _c in ('Samples_Organism part', 'UBERONBodyPartName'):
+                    if _c in df_study.columns:
+                        _e_eligible &= ~df_study[_c].astype(str).str.contains(r'derived|\bcultured?\b', case=False)
+                # isolated cell types (CL) other than blood cells are treated in culture ('bone marrow stromal cell')
+                if 'UBERONOntologyIndex' in df_study.columns and 'UBERONBodyPartName' in df_study.columns:
+                    _e_eligible &= ~(df_study['UBERONOntologyIndex'].astype(str).str.startswith('CL:')
+                                     & ~df_study['UBERONBodyPartName'].astype(str).str.contains(_E_BLOOD_CELLS))
+                if _e_eligible.any():
+                    _eabbr = _defined_abbreviations(_text, lambda f: _eidx.term(f, True), _eidx.abbr_syn, _tokens)
+                    _ev = _sample_exposures(_eidx, df_study[list(_kind)].reset_index(drop=True), _kind,
+                                            _e_eligible.reset_index(drop=True), _plant.reset_index(drop=True), _eabbr)
+                    _ev.index = df_study.index
+                    if 'Exposure' not in df_study.columns:
+                        df_study['Exposure'] = 'missing value'
+                    _final = pd.DataFrame({'f': df_study['filename'].astype(str),
+                                           'e': df_study['Exposure'].where(~_is_missing(df_study['Exposure']), _ev).fillna('missing value').astype(str)})
+                    _fill('Exposure', _ev.where(_final.groupby('f')['e'].transform('nunique') == 1))
+
             #refine NCBITaxonomy from the Variant/Strain column
             #######
             # Only an NCBI name that starts with the recorded species name ('Saccharomyces
@@ -2162,9 +2618,16 @@ def Metabolights2REDU(study_id, **kwargs):
             
             ontology_table = ontology_table.drop_duplicates(subset=['Label'])
             df_study = merge_repeated_fileobservations(df_study)
+            # HPO and exposure tables (one row per label) so complete_and_fill_REDU_table can generate their indexes
+            _index_tables = {}
+            for _arg, _tab, _id in (('DOIDOntologyIndex_table', kwargs.get('doid_table'), 'DOIDOntologyIndex'),
+                                    ('HPOOntologyIndex_table', kwargs.get('hpo_table'), 'HPOOntologyIndex'),
+                                    ('ExposureIndex_table', kwargs.get('exposure_table'), 'ExposureIndex')):
+                if _tab is not None and len(_tab):
+                    _index_tables[_arg] = _tab.drop_duplicates(subset=['Label'])[['Label', _id]].copy()
             df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                     ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,NCBIRankDivision_table=NCBIRankDivision_table, add_usi = True, 
-                                                    other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
+                                                    other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'], **_index_tables)
             
             df_study = df_study.drop_duplicates() 
 
@@ -2194,6 +2657,8 @@ if __name__ == "__main__":
     parser.add_argument("--path_ncbi_rank_division", type=str, help="Path to the path_ncbi_rank_division")
     parser.add_argument("--path_to_doid_parents_csv", type=str, default="none", help="Optional DOID is_a links from prepare_ontologies.py (most specific disease term)")
     parser.add_argument("--path_to_doid_csv", type=str, default="none", help="Optional path to the prepared DOID ontology csv (exact synonyms and DOID accessions for DOIDCommonName)")
+    parser.add_argument("--path_to_hpo_csv", type=str, default="none", help="Optional path to the prepared HPO ontology csv (HPOCommonName)")
+    parser.add_argument("--path_to_exposure_csv", type=str, default="none", help="Optional path to the prepared ECTO/PECO exposure csv (Exposure)")
             
     args = parser.parse_args()
 
@@ -2238,6 +2703,9 @@ if __name__ == "__main__":
 
     # Optional tables: DOID ontology, and the body part -> biofluid/tissue translation sheet
     doid_table = pd.read_csv(args.path_to_doid_csv) if args.path_to_doid_csv != 'none' else None
+    # Optional HPO (health conditions) and ECTO/PECO (exposures) tables
+    hpo_table = pd.read_csv(args.path_to_hpo_csv, dtype=str, keep_default_na=False) if args.path_to_hpo_csv != 'none' else None
+    exposure_table = pd.read_csv(args.path_to_exposure_csv, dtype=str, keep_default_na=False) if args.path_to_exposure_csv != 'none' else None
     biofluid_vs_tissue_path = os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv')
     biofluid_vs_tissue = pd.read_csv(biofluid_vs_tissue_path) if os.path.exists(biofluid_vs_tissue_path) else None
     sheets = load_metabolights_sheets(transSheet_dir, allowedTerm_dict)
@@ -2257,7 +2725,8 @@ if __name__ == "__main__":
             print(f'Processing study {study_id}...')
             redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                   ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table,
-                                                  doid_table=doid_table, biofluid_vs_tissue=biofluid_vs_tissue, **sheets)
+                                                  doid_table=doid_table, hpo_table=hpo_table, exposure_table=exposure_table,
+                                                  biofluid_vs_tissue=biofluid_vs_tissue, **sheets)
         except StudyNotAvailable as e:
             print(f"Study {study_id} is not available: {e}")
             not_public_studies.append(study_id)
