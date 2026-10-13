@@ -17,9 +17,11 @@ params.source_timeout = '20h'
 
 
 // First step: sets up all reference data in data/ (ontologies, NCBI taxonomy, MASST
-// tables) as listed in data/reference_data.json. Files already present in the listed
-// version are kept; missing, outdated or unrecorded files (e.g. from an earlier manual
-// get_data.sh run) are downloaded. Outputs are links to the files in data/.
+// tables) in the versions pinned in data/reference_data.json (url + sha256), i.e. the
+// versions the workflow was tested with. Files already present in the pinned version are
+// kept; missing, different or unrecorded files (e.g. from an earlier manual get_data.sh
+// run) are replaced by the pinned version. Newer upstream releases are only used after
+// their pin is changed. Outputs are links to the files in data/.
 process fetchReferenceData {
     conda "$TOOL_FOLDER/conda_env.yml"
 

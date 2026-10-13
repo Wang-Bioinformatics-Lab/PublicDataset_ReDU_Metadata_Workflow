@@ -1,19 +1,101 @@
 {
-    "_comment": "Reference data the workflow needs in data/. Fetched automatically by the first workflow step (bin/fetch_reference_data.py). 'pinned': the file is replaced only when 'url' changes here, so bump the URL to update. 'latest': re-downloaded when the server reports a new version (ETag / Last-Modified / size). 'required': false means the workflow runs without it (the column it feeds stays empty).",
+    "_comment": "Reference data the workflow needs in data/, each pinned to the exact version the workflow was tested with (url + sha256 of the file). Set up automatically by the first workflow step (bin/fetch_reference_data.py): a file is downloaded only when it is missing or not the pinned version. Newer upstream releases are NOT picked up automatically; to move to a new version, test it, then change url and sha256 here. 'required': false means the workflow runs without the file (the column it feeds stays empty).",
     "files": [
-        {"name": "uberon.owl", "url": "http://aber-owl.net/media/ontologies/UBERON/311/uberon.owl", "mode": "pinned", "check": "owl", "required": true},
-        {"name": "po.owl", "url": "http://aber-owl.net/media/ontologies/PO/29/po.owl", "mode": "pinned", "check": "owl", "required": true},
-        {"name": "cl.owl", "url": "http://aber-owl.net/media/ontologies/CL/120/cl.owl", "mode": "pinned", "check": "owl", "required": true},
-        {"name": "doid.owl", "url": "http://aber-owl.net/media/ontologies/DOID/706/doid.owl", "mode": "pinned", "check": "owl", "required": true},
-        {"name": "ms.owl", "url": "http://aber-owl.net/media/ontologies/MS/237/ms.owl", "mode": "pinned", "check": "owl", "required": true},
-        {"name": "biome-hierarchy.owl", "url": "https://raw.githubusercontent.com/EnvironmentOntology/envo/master/subsets/biome-hierarchy.owl", "mode": "latest", "check": "owl", "required": true},
-        {"name": "material-hierarchy.owl", "url": "https://raw.githubusercontent.com/EnvironmentOntology/envo/master/subsets/material-hierarchy.owl", "mode": "latest", "check": "owl", "required": true},
-        {"name": "microbe_masst_table.csv", "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv", "mode": "latest", "check": "text", "required": true},
-        {"name": "plant_masst_table.csv", "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/plant_masst_table.csv", "mode": "latest", "check": "text", "required": true},
-        {"name": "taxdmp.zip", "url": "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip", "mode": "latest", "check": "zip", "required": true,
-         "extract": ["names.dmp", "nodes.dmp", "division.dmp"]},
-        {"name": "hp.obo", "url": "http://purl.obolibrary.org/obo/hp.obo", "mode": "latest", "check": "obo", "required": false},
-        {"name": "ecto.obo", "url": "http://purl.obolibrary.org/obo/ecto.obo", "mode": "latest", "check": "obo", "required": false},
-        {"name": "peco.obo", "url": "http://purl.obolibrary.org/obo/peco.obo", "mode": "latest", "check": "obo", "required": false}
+        {
+            "name": "uberon.owl",
+            "url": "http://aber-owl.net/media/ontologies/UBERON/311/uberon.owl",
+            "sha256": "21bc95e24c815d402438497d044c164da7de4e0dc7782ac22361d3953225d6f1",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "po.owl",
+            "url": "http://aber-owl.net/media/ontologies/PO/29/po.owl",
+            "sha256": "a066a2091b96dc6c960683a67936ccda4926afd96e4edb22df9e30feec16e9e0",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "cl.owl",
+            "url": "http://aber-owl.net/media/ontologies/CL/120/cl.owl",
+            "sha256": "d4f89c83373f4c13021810f2e175e54869887fe8de3bda058cd30c380d83c510",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid.owl",
+            "url": "http://aber-owl.net/media/ontologies/DOID/706/doid.owl",
+            "sha256": "d23d1a034075abd3d9c23f19ee79d3f7dfce29244b1e38078d35c0a952f35485",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "ms.owl",
+            "url": "http://aber-owl.net/media/ontologies/MS/237/ms.owl",
+            "sha256": "361041560c3e397da6d3d08f217d47fc1d304a3e71579112efeb6001b7c6090f",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "biome-hierarchy.owl",
+            "url": "https://raw.githubusercontent.com/EnvironmentOntology/envo/a2455d1a77e46bb8a664d65a157166b539269042/subsets/biome-hierarchy.owl",
+            "sha256": "46ebe8d87ad976edc9e5c583734e3130f1167900bc500bc1a2b3e619f8a24b1f",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "material-hierarchy.owl",
+            "url": "https://raw.githubusercontent.com/EnvironmentOntology/envo/a2455d1a77e46bb8a664d65a157166b539269042/subsets/material-hierarchy.owl",
+            "sha256": "08f72187e2e225e3fd662a4ce0006571c88f5290bbccfc968538ff172ee8482f",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "microbe_masst_table.csv",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/5dd2a0f6981697d9a10c26750c45013ca50ab328/data/microbe_masst_table.csv",
+            "sha256": "cdb321081dc69dee76d0acbdc81d8013f38a2ed7aa05b6e311d5ffc27dde3fa1",
+            "check": "text",
+            "required": true
+        },
+        {
+            "name": "plant_masst_table.csv",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/5dd2a0f6981697d9a10c26750c45013ca50ab328/data/plant_masst_table.csv",
+            "sha256": "642aae895d97657705c5ce16b5547f3083752007775ca8a4ec6dc73462b6d572",
+            "check": "text",
+            "required": true
+        },
+        {
+            "name": "taxdmp.zip",
+            "url": "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump_archive/taxdmp_2026-10-01.zip",
+            "sha256": "d744af371c0b9fc7269d80b49546b6ac4c9ddc52a2fd97bcbfd02783edb5c9eb",
+            "check": "zip",
+            "required": true,
+            "extract": [
+                "names.dmp",
+                "nodes.dmp",
+                "division.dmp"
+            ]
+        },
+        {
+            "name": "hp.obo",
+            "url": "http://purl.obolibrary.org/obo/hp/releases/2026-09-01/hp.obo",
+            "sha256": "93dace952fcb3ec4728818857f6ba76bc2d5312f4d83266519b8694b8e798f22",
+            "check": "obo",
+            "required": false
+        },
+        {
+            "name": "ecto.obo",
+            "url": "http://purl.obolibrary.org/obo/ecto/releases/2026-07-28/ecto.obo",
+            "sha256": "9f350641cc998fde5d8618fa9f34e896d1271ad1144e3f81da4d95dba3308ab6",
+            "check": "obo",
+            "required": false
+        },
+        {
+            "name": "peco.obo",
+            "url": "http://purl.obolibrary.org/obo/peco/releases/2025-12-02/peco.obo",
+            "sha256": "ec5d762eeeb5a5ab04a52fb696ef5fb1ab16fbeb791ecee3e6e822777962d20d",
+            "check": "obo",
+            "required": false
+        }
     ]
 }
