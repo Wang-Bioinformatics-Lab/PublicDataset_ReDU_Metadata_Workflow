@@ -205,6 +205,8 @@ if __name__ == '__main__':
     df_ncbi_rank = df_ncbi_rank.dropna(axis=1, how='all')
     df_ncbi_rank.columns = ['TaxonID', 'ParentID', 'NCBIRank', 'Empties1', 'DivID', 'InheritedDivFlag', 'GeneticCodeID', 'InheritedGCFlag', 'MitochondrialGeneticCodeID', 'InheritedMitoGCFlag', 'GenBankHiddenFlag', 'HiddenSubtreeRootFlag', 'Comments']
     df_ncbi_rank = df_ncbi_rank[['TaxonID', 'NCBIRank', 'DivID']]
+    # NCBI renamed the 'superkingdom' rank to 'domain' (2025); ReDU keeps the established term
+    df_ncbi_rank['NCBIRank'] = df_ncbi_rank['NCBIRank'].replace('domain', 'superkingdom')
 
     print('Loading and processing NCBI divion file,..')
     df_ncbi_divisions = pd.read_csv(args.path_to_ncbi_division_dmp, sep='\t\|\t', engine='python', header=None, index_col=False)

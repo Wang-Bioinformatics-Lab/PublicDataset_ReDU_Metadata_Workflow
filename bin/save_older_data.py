@@ -61,6 +61,10 @@ if __name__ == "__main__":
             df_merged = df_merged.drop(index=stale).reset_index(drop=True)
             print(f"MetaboLights stale-path rows dropped: {len(stale)}")
 
+    # rows from earlier runs may have empty ontology indexes; use the missing-value term
+    for col in [c for c in df_merged.columns if c.endswith('OntologyIndex') or (c.startswith('ENVO') and c.endswith('Index'))]:
+        df_merged[col] = df_merged[col].fillna('missing value').replace('', 'missing value')
+
     #unique by USI column, ignoring the file extension (e.g. x.raw vs x.mzML). Only known
     #MS file extensions are stripped: dots elsewhere in folder or file names (e.g.
     #'S.epidermidis/A.mzML', 'QC_1.5uL.mzML') belong to the identity of the file.

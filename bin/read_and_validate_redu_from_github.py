@@ -474,6 +474,12 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
 
 
+    # ontology indexes of unmatched labels come out of the merges as NaN
+    for key, value in allowedTerm_dict.items():
+        if key.endswith('OntologyIndex') or (key.startswith('ENVO') and key.endswith('Index')):
+            if key in df.columns:
+                df[key] = df[key].fillna(value['missing']).replace('', value['missing'])
+
     # Ensure the dataframe contains only the columns specified in the dictionary
     keys_to_include = [key for key in allowedTerm_dict.keys() if key != 'USI' or add_usi or keep_usi]
 
