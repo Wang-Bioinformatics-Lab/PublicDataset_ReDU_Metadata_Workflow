@@ -32,6 +32,26 @@ def _patched_load_properties(self):
             with _owl_ns.LOADING: Prop.python_name = python_name_d[0]
 _owl_ns.Ontology._load_properties = _patched_load_properties
 
+# Body substances UBERON does not place under 'bodily fluid' (UBERON_0006314) but that ReDU
+# treats as biofluid (GNPS submitters label urine and saliva biofluid 100% of the time, feces 93%)
+EXTRA_FLUIDS = {
+    "UBERON_0001088",  # urine
+    "UBERON_0001988",  # feces
+    "UBERON_0001836",  # saliva
+    "UBERON_0000173",  # amniotic fluid
+    "UBERON_0000038",  # follicular fluid
+    "UBERON_0001968",  # semen
+    "UBERON_0006530",  # seminal fluid
+    "UBERON_0001971",  # gastric juice
+}
+
+# Common names that are not UBERON synonyms (e.g. MetaboLights and Workbench use 'plasma')
+EXTRA_SYNONYMS = {
+    "UBERON_0001969": ["plasma"],
+    "UBERON_0000178": ["whole blood"],
+    "UBERON_0001988": ["fecal", "faecal"],
+}
+
 def get_uberon_table(owl_path):
     # Each ontology gets its own owlready2 World: in the shared default world, classes an
     # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
@@ -53,10 +73,11 @@ def get_uberon_table(owl_path):
 
         if not synonyms:
             synonyms = [label] if label else []
-            
+        synonyms = synonyms + [s for s in EXTRA_SYNONYMS.get(cls.name, []) if s not in synonyms]
+
         is_multi_cellular = cls in downstream_classes_multi_cellular
         is_organ = cls in downstream_classes_organ
-        is_bodily_fluid = cls in downstream_classes_bodily_fluid
+        is_bodily_fluid = cls in downstream_classes_bodily_fluid or cls.name in EXTRA_FLUIDS
 
         for synonym in synonyms:
             data.append({

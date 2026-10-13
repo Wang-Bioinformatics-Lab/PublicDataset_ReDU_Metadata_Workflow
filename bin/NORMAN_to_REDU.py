@@ -9,6 +9,7 @@ from urllib.parse import unquote
 import numpy as np
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
 from REDU_conversion_functions import map_instrument_to_allowed
+from ms_instrument_matching import match_mass_spectrometer
 import json
 import os
 import sys
@@ -155,6 +156,156 @@ COUNTRY_NAMES = {'UK': 'United Kingdom', 'England': 'United Kingdom', 'Scotland'
                  'Wales': 'United Kingdom', 'Northern Ireland': 'United Kingdom',
                  'USA': 'United States of America', 'US': 'United States of America'}
 
+# Files CSV matrix of the human biomonitoring sheets -> SampleTypeSub1 (SampleType 'animal',
+# as for human samples in the other sources). Urine is set here because the ontology
+# table does not flag it as a fluid.
+HUMAN_MATRIX_TO_SAMPLETYPESUB1 = {'Blood': 'biofluid', 'Urine': 'biofluid', 'Placenta': 'tissue',
+                                  'Human Biomonitoring': ''}
+
+# Instrument names the vocabulary matching cannot resolve on its own (model field, or
+# the instrument title when the model is empty) -> MassSpectrometer label
+NORMAN_INSTRUMENT_NAMES = {'exploris 120': 'Orbitrap Exploris 120',
+                           'orbitrap velos': 'LTQ Orbitrap Velos',
+                           'maxis hd': 'Bruker Daltonics maXis series',
+                           'uhplc-orbitrap-id-x-tribrid': 'Orbitrap ID-X'}
+
+# GC columns with a 5%-phenyl methylpolysiloxane phase (DB-5 equivalents)
+GC_DB5_COLUMN = r'(?<![a-z0-9])(?:db|hp|tg|rxi|rtx|zb|vf|bpx|inertcap|intercap)[- ]?5(?![0-9])'
+
+# Sample sheet columns naming the water body of a surface-water sample
+WATER_BODY_COLUMNS = ['Name of river, estuary, lake, reservoir or sea', 'Name of river, estuary, lake, reservoir, sea',
+                      'Name of surface water (river/estuary/lake/reservoir/sea)']
+
+# Whole words in a water-body name that identify its biome. German 'See' is a lake and
+# English 'sea' the sea; Dutch/German 'meer' (lake or sea) and bays are left out.
+WATER_BODY_WORDS = {'river': 'freshwater river biome', 'rivers': 'freshwater river biome', 'rio': 'freshwater river biome',
+                    'río': 'freshwater river biome', 'rivière': 'freshwater river biome', 'riviere': 'freshwater river biome',
+                    'fluss': 'freshwater river biome', 'fiume': 'freshwater river biome',
+                    'lake': 'freshwater lake biome', 'lago': 'freshwater lake biome', 'lac': 'freshwater lake biome',
+                    'see': 'freshwater lake biome',
+                    'sea': 'marine biome', 'ocean': 'marine biome', 'mer': 'marine biome',
+                    'estuary': 'estuarine biome', 'estuaire': 'estuarine biome'}
+# names of catchments or artificial waters say nothing certain about the sampled water body
+WATER_BODY_EXCLUDE = {'basin', 'catchment', 'watershed', 'district', 'canal', 'channel', 'kanal', 'gracht', 'reservoir'}
+
+# 'Sediment Type' -> ENVO material (only exact ENVO labels; river sediment has none)
+SEDIMENT_TYPE_TO_MATERIAL = {'marine sediment': 'marine sediment', 'sediment-lake': 'lake sediment',
+                             'sedimenet-lake': 'lake sediment'}
+
+# Country names that are also common names of rivers, lakes or regions elsewhere
+AMBIGUOUS_COUNTRY_NAMES = {'Georgia', 'Jordan', 'Chad', 'Niger'}
+
+
+def water_body_biome(name):
+    """'Danube river' -> 'freshwater river biome', 'Black Sea' -> 'marine biome'; names
+    without exactly one biome word (bare names, basins, canals) give ''."""
+    if pd.isna(name):
+        return ''
+    words = set(re.findall(r'[^\W\d_]+', str(name).lower()))
+    if words & WATER_BODY_EXCLUDE:
+        return ''
+    biomes = {WATER_BODY_WORDS[w] for w in words if w in WATER_BODY_WORDS}
+    return biomes.pop() if len(biomes) == 1 else ''
+
+
+def dataset_country(dataset_record, allowed_countries):
+    """The one country named in the dataset keywords / spatial description, or None
+    when none or several are named."""
+    texts = list(dataset_record.get('keyword') or [])
+    if isinstance(dataset_record.get('spatial'), str):
+        texts.append(dataset_record['spatial'])
+    names = {c: c for c in allowed_countries if c not in AMBIGUOUS_COUNTRY_NAMES}
+    names.update({k: v for k, v in COUNTRY_NAMES.items() if k != 'US'})
+    found = set()
+    for text in texts:
+        for name, country in names.items():
+            if re.search(r'(?<![A-Za-z])' + re.escape(name) + r'(?![A-Za-z])', str(text)):
+                found.add(country)
+    # samples from Antarctica (e.g. a national research station) are not in that country
+    if any(re.search(r'antarctic', str(text), re.IGNORECASE) for text in texts):
+        return None
+    return found.pop() if len(found) == 1 else None
+
+
+def norman_chromatography(column_model, instrument_type=None):
+    """instrument-setups column_model (+ instrument_type, e.g. 'GC-EI-QFT') ->
+    ChromatographyAndPhase, '' when unknown."""
+    c = '' if pd.isna(column_model) else str(column_model).lower()
+    is_hilic = 'hilic' in c
+    if is_hilic and 'c18' in c:
+        # serially coupled C18 and HILIC columns ('Poroshell 120 EC C18 + ZIC-HILIC')
+        return '2D:HILIC and reverse phase (C18)'
+    if is_hilic and re.search('c8|c30|reverse', c):
+        return 'conflict (HILIC cannot coexist with C18/C8/C30)'
+    if is_hilic:
+        return 'normal phase (HILIC)'
+    for token, term in [('c18', 'reverse phase (C18)'), ('c8', 'reverse phase (C8)'), ('c30', 'reverse phase (C30)')]:
+        if token in c:
+            return term
+    # Waters T3 (trifunctional C18) columns: HSS T3, Atlantis T3
+    if re.search(r'(?:hss|atlantis)\s*t3', c):
+        return 'reverse phase (C18)'
+    # reverse phase columns without a C18/C8 label (Accucore RP-MS, ZORBAX SB-Aq)
+    if 'reverse phase' in c or re.search(r'(?<![a-z])rp(?![a-z])', c) or 'sb-aq' in c:
+        return 'reverse phase (NOS)'
+    is_gc = bool(re.search('gc|gas', c)) or str(instrument_type).strip().lower().startswith('gc')
+    if is_gc:
+        return 'gas chromatography (DB-5)' if re.search(GC_DB5_COLUMN, c) else 'gas chromatography (NOS)'
+    return ''
+
+
+_ENVO_SYNONYMS = {}
+
+
+def envo_material_label(value, material_table, allowedTerm_dict):
+    """An allowed ENVO material label for a value: the value itself, or the one label
+    whose synonym it is. Other values are returned unchanged."""
+    if pd.isna(value) or value == '':
+        return value
+    allowed = allowedTerm_dict['ENVOEnvironmentMaterial']['allowed_values']
+    if not _ENVO_SYNONYMS:
+        labels = {}
+        for label, synonym in zip(material_table['Label'].astype(str), material_table['Synonym'].astype(str)):
+            labels.setdefault(synonym.strip().lower(), set()).add(label)
+        _ENVO_SYNONYMS.update(labels)
+        _ENVO_SYNONYMS['__allowed__'] = set(allowed)
+    if value in _ENVO_SYNONYMS['__allowed__']:
+        return value
+    labels = {l for l in _ENVO_SYNONYMS.get(str(value).strip().lower(), set()) if l in _ENVO_SYNONYMS['__allowed__']}
+    return labels.pop() if len(labels) == 1 else value
+
+
+def norm_plus(s):
+    """norm() that keeps '+', so 'TripleTOF 5600' and 'TripleTOF 5600+' stay apart."""
+    return re.sub(r'[^a-z0-9+]', '', str(s).lower())
+
+
+def norman_mass_spectrometer(model, title, allowed_ms):
+    """MassSpectrometer term for an instruments.csv row: the model, or the instrument title
+    when the model is empty. Curated names first, then the shared vocabulary matcher,
+    then the former NORMAN normalisation (leading 'Orbitrap '/'maXis ' dropped,
+    '6550 iFunnel Q-TOF' -> 'iFunnel Q-TOF 6550') with an exact or token match."""
+    name = model if isinstance(model, str) and model.strip() else title
+    if not isinstance(name, str) or not name.strip():
+        return np.nan
+    name = ' '.join(name.split())
+    labels = {v.split('|')[0].lower(): v for v in allowed_ms}
+    curated = NORMAN_INSTRUMENT_NAMES.get(name.lower())
+    if curated and curated.lower() in labels:
+        return labels[curated.lower()]
+    hit = match_mass_spectrometer(name, allowed_ms)
+    if hit:
+        return hit
+    stripped = re.sub(r'^(orbitrap|maxis)\s+', '', name, flags=re.IGNORECASE)
+    stripped = re.sub(r'^\s*(\d+)\s+(.*)$', r'\2 \1', stripped).strip()
+    exact = {}
+    for v in allowed_ms:
+        exact.setdefault(norm_plus(v.split('|')[0]), set()).add(v)
+    hits = exact.get(norm_plus(stripped), set())
+    if len(hits) == 1:
+        return next(iter(hits))
+    return map_instrument_to_allowed(stripped, allowed_ms) or np.nan
+
 
 def species_group(value):
     """'Fish (22486)' -> 'fish'"""
@@ -262,6 +413,12 @@ def main(output_filename, study_id, **kwargs):
                 print(f"Fetched metadata collection dict for dataset {uuid}", flush = True)
 
 
+                # Records without sheets (no 'distribution') hold no files to index
+                if not metadata_collection_dict.get('distribution'):
+                    message = f"Skipping dataset {internal_id}: no sheets listed in the dataset record"
+                    print(message)
+                    skipped.append(message)
+                    continue
                 metadata_collection_links = metadata_collection_dict['distribution']
 
                 nomran_sheets_for_single_dataset_sheets = {'Sample info': [],
@@ -325,8 +482,8 @@ def main(output_filename, study_id, **kwargs):
                             df_metadata_sheet['ENVOEnvironmentMaterial_overwrite'] = np.where(
                                 df_metadata_sheet['sample_type'] == 'Real Sample',  
                                 df_metadata_sheet['Type of Surface water']
-                                .map({'River water': 'river water', 'Marine water':  'ocean water', 'Lake water': 'lake water',
-                                    'Transitional water': 'brackish water', 'Coastal water': 'coastal ocean water'})
+                                .map({'River water': 'river water', 'Marine water':  'sea water', 'Lake water': 'lake water',
+                                    'Transitional water': 'brackish water', 'Coastal water': 'coastal sea water'})
                                 .fillna(''),
                                 ''
                                 )
@@ -348,21 +505,32 @@ def main(output_filename, study_id, **kwargs):
                                 )                                               
 
                         # Biome from the water body / habitat of the sample
-                        for habitat_column in ['Type of Surface water', 'Origin of biota']:
+                        for habitat_column in ['Type of Surface water', 'Origin of biota', 'Origin of SPM']:
                             if habitat_column in df_metadata_sheet.columns:
                                 biome = df_metadata_sheet[habitat_column].astype('string').str.strip().str.lower().map(HABITAT_TO_BIOME)
                                 df_metadata_sheet['ENVOEnvironmentBiome_overwrite'] = np.where(is_real & biome.notna(), biome, '')
 
-                        # Sediment overwrite if Origin of Sediment column exists
-                        if 'Origin of Sediment' in df_metadata_sheet.columns:
-                            df_metadata_sheet['ENVOEnvironmentMaterial_overwrite'] = np.where(
-                                df_metadata_sheet['sample_type'] == 'Real Sample',  
-                                df_metadata_sheet['Origin of Sediment']
-                                .map({'Lake': 'lake sediment', 'Marine environment':  'marine sediment', 'Coastal region': 'marine sediment',
-                                    'River': 'sediment permeated by freshwater'})
-                                .fillna(''),
-                                ''
-                                )
+                        # Biome of surface water from the water body name ('Danube river', 'Black Sea');
+                        # applied after the merge to Surface water files only
+                        water_body = None
+                        for water_body_column in WATER_BODY_COLUMNS:
+                            if water_body_column in df_metadata_sheet.columns:
+                                water_body = (df_metadata_sheet[water_body_column] if water_body is None
+                                              else water_body.fillna(df_metadata_sheet[water_body_column]))
+                        if water_body is not None:
+                            df_metadata_sheet['water_body_biome'] = np.where(is_real, water_body.map(water_body_biome), '')
+
+                        # Sediment overwrite from 'Sediment Type' ('Sediment-Lake', 'Marine sediment'),
+                        # else 'Origin of Sediment'
+                        if 'Sediment Type' in df_metadata_sheet.columns or 'Origin of Sediment' in df_metadata_sheet.columns:
+                            sediment = pd.Series(np.nan, index=df_metadata_sheet.index, dtype=object)
+                            if 'Sediment Type' in df_metadata_sheet.columns:
+                                sediment = df_metadata_sheet['Sediment Type'].astype('string').str.strip().str.lower().map(SEDIMENT_TYPE_TO_MATERIAL)
+                            if 'Origin of Sediment' in df_metadata_sheet.columns:
+                                sediment = sediment.fillna(df_metadata_sheet['Origin of Sediment']
+                                    .map({'Lake': 'lake sediment', 'Marine environment':  'marine sediment', 'Coastal region': 'marine sediment',
+                                        'River': 'sediment permeated by freshwater'}))
+                            df_metadata_sheet['ENVOEnvironmentMaterial_overwrite'] = np.where(is_real, sediment.fillna(''), '')
                         
                         # Biota: SampleType from the species group (fish, birds, mussels -> animal, ...)
                         groups = (df_metadata_sheet['Species group'].map(species_group) if 'Species group' in df_metadata_sheet.columns
@@ -512,6 +680,15 @@ def main(output_filename, study_id, **kwargs):
                             fileinfo_redu_sheet['matrix'].map(MATRIX_TO_SAMPLETYPESUB1).fillna('Real Sample'),
                             fileinfo_redu_sheet['sample_type'].replace({'Blank Sample': 'blank_extraction'}))
 
+                        # Human biomonitoring (blood, urine, placenta): human samples are 'animal'
+                        is_human = is_real_file & fileinfo_redu_sheet['matrix'].isin(HUMAN_MATRIX_TO_SAMPLETYPESUB1.keys())
+                        fileinfo_redu_sheet.loc[is_human, 'SampleType'] = 'animal'
+                        human_sub1 = fileinfo_redu_sheet['matrix'].map(HUMAN_MATRIX_TO_SAMPLETYPESUB1).fillna('')
+                        fileinfo_redu_sheet.loc[is_human & (human_sub1 != ''), 'SampleTypeSub1'] = human_sub1
+
+                        # Food samples are 'food', not environmental material
+                        fileinfo_redu_sheet.loc[is_real_file & (fileinfo_redu_sheet['matrix'] == 'Foodomics'), 'SampleType'] = 'food'
+
                         # Biome from the matrix type ('River', 'Marine environment', ...)
                         biome = matrix_type.astype('string').str.strip().str.lower().map(HABITAT_TO_BIOME)
                         fileinfo_redu_sheet['ENVOEnvironmentBiome'] = np.where(is_real_file & biome.notna(), biome, '')
@@ -521,7 +698,7 @@ def main(output_filename, study_id, **kwargs):
                             fileinfo_redu_sheet['matrix']
                             .map({'Wastewater': 'waste water', 'Groundwater': 'groundwater', 'Ground water': 'groundwater', 'Surface water': 'surface water', 'Sludge': 'sludge',
                                   'Soil': 'soil', 'Sediment': 'sediment', 'Indoor Air': 'air', 'Air-Indoor': 'air', 'SPM': 'waterborne particulate matter',
-                                  'Ambient Air': 'air', 'Workplace Air': 'air', 'Emission Air': 'air', 'Foodomics': 'food product'})
+                                  'Ambient Air': 'air', 'Workplace Air': 'air', 'Emission Air': 'air'})
                             .fillna(''),
                             ''
                             )                                                           
@@ -547,41 +724,13 @@ def main(output_filename, study_id, **kwargs):
                             print(f"URL: {download_url}")
                             continue
 
-                        allowed_values_map = dict(zip(
-                            allowedTerm_dict["MassSpectrometer"]["allowed_values_matching_0"],
-                            allowedTerm_dict["MassSpectrometer"]["allowed_values"]
-                        ))
-
-                        # If any of the values starts with "orbitrap " remove the substring "orbitrap " from the value
-                        instrumentinfo_sheet['instrument_model'] = instrumentinfo_sheet['instrument_model'].str.replace('orbitrap ', '', case=False, regex=True)
-                        instrumentinfo_sheet['instrument_model'] = instrumentinfo_sheet['instrument_model'].str.replace('maxis ', '', case=False, regex=True)
-
-                        # if a value starts with numbers followed by a space like "6550 TOF MS" or "6600 TripleTOF" put it instead at the end like "TOF MS 6550" or "TripleTOF 6600"
-                        instrumentinfo_sheet["instrument_model"] = (
-                            instrumentinfo_sheet["instrument_model"]
-                            .str.replace(r"^\s*(\d+)\s+(.*)$", r"\2 \1", regex=True)   
-                            .str.strip()                                               
-                        )
-
-
-                        instrumentinfo_sheet['instrument_model'] = instrumentinfo_sheet['instrument_model'].apply(
-                            lambda x: ' '.join(x.split()) if isinstance(x, str) and not x.startswith((' ',)) else x)
-                        
-                        instrumentinfo_sheet["MassSpectrometer"] = (
-                            instrumentinfo_sheet["instrument_model"]
-                            .apply(norm)
-                            .map(allowed_values_map)
-                        )
-
-                        # Fallback: the exact map misses ~half the instruments
-                        # (Q-Exactive, Exploris, iFunnel Q-TOF, TripleTOF, Fusion Lumos,
-                        # ...). Map the instrument string onto the allowed vocabulary by
-                        # token-subset match.
+                        # Model name (or the instrument title when the model is empty) -> vocabulary
                         _allowed_ms = allowedTerm_dict["MassSpectrometer"]["allowed_values"]
-                        _unres = instrumentinfo_sheet["MassSpectrometer"].isna()
-                        if _unres.any():
-                            instrumentinfo_sheet.loc[_unres, "MassSpectrometer"] = instrumentinfo_sheet.loc[_unres, "instrument_model"].apply(
-                                lambda x: map_instrument_to_allowed(x, _allowed_ms))
+                        _titles = (instrumentinfo_sheet['instrument_title'] if 'instrument_title' in instrumentinfo_sheet.columns
+                                   else pd.Series(np.nan, index=instrumentinfo_sheet.index))
+                        instrumentinfo_sheet["MassSpectrometer"] = [
+                            norman_mass_spectrometer(model, title, _allowed_ms)
+                            for model, title in zip(instrumentinfo_sheet['instrument_model'], _titles)]
 
 
                         nomran_sheets_for_single_dataset_sheets['Instrument info'].append(instrumentinfo_sheet)
@@ -656,45 +805,13 @@ def main(output_filename, study_id, **kwargs):
                             instrumentsetup_sheet.loc[pos_mask, 'IonizationSourceAndPolarity'] += ' (positive)'
                             instrumentsetup_sheet.loc[neg_mask, 'IonizationSourceAndPolarity'] += ' (negative)'
 
-                            if 'column_model' in instrumentsetup_sheet.columns:
-                                
-                                instrumentsetup_sheet['column_model'] = instrumentsetup_sheet['column_model'].fillna('').str.lower()
-                                
-                                
-                                instrumentsetup_sheet['ChromatographyAndPhase'] = ''
-                                
-                                # Handle reversed phase and HILIC
-                                instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('reverse phase'), 'ChromatographyAndPhase'] = 'reverse phase'
-                                instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('hilic'), 'ChromatographyAndPhase'] = 'normal phase (HILIC)'
-                                
-                                # Handle C18, C8, and C30 (not contradictory, so append)
-                                instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('c18') & 
-                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (C18)'
-                                instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('c8') & 
-                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (C8)'
-                                instrumentsetup_sheet.loc[instrumentsetup_sheet['column_model'].str.contains('c30') & 
-                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (C30)'
-
-                                # If 'ChromatographyAndPhase' has 'reverse phase' but no specific type, append '(NOS)'
-                                instrumentsetup_sheet.loc[instrumentsetup_sheet['ChromatographyAndPhase'].str.contains('reverse phase') & 
-                                                        ~instrumentsetup_sheet['ChromatographyAndPhase'].str.contains(r"\("), 'ChromatographyAndPhase'] = 'reverse phase (NOS)'
-
-                                # Ensure HILIC is not combined with C18, C8, or C30
-                                instrumentsetup_sheet.loc[
-                                    instrumentsetup_sheet['column_model'].str.contains('hilic', case=False) & 
-                                    instrumentsetup_sheet['column_model'].str.contains('c18|c8|c30|reverse', case=False), 
-                                    'ChromatographyAndPhase'
-                                ] = 'conflict (HILIC cannot coexist with C18/C8/C30)'
-
-                                
-                                # If no value assigned yet test for "gc" or "gas" in column_model
-                                mask_gc = instrumentsetup_sheet['column_model'].str.contains('gc|gas', case=False, na=False)
-
-                                instrumentsetup_sheet['ChromatographyAndPhase'] = np.where(
-                                    (instrumentsetup_sheet['ChromatographyAndPhase'] == '') & mask_gc,
-                                    'gas chromatography (NOS)',
-                                    instrumentsetup_sheet['ChromatographyAndPhase']
-                                )
+                        # Column model (+ instrument type for GC) -> ChromatographyAndPhase
+                        if 'column_model' in instrumentsetup_sheet.columns:
+                            _types = (instrumentsetup_sheet['instrument_type'] if 'instrument_type' in instrumentsetup_sheet.columns
+                                      else pd.Series(np.nan, index=instrumentsetup_sheet.index))
+                            instrumentsetup_sheet['ChromatographyAndPhase'] = [
+                                norman_chromatography(column, instrument_type)
+                                for column, instrument_type in zip(instrumentsetup_sheet['column_model'], _types)]
 
                         
                         nomran_sheets_for_single_dataset_sheets['Instrument setup'].append(instrumentsetup_sheet)
@@ -729,7 +846,9 @@ def main(output_filename, study_id, **kwargs):
                 ########
                 columns_to_drop = [col for col in combined_sample_info.columns if col in combined_file_info.columns and col != 'sample_id']
                 combined_sample_info = combined_sample_info.drop(columns=columns_to_drop)
-                merged_df = pd.merge(combined_sample_info, combined_file_info, on='sample_id', how='inner')
+                # Keep every file of the Files CSV, also when its sample is missing from the
+                # Samples CSVs (sheet not downloadable, blanks/QCs listed only in the Files CSV)
+                merged_df = pd.merge(combined_file_info, combined_sample_info, on='sample_id', how='left')
                 print(f"Dataset {internal_id}: {len(combined_sample_info)} samples, {len(combined_file_info)} file info rows, {len(merged_df)} matched")
 
                 # Gain most specific values; empty or missing overwrites (NaN when only some
@@ -742,6 +861,30 @@ def main(output_filename, study_id, **kwargs):
                 
                 # Drop the overwrite columns
                 merged_df = merged_df.drop(columns=[col for col in merged_df.columns if col.endswith('_overwrite')])
+
+                # Surface water without a biome: biome from the water body name
+                if 'water_body_biome' in merged_df.columns:
+                    no_biome = merged_df['ENVOEnvironmentBiome'].fillna('') == ''
+                    is_surface_water = (merged_df['matrix'] == 'Surface water') & (merged_df['sample_type'] == 'Real Sample')
+                    use = no_biome & is_surface_water & (merged_df['water_body_biome'].fillna('') != '')
+                    merged_df.loc[use, 'ENVOEnvironmentBiome'] = merged_df.loc[use, 'water_body_biome']
+                    merged_df = merged_df.drop(columns=['water_body_biome'])
+
+                # Real samples without a country: the one country named in the dataset record,
+                # if no sample of the dataset names another country
+                country = dataset_country(metadata_collection_dict, allowedTerm_dict['Country']['allowed_values'])
+                if country:
+                    if 'Country' not in merged_df.columns:
+                        merged_df['Country'] = np.nan
+                    known = merged_df['Country'].dropna().astype(str).str.strip()
+                    known = set(known[known != ''])
+                    if known <= {country}:
+                        no_country = merged_df['Country'].fillna('').astype(str).str.strip() == ''
+                        merged_df.loc[no_country & (merged_df['sample_type'] == 'Real Sample'), 'Country'] = country
+
+                # Material names that are ENVO synonyms ('ocean water') -> the ENVO label
+                merged_df['ENVOEnvironmentMaterial'] = merged_df['ENVOEnvironmentMaterial'].map(
+                    lambda v: envo_material_label(v, ENVOEnvironmentMaterialIndex_table, allowedTerm_dict))
 
                 # The biome is the broad-scale environmental context (MIxS env_broad_scale)
                 merged_df['ENVOBroadScale'] = merged_df['ENVOEnvironmentBiome']
@@ -771,7 +914,7 @@ def main(output_filename, study_id, **kwargs):
                     if combined_instrument_info is not None and 'instrument_id' in combined_instrument_setup_info.columns:
                         columns_to_drop = [col for col in combined_instrument_info.columns if col in combined_instrument_setup_info.columns and col != 'instrument_id']
                         combined_instrument_info = combined_instrument_info.drop(columns=columns_to_drop)
-                        instrument_and_setup_df = pd.merge(combined_instrument_info, combined_instrument_setup_info, on='instrument_id', how='inner')
+                        instrument_and_setup_df = pd.merge(combined_instrument_setup_info, combined_instrument_info, on='instrument_id', how='left')
                     else:
                         print(f"Dataset {internal_id}: no instrument info to join, using instrument setups only")
                         instrument_and_setup_df = combined_instrument_setup_info

@@ -36,14 +36,16 @@ def main():
     # (e.g. 'FILES/<batch>/sample.raw'), so the exact key never matches and the whole
     # study is dropped by the inner join. Recover these by matching on the basename
     # within the study, but ONLY when that basename is unambiguous (appears once) on
-    # both sides, so we never mis-link two distinct files that share a name.
+    # both sides, so we never mis-link two distinct files that share a name. Basenames
+    # are compared case-insensitively (e.g. 'x.CDF' in the assay sheet vs 'x.cdf' on FTP);
+    # names that differ only in case count as the same name and are thus ambiguous.
     matched_keys = set(exact_df["key"])
     unmatched_df = metadata_df[~metadata_df["key"].isin(matched_keys)].copy()
 
     recovered_df = None
     if len(unmatched_df):
         def _basename(p):
-            return str(p).split('/')[-1]
+            return str(p).split('/')[-1].lower()
 
         files_bn = files_df.copy()
         files_bn["basename"] = files_bn["file_path"].apply(_basename)

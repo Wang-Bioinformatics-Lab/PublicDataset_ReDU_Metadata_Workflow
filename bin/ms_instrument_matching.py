@@ -42,6 +42,8 @@ _ALIASES = {
     'triple quad': ['triple', 'quadrupole'],
     'tripletof': ['tripletof'],
     'triple tof': ['tripletof'],
+    # 'Q-Exactive' / 'QExactive' -> the 'Q Exactive' labels
+    'qexactive': ['q', 'exactive'],
 }
 
 _ACCESSION = re.compile(r'MS[:_](\d{7})', re.I)
@@ -111,13 +113,16 @@ def match_mass_spectrometer(name, allowed_ms_terms, accession=None):
     core = _core_tokens(name)
     if not core:
         return None
+    name_is_gc = bool(re.search(r'(?<![a-z])gc', str(name).lower()))
     same = by_core.get(core)
+    if same and not name_is_gc:
+        # 'gc' is a generic word, so 'Q Exactive GC Orbitrap' has the core of 'Orbitrap Q-Exactive'
+        same = {t for t in same if not re.search(r'(?<![a-z])gc', t.lower())}
     if same:
         return next(iter(same)) if len(same) == 1 else None
 
     # Name carries extra words (e.g. 'Q Exactive Plus Orbitrap'): take the most specific
     # label whose tokens are all in the name, if it is unique and identifies a model.
-    name_is_gc = bool(re.search(r'(?<![a-z])gc', str(name).lower()))
     contained = [(len(c), {t for t in terms if name_is_gc or not re.search(r'(?<![a-z])gc', t.lower())})
                  for c, terms in by_core.items() if c < core]
     contained = [(n, terms) for n, terms in contained if terms]

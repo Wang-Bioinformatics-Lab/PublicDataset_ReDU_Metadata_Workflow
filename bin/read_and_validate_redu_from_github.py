@@ -165,14 +165,21 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     if keep_usi:
         print("Keeping USI column")
         columns_to_remove = [c for c in columns_to_remove if c != "USI"]
+    # LifeStage is regenerated from the age below; keep the submitter's value for when it can't be
+    if 'LifeStage' in df.columns:
+        df['_recorded_LifeStage'] = df['LifeStage']
     df = df.drop(columns=columns_to_remove)
 
 
     #Resolve contradictory fields
     if 'SampleType' in df.columns:
-        mask = df['SampleType'].str.contains('blank', case=False)
-        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'DOIDCommonName', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
+        # blanks, pooled QCs and standards are not samples of the study's subjects/organisms
+        mask = df['SampleType'].str.contains('blank', case=False) | \
+            df['SampleType'].isin(['pool_QC', 'reference material', 'molecular_standards'])
+        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet']
         df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
+        if '_recorded_LifeStage' in df.columns:
+            df.loc[mask, '_recorded_LifeStage'] = ''
 
     if 'filename' in df.columns and attempt_adding_file_extensions == True:
         df.loc[df['filename'].str.contains(r'^[^.]+$') & (df['filename'].str.len() >= 1), 'filename'] += '.mzML'
@@ -403,7 +410,13 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
 
             if key == 'LifeStage':
-                df[key] = df.apply(lambda x: age_category(x['AgeInYears']) if x['NCBITaxonomy'] == "9606|Homo sapiens" else value['missing'], axis=1)
+                computed = df.apply(lambda x: age_category(x['AgeInYears']) if x['NCBITaxonomy'] == "9606|Homo sapiens" else value['missing'], axis=1)
+                computed = computed.replace('', value['missing'])  # age_category gives '' for non-numeric ages
+                # a life stage recorded by the submitter is kept when the age gives none
+                if '_recorded_LifeStage' in df.columns and len(value.get('allowed_values') or []) > 0:
+                    recorded = df['_recorded_LifeStage'].where(df['_recorded_LifeStage'].isin(value['allowed_values']))
+                    computed = computed.where(computed != value['missing'], recorded).fillna(value['missing'])
+                df[key] = computed
             if key == 'UniqueSubjectID':
                 df[key] = df.apply(lambda x: str(x['MassiveID']) + '_' + str(x['SubjectIdentifierAsRecorded']) 
                                 if x['SubjectIdentifierAsRecorded'] != allowedTerm_dict['SubjectIdentifierAsRecorded']['missing'] 
@@ -412,27 +425,33 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                                 and not pd.isna(x['SubjectIdentifierAsRecorded']) 
                                 else value['missing'], axis=1)
             if key == 'UBERONOntologyIndex':
-                df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex', 'Is Multicellular','Is Organ', 'Is Fluid']], left_on='UBERONBodyPartName', right_on='Label', how='left')
-                df.loc[df['Is Multicellular'] == True, 'SampleTypeSub1'] = 'tissue'
-                df.loc[df['Is Fluid'] == True, 'SampleTypeSub1'] = 'biofluid'
+                df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex', 'Is Multicellular','Is Organ', 'Is Fluid']].drop_duplicates('Label'), left_on='UBERONBodyPartName', right_on='Label', how='left')
+                # QC, blank and standard rows keep their own SampleTypeSub1 (e.g. pool_QC of plasma)
+                sample_type = df['SampleType'] if 'SampleType' in df.columns else pd.Series('', index=df.index)
+                not_qc = ~sample_type.astype(str).str.match(r'blank_|pool_QC|molecular_standards|reference material')
+                # only where Sub1 is still open; finer Sub1 values (insect, plant_angiospermae, ...) are kept
+                sub1 = df['SampleTypeSub1'] if 'SampleTypeSub1' in df.columns else pd.Series(pd.NA, index=df.index, dtype=object)
+                sub1_open = sub1.isna() | sub1.isin(['', value['missing'], allowedTerm_dict['SampleTypeSub1']['missing'], 'tissue', 'biofluid'])
+                df.loc[(df['Is Multicellular'] == True) & not_qc & sub1_open, 'SampleTypeSub1'] = 'tissue'
+                df.loc[(df['Is Fluid'] == True) & not_qc & sub1_open, 'SampleTypeSub1'] = 'biofluid'
                 df.drop(columns=['Label', 'Is Multicellular', 'Is Organ', 'Is Fluid'], inplace=True)
             if key == 'DOIDOntologyIndex':
-                df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']], left_on='DOIDCommonName', right_on='Label', how='left')
+                df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']].drop_duplicates('Label'), left_on='DOIDCommonName', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOEnvironmentBiomeIndex':
-                df = df.merge(envome_biome_ontology_table[['Label', 'ENVOEnvironmentBiomeIndex']], left_on='ENVOEnvironmentBiome', right_on='Label', how='left')
+                df = df.merge(envome_biome_ontology_table[['Label', 'ENVOEnvironmentBiomeIndex']].drop_duplicates('Label'), left_on='ENVOEnvironmentBiome', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOEnvironmentMaterialIndex':
-                df = df.merge(envome_material_ontology_table[['Label', 'ENVOEnvironmentMaterialIndex']], left_on='ENVOEnvironmentMaterial', right_on='Label', how='left')
+                df = df.merge(envome_material_ontology_table[['Label', 'ENVOEnvironmentMaterialIndex']].drop_duplicates('Label'), left_on='ENVOEnvironmentMaterial', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOMediumScaleIndex':
-                df = df.merge(envome_medium_scale_ontology_table[['Label', 'ENVOMediumScaleIndex']], left_on='ENVOMediumScale', right_on='Label', how='left')
+                df = df.merge(envome_medium_scale_ontology_table[['Label', 'ENVOMediumScaleIndex']].drop_duplicates('Label'), left_on='ENVOMediumScale', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOLocalScaleIndex':
-                df = df.merge(envome_local_scale_ontology_table[['Label', 'ENVOLocalScaleIndex']], left_on='ENVOLocalScale', right_on='Label', how='left')
+                df = df.merge(envome_local_scale_ontology_table[['Label', 'ENVOLocalScaleIndex']].drop_duplicates('Label'), left_on='ENVOLocalScale', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOBroadScaleIndex':
-                df = df.merge(envome_broad_scale_ontology_table[['Label', 'ENVOBroadScaleIndex']], left_on='ENVOBroadScale', right_on='Label', how='left')
+                df = df.merge(envome_broad_scale_ontology_table[['Label', 'ENVOBroadScaleIndex']].drop_duplicates('Label'), left_on='ENVOBroadScale', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
             if key == 'USI' and add_usi == True:
                 df['filename'] = df['filename'].apply(process_filename)

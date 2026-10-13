@@ -1,0 +1,50 @@
+MWB,INSTRUMENT_TYPE,REDU
+agilent 6550 qtof,,6550 iFunnel Q-TOF LC/MS|MS:1002783
+agilent 6550 qtof accurate mass qtof,,6550 iFunnel Q-TOF LC/MS|MS:1002783
+agilent 6220 tof,,6220 Time-of-Flight LC/MS|MS:1000675
+agilent 6230 tof,,6230 Time-of-Flight LC/MS|MS:1003525
+agilent 6560 ion mobility,,6560 Q-TOF LC/MS|MS:1002792
+agilent 6210 tof,,6210 Time-of-Flight LC/MS|MS:1000472
+agilent 6224 tof,,6224 Time-of-Flight LC/MS|MS:1002796
+agilent 6470a,,6470A Triple Quadrupole LC/MS|MS:1000935
+agilent 6470,,6470 Triple Quadrupole LC/MS|MS:1003529
+agilent 6470 tq,,6470 Triple Quadrupole LC/MS|MS:1003529
+agilent 6430,,6430 Triple Quadrupole LC/MS|MS:1002799
+agilent triple quadruple (tq) 6420,,6420 Triple Quadrupole LC/MS|MS:1002444
+agilent 6510 qtof,,6510 Quadrupole Time-of-Flight LC/MS|MS:1000676
+agilent g3250aa lc/msd tof system,,G3250AA Time-of-Flight LC/MS|MS:1003545
+agilent 7000b,,7000B Triple Quadrupole GC/MS|MS:1002803
+agilent 7000d,,7000D Triple Quadrupole GC/MS|MS:1003539
+agilent 7010,,7010 Triple Quadrupole GC/MS|MS:1003540
+agilent 7010b,,7010B Triple Quadrupole GC/MS|MS:1003541
+agilent 7200,,7200 Q-TOF GC/MS|MS:1003542
+agilent 7250,,7250 Q-TOF GC/MS|MS:1003543
+agilent 8890-5977b,,5977B MSD|MS:1003523
+shimadzu tq8050nx,,GCMS-TQ8050NX|MS:1003489
+shimadzu tq8050 nx,,GCMS-TQ8050NX|MS:1003489
+shimadzu gcms-tq8050,,GCMS-TQ 8050|MS:1003575
+shimadzu gcms/ms-tq8050,,GCMS-TQ 8050|MS:1003575
+shimazu tq8040,,GCMS-TQ8040|MS:1003491
+shimadzu gc-ms/ms-tq8040,,GCMS-TQ8040|MS:1003491
+shimadzu qp2010 ultra,,GCMS-QP2010 Ultra|MS:1003494
+shimadzu qp2010 plus,,GCMS-QP2010 Plus|MS:1003487
+shimadzu qp2010 se,,GCMS-QP2010SE|MS:1003152
+shimadzu qp-5000,,GCMS-QP5000|MS:1003492
+thermo quantiva,,TSQ Quantiva|MS:1002418
+thermo quantiva qqq,,TSQ Quantiva|MS:1002418
+thermo quantiva qqq thermo quantiva,,TSQ Quantiva|MS:1002418
+thermo quantis qqq,,TSQ Quantis|MS:1002875
+thermo exploris 240,,Orbitrap Exploris 240|MS:1003094
+thermo orbitrap exploris120,,Orbitrap Exploris 120|MS:1003095
+thermo scientific iq-x tribrid,,Orbitrap IQ-X|MS:1003411
+thermo ortibrap iq-x,,Orbitrap IQ-X|MS:1003411
+obitrap id-x tribrid,,Orbitrap ID-X|MS:1003112
+thermo idx,,Orbitrap ID-X|MS:1003112
+thermo qe,,Q Exactive|MS:1001911
+thermo qe plus,,Q Exactive Plus|MS:1002634
+thermo tsq8000,,TSQ 8000|MS:1003503
+thermoscientific isq7000,,ISQ 7000|MS:1003449
+tripletof5600（sciex）,,TripleTOF 5600|MS:1000932
+abi sciex qtrap6500+,,QTRAP 6500+|MS:1002582
+abi sciex 6500+,qtrap,QTRAP 6500+|MS:1002582
+leco gc-tof,,LECO instrument model|MS:1001800

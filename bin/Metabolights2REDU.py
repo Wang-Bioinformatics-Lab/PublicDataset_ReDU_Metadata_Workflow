@@ -6,6 +6,9 @@ from bs4 import BeautifulSoup
 import argparse
 import json
 import time
+import html
+import math
+import itertools
 import traceback
 import numpy as np
 from tqdm import tqdm
@@ -17,6 +20,7 @@ from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
+from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
 
 
@@ -94,6 +98,391 @@ def get_blanks(x):
             return [None, None]
     else:
         return [None, None]
+
+
+def _label(value):
+    """Lower case, punctuation as spaces: 'Pooled QC-sample' -> 'pooled qc sample'."""
+    return re.sub(r'[^a-z0-9]+', ' ', str(value).lower()).strip()
+
+
+# MetaboLights labels for QC samples, blanks and standards (exact, after _label). They are
+# read from the 'Sample type' characteristic, from factor values (submitters write
+# 'Treatment = QC') and from the organism column ('reference compound', 'solvent blank').
+_QC_BLANK_LABELS = {}
+for _term, _labels in {
+        'pool_QC': ['pooled quality control sample', 'pooled quality control samples', 'pooled quality control',
+                    'pooled qc', 'pooled qc sample', 'pooled qc samples', 'qc pool', 'pool qc', 'pooled sample',
+                    'pooled samples', 'pool', 'pooled', 'study reference', 'long term reference',
+                    'quality control', 'quality control sample', 'quality control samples', 'qc', 'qc sample',
+                    'qc samples'],
+        'blank_analysis': ['blank', 'blanks', 'blank sample', 'blank samples', 'solvent blank', 'solvent blanks',
+                           'instrument blank', 'injection blank', 'analytical blank', 'water blank'],
+        'blank_extraction': ['extraction blank', 'extraction blanks', 'blank extraction', 'process blank',
+                             'process blanks', 'processing blank', 'procedural blank', 'procedure blank',
+                             'method blank', 'sample preparation blank', 'preparation blank'],
+        'blank_culturemedia': ['media blank', 'medium blank', 'culture medium blank', 'culture media blank',
+                               'blank medium', 'blank media', 'growth medium blank'],
+        'molecular_standards': ['reference compound', 'reference compounds', 'reference compound mix',
+                                'reference compound mixture', 'reference compound single', 'standard',
+                                'standards', 'standard mix', 'standard mixture', 'reference standard',
+                                'reference standards', 'chemical standard', 'authentic standard',
+                                'internal standard mixture', 'calibration curve', 'calibration point',
+                                'calibration standard', 'calibration standards'],
+        }.items():
+    for _l in _labels:
+        _QC_BLANK_LABELS[_l] = _term
+_SUBTYPE = {'molecular_standards': 'defined_standards'}
+# organism values that are not organisms but say what the sample is
+_ORGANISM_BLANK_LABELS = {'experimental blank': 'blank_analysis', 'solvent': 'blank_analysis', 'acetonitrile': 'blank_analysis',
+                          'methanol': 'blank_analysis', 'non sample control': 'blank_analysis',
+                          'compound': 'molecular_standards', 'compounds': 'molecular_standards', 'chemical': 'molecular_standards'}
+
+# Organism part values that name an UBERON term without being its label or exact synonym
+_BODY_PART_ALIASES = {
+    'plasma': 'blood plasma', 'plasma sample': 'blood plasma', 'plasma samples': 'blood plasma',
+    'edta plasma': 'blood plasma', 'heparin plasma': 'blood plasma', 'human plasma': 'blood plasma',
+    'serum': 'blood serum', 'serum sample': 'blood serum', 'serum samples': 'blood serum', 'human serum': 'blood serum',
+    'whole blood': 'blood', 'blood sample': 'blood', 'blood samples': 'blood',
+    'stool': 'feces', 'stool sample': 'feces', 'stool samples': 'feces', 'faeces': 'feces', 'fecal': 'feces',
+    'faecal': 'feces', 'feces sample': 'feces', 'feces samples': 'feces', 'fecal sample': 'feces',
+    'fecal samples': 'feces', 'faecal sample': 'feces', 'faeces sample': 'feces',
+    'urine sample': 'urine', 'urine samples': 'urine', 'csf': 'cerebrospinal fluid',
+}
+
+
+def _qc_blank_term(value):
+    """ReDU SampleType for an exact MetaboLights QC/blank/standard label, else None."""
+    return _QC_BLANK_LABELS.get(_label(value))
+
+
+# Columns holding the country where the sample was taken. 'Country of origin' and 'Country
+# of collection' are left to the exact-name match above: in MetaboLights they describe the
+# provenance of germplasm accessions (cultivar/landrace origin), not where the analysed
+# sample was collected.
+_COUNTRY_CODE_COLUMNS = re.compile(r'Samples_(?:country|country of sampling|sampling country|geographic(?:al)? location)(?:_\d+)?$', re.I)
+
+
+def _country_term(value, vocab, aliases):
+    """Country term for a country name/code ('USA', 'NZ', 'ITA', 'USA (Oregon)'), else None."""
+    key = str(value).strip().lower()
+    if not key or key in _MISSING_VALUES:
+        return None
+    for k in (key, re.sub(r'\s*\(.*?\)\s*$', '', key).strip()):
+        if k in vocab:
+            return vocab[k]
+        if k in aliases:
+            return aliases[k]
+    return None
+
+
+_UNIT_YEARS = {'year': 1, 'month': 12, 'week': 52.1429, 'day': 365, 'hour': 8760}
+
+
+def _unit_name(unit):
+    """'Month', 'weeks', 'yr' -> 'month', 'week', 'year'; None if not a time unit."""
+    u = str(unit).strip().lower()
+    u = {'yr': 'year', 'yrs': 'year', 'y': 'year', 'years old': 'year', 'mo': 'month', 'wk': 'week', 'wks': 'week',
+         'd': 'day', 'h': 'hour', 'hr': 'hour', 'hrs': 'hour'}.get(u, u)
+    u = u[:-1] if u.endswith('s') and u[:-1] in _UNIT_YEARS else u
+    return u if u in _UNIT_YEARS else None
+
+
+# Age of the sampled subject, other than 'Age' itself (which is read first)
+_OTHER_AGE_COLUMNS = re.compile(r'Samples_(?:mouse age|rat age|animal age|subject age|patient age|age at sampling|age at sacrifice'
+                                r'|age at collection|age at sample collection|exact age|current chronological age|chronological age'
+                                r'|postnatal age|age in (?:years|months|weeks|days))(?:_\d+)?$', re.I)
+
+
+def _age_years(value, unit='', header=''):
+    """Age in years from a number with its unit (unit column, in the value, or in the header)."""
+    s = str(value).strip()
+    m = re.fullmatch(r'(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*(?:old)?', s)
+    if not m:
+        return None
+    u = _unit_name(m.group(2)) if m.group(2) else None
+    if m.group(2) and u is None:
+        return None
+    if u is None:
+        u = _unit_name(unit) if str(unit).strip() else None
+    if u is None:
+        h = re.search(r'\bin (years|months|weeks|days)\b', str(header), re.I)
+        u = _unit_name(h.group(1)) if h else None
+    if u is None:
+        return None
+    return float(m.group(1)) / _UNIT_YEARS[u]
+
+
+_LENGTH_M = {'meter': 1, 'meters': 1, 'metre': 1, 'metres': 1, 'm': 1, 'centimeter': 0.01, 'centimeters': 0.01,
+             'centimetre': 0.01, 'cm': 0.01, 'millimeter': 0.001, 'millimeters': 0.001, 'mm': 0.001,
+             'kilometer': 1000, 'kilometers': 1000, 'km': 1000}
+
+
+def _meters(value, unit):
+    """Number with a length unit in meters, else None."""
+    try:
+        x = float(str(value).strip())
+    except ValueError:
+        return None
+    f = _LENGTH_M.get(str(unit).strip().lower())
+    return None if f is None or not np.isfinite(x) else x * f
+
+
+_SUBJECT_COLUMNS = re.compile(r'Samples_(?:subject|subject id|subject_id|subject identifier|subject number|patient|patient id'
+                              r'|patient identifier|patient number|participant|participant id|participant identifier'
+                              r'|study participant|animal id|animal identifier|animal number|animal name|mouse id'
+                              r'|mouse identifier|rat id|donor|donor id|sample donor|stool donor|individual'
+                              r'|individual id|person|volunteer|volunteer id|tree id|plant id|host id)(?:_\d+)?$', re.I)
+# values in subject columns that mark QC/blank/pooled samples rather than a subject
+_NOT_A_SUBJECT = re.compile(r'\b(?:qc|quality control|pool(?:ed)?|blank|standard|reference|mix(?:ture)?|not applicable|none|na'
+                            r'|control|healthy|patient|disease|accession)\b', re.I)
+
+_DATE_COLUMNS = re.compile(r'Samples_(?:collection date|sample collection date|sampling date|sample date|date of sampling'
+                           r'|date of collection|date of sample collection|sampling datetime|collection datetime'
+                           r'|sampling date and time|collection date and time|utc date and time|utc sampling time'
+                           r'|harvest date|harvest year|harvesting date|year of harvest|year of harvesting'
+                           r'|year of collection|collection year|sampling year|sampling year date)(?:_\d+)?$', re.I)
+
+
+def _collection_dates(series):
+    """ISO-8601 collection dates (precision kept) for one column, None where not parseable.
+    Dotted dates are day-first (d.m.Y). Slash/dash day-month dates are only used when the
+    column itself shows the order (a field > 12); otherwise they are left out."""
+    values = series.astype(str).str.strip()
+    slash = values.str.extract(r'^(\d{1,2})[/-](\d{1,2})[/-]\d{2,4}(?:\s|T|$)').dropna().astype(int)
+    dmy = bool(((slash[0] > 12) & (slash[1] <= 12)).any())
+    mdy = bool(((slash[1] > 12) & (slash[0] <= 12)).any())
+
+    def one(v):
+        if not v or v.lower() in _MISSING_VALUES:
+            return None
+        m = re.fullmatch(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', v)
+        if m:
+            v = f'{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}'
+        elif re.match(r'\d{1,2}[/-]\d{1,2}[/-]\d', v):
+            if dmy == mdy:
+                return None
+            return normalize_redu_datetime(v, dayfirst=dmy)
+        return normalize_redu_datetime(v)
+    cache = {}
+    return values.map(lambda v: cache.setdefault(v, one(v)))
+
+
+# ---------------------------------------------------------------------------------------
+# SampleExtractionMethod from the 'Extraction' protocol text. Only a solvent system written
+# with its ratio ('methanol:water (4:1, v/v)', '80% methanol', '4:4:2 ACN:MeOH:H2O') that is
+# an allowed term, or a single named solvent with an exact '(100%)' term, is used. The text
+# is cut where the extract is dried and from reconstitution/LC/derivatisation keywords on;
+# protocols naming other solvents, several systems or per-sample-type procedures are skipped.
+# ---------------------------------------------------------------------------------------
+_EXT_SOLVENTS = [
+    ('methyltertbutylether', r'methyl[\s-]*tert(?:iary)?[\s-]*butyl[\s-]*ether|tert[\s-]*butyl[\s-]*methyl[\s-]*ether|MTBE'),
+    ('acetonitrile', r'acetonitrile|ACN|MeCN|CH3CN'),
+    ('isopropanol', r'isopropanol|iso-propanol|2-propanol|isopropyl[\s-]+alcohol|IPA'),
+    ('dichloromethane', r'dichloromethane|DCM|CH2Cl2|methylene[\s-]+chloride'),
+    ('ethyl acetate', r'ethyl[\s-]+acetate|EtOAc'),
+    ('chloroform', r'chloroform|CHCl3'),
+    ('methanol', r'methanol|MeOH|CH3OH'),
+    ('ethanol', r'ethanol|EtOH'),
+    ('butanol', r'n-butanol|1-butanol|butanol|BuOH'),
+    ('hexane', r'n-hexane|hexane'),
+    ('acetone', r'acetone'),
+    ('water', r'water|H2O|dd\s?H2O|Milli-?Q|ultrapure\s+water'),
+    # other organic solvents: not in the vocabulary, only block a match
+    ('other', r'petroleum\s+ether|diethyl\s+ether|heptane|pentane|toluene|cyclohexane|benzene|iso-?octane|n-?propanol|1-propanol|pyridine|tetrahydrofuran|THF|DMSO|dimethyl\s+sulfoxide|formamide'),
+]
+_EXT_SOLV_ALT = '|'.join('(?:%s)' % p for _, p in _EXT_SOLVENTS)
+_EXT_SOLV_RE = re.compile(r'(?<![A-Za-z0-9])(?<!\d-)(?:%s)(?![A-Za-z0-9])' % _EXT_SOLV_ALT, re.I)
+def _ext_solvent(token):
+    for name, p in _EXT_SOLVENTS:
+        if re.fullmatch(p, token.strip(), re.I):
+            return name
+    return None
+_EXT_NUM = r'\d+(?:\.\d+)?'
+_EXT_SEP = r'\s*(?:[:/]|-(?!\d)|\band\b|,)\s*'
+_EXT_RSEP = r'\s*[:/]\s*'
+_EXT_S = r'(%s)' % _EXT_SOLV_ALT
+# 'methanol:water (4:1, v/v)', 'MeOH/H2O 80:20', 'acetonitrile:methanol:water (2:2:1)'
+_EXT_NAMES_RATIO = re.compile(r'(?<![A-Za-z0-9])%s%s%s(?:%s%s)?(?![A-Za-z0-9])\s*[\(\[,]?\s*(%s)%s(%s)(?:%s(%s))?(?!\s*(?:%%|mm|µ|u[lLm]|m[lLgM]|°))' % (_EXT_S, _EXT_SEP, _EXT_S, _EXT_SEP, _EXT_S, _EXT_NUM, _EXT_RSEP, _EXT_NUM, _EXT_RSEP, _EXT_NUM), re.I)
+# '4:1 methanol:water', '80:20 (v/v) MeOH/H2O'
+_EXT_RATIO_NAMES = re.compile(r'(?<![\d.:/])(%s)%s(%s)(?:%s(%s))?\s*(?:\(?v/v(?:/v)?\)?,?\s*)?(?:of\s+)?%s%s%s(?:%s%s)?(?![A-Za-z0-9])' % (_EXT_NUM, _EXT_RSEP, _EXT_NUM, _EXT_RSEP, _EXT_NUM, _EXT_S, _EXT_SEP, _EXT_S, _EXT_SEP, _EXT_S), re.I)
+# '80% methanol', '80 % (v/v) aqueous methanol', 'methanol (80%)'
+_EXT_PCT = re.compile(r'(?<![\d.])(%s)\s*%%\s*(?:\(?\s*v\s*[:/]\s*v\s*\)?\s*)?(?:(?:aqueous|aq\.|cold|ice[\s-]cold|pre-?chilled|pre-?cooled|LC-?MS[\s-]grade|HPLC[\s-]grade)\s*)*%s(?![A-Za-z0-9])(?!\s*(?:/|:|-(?!\d)|and)\s*(?:%s))' % (_EXT_NUM, _EXT_S, _EXT_SOLV_ALT), re.I)
+_EXT_PCT_AFTER = re.compile(r'(?<![A-Za-z0-9])%s\s*\(\s*(%s)\s*%%\s*(?:,?\s*v/v)?\s*\)' % (_EXT_S, _EXT_NUM), re.I)
+# sentences about what happens after/around the extraction, not the extraction solvent
+_EXT_MASK = re.compile(r'reconstitut|re-?dissol|dissolved\s+in|mobile\s+phase|eluent|elut|solvent\s+[AB]\b|buffer\s+[AB]\b|dilut|inject|derivati|stock|calibra|SPE\b|solid[\s-]phase|cartridge|column', re.I)
+_EXT_NOT_SOLVENT_WATER = re.compile(r'water[\s-]*bath|ice[\s-]*water|ice/water|water[\s-]*cooled|tap\s+water|drinking\s+water|water\s+content', re.I)
+
+_EXT_PER_TYPE = re.compile(r'(?:^|[.;:]\s+|\)\s+)For\s+(?:[\w-]+\s+){0,4}?[\w-]+\s*,|\b[\w-]+\s+(?:protocol|samples?)\s*:', re.I)
+_EXT_DRY = re.compile(r'(?:evaporated|dried|dry)\s+(?:down\s+|completely\s+|it\s+)?(?:under|in\s+(?:a\s+)?(?:vacuo|vacuum|speed|centrifugal|nitrogen|N2)|using|with\s+(?:a\s+)?(?:nitrogen|N2|speed|vacuum|centrifugal)|by\s+(?:nitrogen|vacuum|speed|centrifugal|lyophili))|to\s+(?:complete\s+)?dryness|until\s+(?:complete\s+)?dry|speed-?vac|vacuum\s+concentrat|centrifugal\s+(?:evaporat|concentrat|vacuum)|were\s+(?:then\s+)?(?:dried|evaporated)\b|was\s+(?:then\s+)?(?:dried|evaporated)\b', re.I)
+def _ext_clean(text):
+    text = html.unescape(re.sub(r'<[^>]+>', ' ', str(text)))
+    text = re.sub(r'\s+', ' ', text).strip()
+    # literature references cited at the end of the protocol
+    return re.split(r'\bRefs?\s*:|\bReferences?\s*:', text)[0]
+
+def _ext_sentences(text):
+    return [s for s in re.split(r'(?<=[.;])\s+(?=[A-Z0-9(])', text) if s.strip()]
+
+def _ext_canon_ratio(names, ratio):
+    try:
+        vals = [float(x) for x in ratio]
+    except ValueError:
+        return None
+    if any(v <= 0 for v in vals) or any(v != int(v) for v in vals):
+        return None
+    vals = [int(v) for v in vals]
+    g = 0
+    for v in vals: g = math.gcd(g, v)
+    return names, [v // g for v in vals]
+
+def _ext_lookup(names, ratio, allowed):
+    """Allowed term for solvents+ratio in any order, else None."""
+    if len(set(names)) != len(names):
+        return None
+    for perm in itertools.permutations(range(len(names))):
+        term = '-'.join(names[i] for i in perm) + ' (' + ':'.join(str(ratio[i]) for i in perm) + ')'
+        if term in allowed:
+            return term
+    return None
+
+def _extraction_systems(text):
+    """(solvent-system mentions [(names, ratio)], solvents mentioned) in the unmasked sentences."""
+    systems, mentioned = [], set()
+    text = _ext_clean(text)
+    # the extraction solvent is named before the extract is dried; what follows is reconstitution
+    dm = _EXT_DRY.search(text)
+    if dm:
+        text = text[:dm.start()]
+    for sent in _ext_sentences(text):
+        # drop the part of the sentence from a reconstitution/LC/derivatisation keyword on
+        mm = _EXT_MASK.search(sent)
+        if mm:
+            sent = sent[:mm.start()]
+        s = _EXT_NOT_SOLVENT_WATER.sub(' ', sent)
+        for m in _EXT_SOLV_RE.finditer(s):
+            mentioned.add(_ext_solvent(m.group(0)))
+        spans = []
+        for rx, kind in ((_EXT_NAMES_RATIO, 'nr'), (_EXT_RATIO_NAMES, 'rn')):
+            for m in rx.finditer(s):
+                g = m.groups()
+                if kind == 'nr':
+                    names = [x for x in g[:3] if x]; ratio = [x for x in g[3:] if x]
+                else:
+                    ratio = [x for x in g[:3] if x]; names = [x for x in g[3:] if x]
+                if len(names) != len(ratio):
+                    systems.append((None, m.group(0))); spans.append(m.span()); continue
+                c = _ext_canon_ratio([_ext_solvent(n) for n in names], ratio)
+                systems.append((c, m.group(0)) if c else (None, m.group(0))); spans.append(m.span())
+        for rx in (_EXT_PCT, _EXT_PCT_AFTER):
+            for m in rx.finditer(s):
+                if any(a <= m.start() < b for a, b in spans):
+                    continue
+                pct, name = (m.group(1), m.group(2)) if rx is _EXT_PCT else (m.group(2), m.group(1))
+                name = _ext_solvent(name); pct = float(pct)
+                if name == 'water' or pct <= 0 or pct > 100 or pct != int(pct):
+                    systems.append((None, m.group(0))); continue
+                if pct == 100:
+                    systems.append((([name], [100]), m.group(0)))
+                else:
+                    systems.append((_ext_canon_ratio([name, 'water'], [pct, 100 - pct]), m.group(0)))
+    return systems, mentioned
+
+def _extraction_method(text, allowed):
+    """Allowed SampleExtractionMethod term if the extraction protocol names exactly one
+    solvent system that is in the vocabulary and no other solvent; else None."""
+    if not text or not str(text).strip():
+        return None, 'empty'
+    # several sample-type specific procedures ('For serum samples, ... For fecal samples, ...')
+    if len(_EXT_PER_TYPE.findall(_ext_clean(text))) >= 2:
+        return None, 'per_sample_type'
+    systems, mentioned = _extraction_systems(text)
+    mentioned.discard(None)
+    terms = set()
+    for c, raw in systems:
+        if c is None:
+            return None, 'unparsed:' + raw
+        names, ratio = c
+        if ratio == [100]:
+            t = names[0] + ' (100%)'
+            terms.add(t if t in allowed else 'NOVOCAB:' + t)
+        else:
+            t = _ext_lookup(names, ratio, allowed)
+            terms.add(t or 'NOVOCAB:' + '-'.join(names) + ' (' + ':'.join(map(str, ratio)) + ')')
+    if not systems:
+        # a single solvent named without ratio: only pure solvents with an exact '(100%)' term
+        if len(mentioned) == 1 and mentioned != {'water'} and mentioned != {'other'}:
+            t = next(iter(mentioned)) + ' (100%)'
+            if re.search(r'\b(?:RNA|DNA|TRIzol)\b', text) or re.search(r'\b(?:hot|boiling|heated)\s+(?:\w+\s+)?(?:ethanol|methanol|water)', _ext_clean(text), re.I):
+                return None, 'single_context:' + t
+            # a ratio or percentage next to the solvent that was not understood
+            for sent in _ext_sentences(_ext_clean(text)):
+                mm = _EXT_MASK.search(sent)
+                sent = sent[:mm.start()] if mm else sent
+                if _EXT_SOLV_RE.search(sent) and re.search(r'\d\s*%|\d\s*[:/]\s*\d', sent):
+                    return None, 'single_with_numbers:' + t
+            return (t, 'single') if t in allowed else (None, 'single_novocab:' + t)
+        return None, 'none' if not mentioned else 'solvents_no_ratio:' + ','.join(sorted(mentioned))
+    if len(terms) != 1:
+        return None, 'multiple:' + ';'.join(sorted(terms))
+    t = next(iter(terms))
+    if t.startswith('NOVOCAB:'):
+        return None, t
+    term_solvents = set(re.split(r'-(?=[a-z])', t.split(' (')[0]))
+    if mentioned != term_solvents:
+        return None, 'other_solvents:' + t + ' vs ' + ','.join(sorted(mentioned))
+    return t, 'ratio'
+
+
+def _internal_standards(protocol_texts, allowed_terms):
+    """InternalStandardsUsed term for the vocabulary compounds named in a sentence about
+    internal standards ('ribitol was added as internal standard'), else None. Several
+    compounds are only used when their combination is itself an allowed term."""
+    singles = [t for t in allowed_terms if ';' not in t and t != 'none']
+    found = set()
+    for text in protocol_texts:
+        for sent in _ext_sentences(_ext_clean(text)):
+            if not re.search(r'internal\s+standard', sent, re.I):
+                continue
+            for t in singles:
+                for m in re.finditer(r'(?<![A-Za-z0-9-])' + re.escape(t) + r'(?![A-Za-z0-9-])', sent, re.I):
+                    # an isotope-labelled form ('deuterated biotin', '[13C5]ribitol') is another compound
+                    after = sent[m.end():m.end() + 60]
+                    if after.lstrip().startswith('('):
+                        after = after[:after.index(')') + 1] if ')' in after else after
+                    else:
+                        after = after[:15]
+                    around = sent[max(0, m.start() - 25):m.start()] + ' ' + after
+                    if not re.search(r'deuter|label|isotop|13C|15N|\bD\d|-d\d|\(d\d|\bd\d+\b|\]\s*$', around, re.I):
+                        found.add(t)
+    if not found:
+        return None
+    if len(found) == 1:
+        return next(iter(found))
+    combos = [t for t in allowed_terms if ';' in t and set(t.split(';')) == found]
+    return combos[0] if len(combos) == 1 else None
+
+
+def load_metabolights_sheets(transSheet_dir, allowedTerm_dict):
+    """Optional MetaboLights translation sheets: explicit instrument aliases and country
+    codes/names. Rows whose target is not an allowed term are ignored."""
+    sheets = {}
+    path = os.path.join(transSheet_dir, 'MTBLS_MassSpectrometer_aliases.csv')
+    if os.path.exists(path):
+        t = pd.read_csv(path, dtype=str)
+        t = t[t['MassSpectrometer'].isin(set(allowedTerm_dict['MassSpectrometer']['allowed_values']))]
+        sheets['ms_aliases'] = dict(zip(t['ML'].str.strip(), t['MassSpectrometer']))
+    path = os.path.join(transSheet_dir, 'MTBLS_Country_aliases.csv')
+    if os.path.exists(path):
+        t = pd.read_csv(path, dtype=str, keep_default_na=False)
+        t = t[t['Country'].isin(set(allowedTerm_dict['Country']['allowed_values']))]
+        sheets['country_aliases'] = dict(zip(t['alias'].str.strip().str.lower(), t['Country']))
+    path = os.path.join(transSheet_dir, 'MTBLS_Organism_aliases.csv')
+    if os.path.exists(path):
+        t = pd.read_csv(path, dtype=str, keep_default_na=False)
+        known = set(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
+        t = t[t['NCBITaxonomy'].isin(known)]
+        sheets['organism_aliases'] = dict(zip(t['organism'].str.strip().str.lower(), t['NCBITaxonomy']))
+    return sheets
 
 
 class StudyNotAvailable(Exception):
@@ -212,6 +601,19 @@ def _ncbi_term_by_id(allowedTerm_dict):
     return _ncbi_by_id
 
 
+_ncbi_by_name = {}
+
+
+def _ncbi_term_by_name(allowedTerm_dict):
+    """lower-case name -> first allowed 'taxid|name' term (as get_taxonomy_id_from_name__allowedTerms), built once."""
+    if not _ncbi_by_name:
+        for term in allowedTerm_dict['NCBITaxonomy']['allowed_values']:
+            taxid, sep, name = str(term).partition('|')
+            if sep and '|' not in name:
+                _ncbi_by_name.setdefault(name.lower(), term)
+    return _ncbi_by_name
+
+
 def _investigation_submission_year(study_id):
     """Submission year from the study's public ISA investigation file, used when the
     API has no submissionYear. Returns None if it cannot be read."""
@@ -250,6 +652,9 @@ def Metabolights2REDU(study_id, **kwargs):
         raise StudyNotAvailable(study_details.get('message', ''))
 
     study_assays = study_details['content']['assays']
+    # protocol name -> description, for the study-level extraction/internal standard fields
+    protocols = [(str(p.get('name') or ''), str(p.get('description') or ''))
+                 for p in (study_details['content'].get('protocols') or [])]
 
     submissionYear = (study_details['content'].get('derivedData') or {}).get('submissionYear')
     if submissionYear in (None, '', 0):
@@ -301,6 +706,10 @@ def Metabolights2REDU(study_id, **kwargs):
         df_samples = pd.DataFrame(study_details['content']['sampleTable']['data'])
         df_samples = rename_duplicated_column_names(df_samples)
         df_samples.columns = headers
+        # 'Characteristics' / 'Factor Value' per sample column (the headers drop the kind)
+        _sample_kind = {'Samples_' + f['header']: f.get('fieldType')
+                        for f in study_details['content']['sampleTable']['fields'].values()}
+        factor_columns = [c for c, k in _sample_kind.items() if k == 'Factor Value']
     
         # Sample names are typed by hand in both sheets; ignore surrounding whitespace
         df_assays['Assay_Sample Name'] = df_assays['Assay_Sample Name'].astype(str).str.strip()
@@ -403,6 +812,12 @@ def Metabolights2REDU(study_id, **kwargs):
 
             if 'Samples_Organism' in df_study.columns:
                 processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict)) for org in df_study['Samples_Organism'].unique()}
+                # Organism names that NCBI lists as synonym or common name of exactly one taxon
+                # ('Clostridium bolteae', 'House Mouse'): MetaboLights alias sheet built from names.dmp
+                _org_alias = kwargs.get('organism_aliases') or {}
+                for _org, _tax in processed_organisms.items():
+                    if _tax == 'None' and str(_org).strip().lower() in _org_alias:
+                        processed_organisms[_org] = _org_alias[str(_org).strip().lower()]
 
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='missing value', regex=True)
@@ -443,15 +858,44 @@ def Metabolights2REDU(study_id, **kwargs):
                     axis=1
                 ).apply(pd.Series)
 
-                # Pooled QCs and blanks are labelled in the 'Sample type' characteristic
-                # (MetaboLights vocabulary), while their organism is often that of the study
-                # (e.g. a pooled human plasma QC), so this label takes precedence
+                # Pooled QCs, blanks and standards are labelled in the 'Sample type'
+                # characteristic (MetaboLights vocabulary), while their organism is often that
+                # of the study (e.g. a pooled human plasma QC), so this label takes precedence.
+                # Labels the converter did not read before are matched exactly; for blanks and
+                # standards they are only taken where the organism column does not name an
+                # organism (empty, 'blank', 'reference compound', NCBI 'blank sample'): real
+                # samples are labelled 'experimental blank' or 'sample preparation blank' in
+                # many studies ('experimental blank' is the only value in 119 studies), and
+                # 'reference compound mix' is used for pooled QCs of the study material.
+                # Factor values ('Treatment = QC') are matched the same way.
+                _org_lab = df_study['Samples_Organism'].map(_label)
+                _not_organism = (_is_missing(df_study['Samples_Organism']) | _org_lab.isin(_QC_BLANK_LABELS) | _org_lab.isin(_ORGANISM_BLANK_LABELS)
+                                 | df_study['NCBITaxonomy'].astype(str).str.startswith('2582415|'))
+                # a 'QC' of solvent or of a compound mixture is not a pooled QC of the samples
+                _part_lab = df_study['Samples_Organism part'].map(_label) if 'Samples_Organism part' in df_study.columns else pd.Series('', index=df_study.index)
+                _not_pool = _part_lab.isin({'solvent', 'mixture', 'water', 'buffer'}) | _part_lab.map(lambda v: _QC_BLANK_LABELS.get(v, '').startswith('blank'))
+                def _new_label(series):
+                    t = series.map(lambda v: _qc_blank_term(v) or ('blank_analysis' if _label(v) == 'experimental blank' else None))
+                    return t.where(((t == 'pool_QC') & ~_not_pool) | _not_organism)
+                qc_label = pd.Series(None, index=df_study.index, dtype=object)
                 for _c in [c for c in df_study.columns if re.fullmatch(r'Samples_Sample type(?:_\d+)?', str(c), re.I)]:
                     _qc = df_study[_c].map(_sample_type_qc)
-                    _set = _qc.notna()
-                    if _set.any():
-                        df_study.loc[_set, 'SampleType'] = _qc[_set]
-                        df_study.loc[_set, 'SampleTypeSub1'] = _qc[_set]
+                    qc_label = qc_label.where(qc_label.notna(), _qc.where(_qc.notna(), _new_label(df_study[_c])))
+                for _c in [c for c in factor_columns if c in df_study.columns and not re.search(r'diet|feed|food', c, re.I)]:
+                    qc_label = qc_label.where(qc_label.notna(), _new_label(df_study[_c]))
+                _qc = df_study['Samples_Organism'].map(lambda v: _qc_blank_term(v) or _ORGANISM_BLANK_LABELS.get(_label(v)))
+                qc_label = qc_label.where(qc_label.notna(), _qc.where(_not_organism))
+                if 'Samples_Organism part' in df_study.columns:
+                    qc_label = qc_label.where(qc_label.notna(), _new_label(df_study['Samples_Organism part']))
+                # a generic blank label does not replace a more specific blank type ('Blank Extraction')
+                qc_label = qc_label.where(~((qc_label == 'blank_analysis') & df_study['SampleType'].isin(['blank_extraction', 'blank_culturemedia'])),
+                                          df_study['SampleType'])
+                _set = qc_label.notna()
+                if _set.any():
+                    df_study.loc[_set, 'SampleType'] = qc_label[_set]
+                    df_study.loc[_set, 'SampleTypeSub1'] = qc_label[_set].map(lambda t: _SUBTYPE.get(t, t))
+                # kept as a column: the index is reset by the ontology merges below
+                df_study['_qc_label'] = qc_label
 
 
                 # df_biofluid_vs_tissue = pd.read_csv(os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv'))
@@ -583,6 +1027,13 @@ def Metabolights2REDU(study_id, **kwargs):
                             df_study.at[index, 'UBERONBodyPartName'] = label
 
                         
+                # Common names that are neither UBERON label nor exact synonym ('plasma' is not a
+                # synonym of 'blood plasma'), only for animal samples
+                _alias = df_study['Samples_Organism part'].astype(str).str.strip().str.lower().map(_BODY_PART_ALIASES)
+                _alias = _alias.where(_alias.isin(allowed_bodyparts))
+                _use = (df_study['UBERONBodyPartName'] == 'missing value') & _alias.notna() & (df_study['SampleType'] == 'animal')
+                df_study.loc[_use, 'UBERONBodyPartName'] = _alias[_use]
+
                 ontology_table_unique = ontology_table.drop_duplicates(subset=['Label', 'UBERONOntologyIndex']).drop(columns=['Synonym'])
 
                 df_study = pd.merge(df_study, ontology_table_unique, left_on='UBERONBodyPartName', right_on='Label', how='left')
@@ -590,6 +1041,26 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study.loc[df_study['Is Fluid'] == True, 'SampleTypeSub1'] = 'biofluid'
                 df_study.loc[df_study['Is Multicellular'] == True, 'SampleTypeSub1'] = 'tissue'
+                # QC samples, blanks and standards keep their own SampleTypeSub1
+                _qc_rows = df_study['_qc_label'].notna()
+                df_study.loc[_qc_rows, 'SampleTypeSub1'] = df_study.loc[_qc_rows, '_qc_label'].map(lambda t: _SUBTYPE.get(t, t))
+                # Chemical standards are not a sample of the study organism/body part/environment
+                _std = df_study['_qc_label'] == 'molecular_standards'
+                for _c in ['NCBITaxonomy', 'UBERONBodyPartName', 'ENVOEnvironmentMaterial', 'ENVOEnvironmentBiome']:
+                    df_study.loc[_std, _c] = 'missing value'
+                df_study.loc[_std, 'UBERONOntologyIndex'] = np.nan
+
+                # SampleCollectionMethod terms that a blood or urine sample implies by definition
+                # ('blood NOS', 'urine, NOS': collected, method not specified). Feces is left
+                # out: 'feces' is one of several feces collection methods (swabs, frozen, ...)
+                _scm = df_study['UBERONBodyPartName'].map({'blood': 'blood NOS', 'blood plasma': 'blood NOS',
+                                                           'blood serum': 'blood NOS', 'urine': 'urine, NOS'})
+                _scm = _scm.where(_scm.isin(allowedTerm_dict['SampleCollectionMethod']['allowed_values']) & df_study['_qc_label'].isna())
+                if _scm.notna().any():
+                    if 'SampleCollectionMethod' not in df_study.columns:
+                        df_study['SampleCollectionMethod'] = 'missing value'
+                    _need = _is_missing(df_study['SampleCollectionMethod']) & _scm.notna()
+                    df_study.loc[_need, 'SampleCollectionMethod'] = _scm[_need]
 
                 # UBERON does not flag every body fluid or excretion (urine, feces, follicular
                 # fluid, ...) as such; the MetaboLights translation sheet covers those
@@ -602,6 +1073,9 @@ def Metabolights2REDU(study_id, **kwargs):
                     df_study.loc[_need, 'SampleTypeSub1'] = _sheet[_need]
                 df_study['UBERONOntologyIndex'] = df_study['UBERONOntologyIndex'].str.replace("_", ":", regex=False)
 
+
+            if '_qc_label' not in df_study.columns:
+                df_study['_qc_label'] = None
 
             #add MassSpectrometer column
             #######
@@ -665,6 +1139,13 @@ def Metabolights2REDU(study_id, **kwargs):
                             _ms_cache[raw] = map_instrument_to_allowed(raw, _allowed_ms)
                         return _ms_cache[raw]
                     df_study.loc[_unres, "MassSpectrometer"] = df_study.loc[_unres, "Assay_Instrument"].map(_resolve_ms)
+
+                # Instrument names written in ways none of the matchers recognise
+                # ('QE Plus', 'Agilent 6230 Accurate-Mass TOF'): explicit alias sheet
+                _ms_alias = kwargs.get('ms_aliases') or {}
+                _unres = df_study["MassSpectrometer"].isna()
+                if _ms_alias and _unres.any():
+                    df_study.loc[_unres, "MassSpectrometer"] = _instrument_name[_unres].str.strip().map(_ms_alias)
 
 
 
@@ -738,6 +1219,13 @@ def Metabolights2REDU(study_id, **kwargs):
                 if _c in df_study.columns:
                     _gc_text = _gc_text + ' ' + df_study[_c].fillna('').astype(str)
             _is_gc = _gc_text.str.contains(r'\bgc\b|gas chromatograph|\bgc[- ]?ms\b|\bgcxgc\b', case=False, regex=True)
+            # GC capillary columns named by model (5%-phenyl, wax, FFAP, 1/17-type phases), or the
+            # MetaboLights GC column types 'low/medium/high polarity', unless an LC column is named
+            _model = df_study['Assay_Column model'].fillna('').astype(str) if 'Assay_Column model' in df_study.columns else pd.Series('', index=df_study.index)
+            _ctype = df_study['Assay_Column type'].fillna('').astype(str).map(_label) if 'Assay_Column type' in df_study.columns else pd.Series('', index=df_study.index)
+            _lc_words = _model.str.contains(r'c18|\bc8\b|hilic|\bbeh\b|\bhss\b|amide|reverse|uplc|hplc|zorbax|kinetex|acquity|luna|atlantis|hypersil|accucore|synergi|cortecs|ion ?pac|\bt3\b', case=False, regex=True)
+            _gc_model = _model.str.contains(r'(?<![a-z0-9])(?:db|hp|rxi|rtx|zb|vf|dp|tg|bpx?|sh-rxi|elite)-?(?:1|5|17|35|wax)(?:[a-z]{0,3}|-?ms|sil ?ms)?(?![0-9])|\bffap\b|\bdb-?wax|\bstabilwax', case=False, regex=True)
+            _is_gc = _is_gc | ((_gc_model | _ctype.isin(['low polarity', 'medium polarity', 'high polarity'])) & ~_lc_words)
             if _is_gc.any():
                 if 'ChromatographyAndPhase' not in df_study.columns:
                     df_study['ChromatographyAndPhase'] = ''
@@ -760,11 +1248,10 @@ def Metabolights2REDU(study_id, **kwargs):
                 if unit_column != '':
                     df_study['Samples_age'] = pd.to_numeric(df_study['Samples_age'], errors='coerce')
                     df_study['AgeInYears'] = np.nan
-                    df_study.loc[df_study[unit_column] == 'year', 'AgeInYears'] = df_study.loc[df_study[unit_column] == 'year', 'Samples_age']
-                    df_study.loc[df_study[unit_column] == 'month', 'AgeInYears'] = df_study.loc[df_study[unit_column] == 'month', 'Samples_age'] / 12
-                    df_study.loc[df_study[unit_column] == 'week', 'AgeInYears'] = df_study.loc[df_study[unit_column] == 'week', 'Samples_age'] / 52.1429
-                    df_study.loc[df_study[unit_column] == 'day', 'AgeInYears'] = df_study.loc[df_study[unit_column] == 'day', 'Samples_age'] / 365
-                    df_study.loc[df_study[unit_column] == 'hour', 'AgeInYears'] = df_study.loc[df_study[unit_column] == 'hour', 'Samples_age'] / 8760
+                    # units are written 'year', 'Year', 'Month', 'weeks', ...
+                    _unit = df_study[unit_column].map(_unit_name)
+                    for _u, _div in _UNIT_YEARS.items():
+                        df_study.loc[_unit == _u, 'AgeInYears'] = df_study.loc[_unit == _u, 'Samples_age'] / _div
 
                     df_study['AgeInYears'] = df_study['AgeInYears'].astype(str).replace('nan', 'missing value')
 
@@ -807,6 +1294,11 @@ def Metabolights2REDU(study_id, **kwargs):
                 _blank = df_study['BiologicalSex'].astype(str).str.lower().isin(['', 'nan', 'missing value', 'none'])
                 df_study.loc[_blank & _sl.str.contains('female'), 'BiologicalSex'] = 'female'
                 df_study.loc[_blank & _sl.str.contains(r'\bmale\b') & (df_study['BiologicalSex'] != 'female'), 'BiologicalSex'] = 'male'
+                # abbreviations and other words for the two sexes ('F', 'M', 'Woman', 'Man')
+                _abbr = _sl.str.strip().map({'f': 'female', 'm': 'male', 'woman': 'female', 'women': 'female',
+                                             'man': 'male', 'men': 'male', 'girl': 'female', 'boy': 'male'})
+                _need = _is_missing(df_study['BiologicalSex']) & _abbr.notna()
+                df_study.loc[_need, 'BiologicalSex'] = _abbr[_need]
 
 
             #add LatitudeandLongitude
@@ -858,6 +1350,20 @@ def Metabolights2REDU(study_id, **kwargs):
                         _m = df_study[_c].astype(str).str.strip().str.lower().map(_envm_vocab)
                         _need = df_study['ENVOEnvironmentMaterial'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & _m.notna()
                         df_study.loc[_need, 'ENVOEnvironmentMaterial'] = _m[_need]
+
+            # Environmental samples without an organism name the material as 'Organism part'
+            # ('soil', 'sediment', 'waste water'). Exact ENVO material labels only, and only
+            # where the organism is not a taxon; names that are also anatomy (UBERON label or
+            # synonym, e.g. 'plasma', which ENVO has as a state of matter) are never used.
+            if _envm_vocab and 'Samples_Organism part' in df_study.columns and 'NCBITaxonomy' in df_study.columns:
+                _anatomy = set(ontology_table['Label'].astype(str).str.strip().str.lower()) | set(ontology_table['Synonym'].astype(str).str.strip().str.lower())
+                _part = df_study['Samples_Organism part'].astype(str).str.strip().str.lower()
+                _m = _part.map(lambda v: None if v in _anatomy or v in ('plasma', 'cell culture') else _envm_vocab.get(v))
+                _ok = (_is_missing(df_study['NCBITaxonomy']) | df_study['NCBITaxonomy'].astype(str).str.startswith('2582415|')) & df_study['_qc_label'].isna()
+                if 'ENVOEnvironmentMaterial' not in df_study.columns:
+                    df_study['ENVOEnvironmentMaterial'] = 'missing value'
+                _need = _is_missing(df_study['ENVOEnvironmentMaterial']) & _m.notna() & _ok
+                df_study.loc[_need, 'ENVOEnvironmentMaterial'] = _m[_need]
 
             #add HealthStatus (value-matched)
             #######
@@ -985,6 +1491,136 @@ def Metabolights2REDU(study_id, **kwargs):
                     _need = df_study['Diet'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
                     df_study.loc[_need, 'Diet'] = _m[_need]
 
+            if '_qc_label' not in df_study.columns:
+                df_study['_qc_label'] = None
+            _real_sample = df_study['_qc_label'].isna()
+
+            def _fill(column, values):
+                """Set column from values where it is missing and values is not None."""
+                if column not in df_study.columns:
+                    df_study[column] = 'missing value'
+                _need = _is_missing(df_study[column]) & values.notna()
+                df_study.loc[_need, column] = values[_need]
+
+            #add SampleExtractionMethod / InternalStandardsUsed (study protocols)
+            #######
+            _extraction_text = ' '.join(d for n, d in protocols if re.match(r'\s*extraction', n, re.I))
+            _ext_term = _extraction_method(_extraction_text, set(allowedTerm_dict['SampleExtractionMethod']['allowed_values']))[0]
+            if _ext_term:
+                _fill('SampleExtractionMethod', pd.Series(_ext_term, index=df_study.index))
+            _is_term = _internal_standards([d for _, d in protocols], allowedTerm_dict['InternalStandardsUsed']['allowed_values'])
+            if _is_term:
+                _fill('InternalStandardsUsed', pd.Series(_is_term, index=df_study.index))
+
+            #add SubjectIdentifierAsRecorded
+            #######
+            # Columns that name the sampled individual; a column with fewer than 3 distinct
+            # values is a constant or a group, not an identifier. QC/blank/pool/group entries
+            # ('Quality Control', 'Healthy Control') are not subjects.
+            for _c in [c for c in df_study.columns if _SUBJECT_COLUMNS.fullmatch(str(c))]:
+                _v = df_study[_c].astype(str).str.strip()
+                _ok = ~_is_missing(df_study[_c]) & ~_v.str.contains(_NOT_A_SUBJECT) & (_v.str.len() <= 60) & _real_sample
+                if _v[_ok].nunique() >= 3:
+                    _fill('SubjectIdentifierAsRecorded', _v.where(_ok))
+                    break
+
+            #add SampleCollectionDateandTime
+            #######
+            for _c in [c for c in df_study.columns if _DATE_COLUMNS.fullmatch(str(c))]:
+                _fill('SampleCollectionDateandTime', _collection_dates(df_study[_c]))
+
+            #add Country from columns holding the collection country as a code or short name
+            #######
+            _country_vocab = {str(v).strip().lower(): str(v).strip() for v in allowedTerm_dict['Country']['allowed_values']}
+            _country_aliases = kwargs.get('country_aliases') or {}
+            for _c in [c for c in df_study.columns if _COUNTRY_CODE_COLUMNS.fullmatch(str(c))]:
+                _fill('Country', df_study[_c].map(lambda v: _country_term(v, _country_vocab, _country_aliases)))
+
+            #add AgeInYears from other columns holding the subject's age with a unit
+            #######
+            for _c in [c for c in df_study.columns if _OTHER_AGE_COLUMNS.fullmatch(str(c))]:
+                _uc = find_column_after_target_column(df_study, _c, 'Samples_Unit')
+                _units = df_study[_uc] if _uc else pd.Series('', index=df_study.index)
+                _age = pd.Series([_age_years(v, u, _c) for v, u in zip(df_study[_c], _units)], index=df_study.index, dtype=object)
+                _age = _age.where(_real_sample)
+                if _age.notna().any():
+                    if 'AgeInYears' not in df_study.columns:
+                        df_study['AgeInYears'] = 'missing value'
+                    if 'LifeStage' not in df_study.columns:
+                        df_study['LifeStage'] = ''
+                    _need = _is_missing(df_study['AgeInYears']) & _age.notna()
+                    df_study.loc[_need, 'AgeInYears'] = _age[_need].astype(str)
+                    df_study.loc[_need, 'LifeStage'] = _age[_need].apply(age_category)
+
+            #add DepthorAltitudeMeters from depth/elevation columns with a length unit
+            #######
+            for _c in [c for c in df_study.columns if re.fullmatch(r'Samples_(?:depth|sediment depth|sampling depth|water depth|elevation|altitude)(?:_\d+)?', str(c), re.I)]:
+                _uc = find_column_after_target_column(df_study, _c, 'Samples_Unit')
+                if not _uc:
+                    continue
+                _m = pd.Series([_meters(v, u) for v, u in zip(df_study[_c], df_study[_uc])], index=df_study.index, dtype=object)
+                _m = _m.map(lambda x: x if x is None else (abs(x) if re.search('elevation|altitude', _c, re.I) else -abs(x)) + 0.0)
+                _fill('DepthorAltitudeMeters', _m.map(lambda x: x if x is None else str(round(x, 4))).where(_real_sample))
+
+            #add BodyMassIndex from per-sample weight (kg) and height (cm/m) of human subjects
+            #######
+            _w_cols = [c for c in df_study.columns if re.fullmatch(r'Samples_(?:weight|body weight)(?:_\d+)?', str(c), re.I)]
+            _h_cols = [c for c in df_study.columns if re.fullmatch(r'Samples_(?:height|body height)(?:_\d+)?', str(c), re.I)]
+            if _w_cols and _h_cols and 'NCBITaxonomy' in df_study.columns:
+                _wu = find_column_after_target_column(df_study, _w_cols[0], 'Samples_Unit')
+                _hu = find_column_after_target_column(df_study, _h_cols[0], 'Samples_Unit')
+                if _wu and _hu:
+                    _kg = pd.to_numeric(df_study[_w_cols[0]], errors='coerce').where(df_study[_wu].astype(str).str.strip().str.lower().isin(['kilogram', 'kg']))
+                    _hm = pd.to_numeric(df_study[_h_cols[0]], errors='coerce')
+                    _hunit = df_study[_hu].astype(str).str.strip().str.lower()
+                    _hm = (_hm / 100).where(_hunit.isin(['centimeter', 'cm']), _hm.where(_hunit.isin(['meter', 'm'])))
+                    # weight and height entered as the same number are a data entry error
+                    _same = pd.to_numeric(df_study[_w_cols[0]], errors='coerce') == pd.to_numeric(df_study[_h_cols[0]], errors='coerce')
+                    _bmi = (_kg / _hm ** 2).where((df_study['NCBITaxonomy'] == '9606|Homo sapiens') & ~_same & _real_sample)
+                    _fill('BodyMassIndex', _bmi.round(1).map(lambda x: None if pd.isna(x) else str(x)))
+
+            #add DOIDCommonName from condition/phenotype/cohort columns (exact DOID label/synonym)
+            #######
+            _doid_cols = [c for c in df_study.columns if re.fullmatch(r'Samples_(?:condition|phenotype|cohort|patient group|infection|medical condition'
+                                                                    r'|clinical condition|health condition|clinical phenotype|disease state)(?:_\d+)?', str(c), re.I)]
+            if _doid_cols:
+                _doid = kwargs.get('doid_table')
+                _doid_allowed = set(allowedTerm_dict['DOIDCommonName']['allowed_values'])
+                _doid_labels = {str(v).strip().lower(): str(v) for v in _doid_allowed}
+                _doid_by_synonym = {}
+                if _doid is not None and len(_doid):
+                    _syn = _doid.assign(_s=_doid['Synonym'].astype(str).str.strip().str.lower()).groupby('_s')['Label'].agg(lambda x: set(x))
+                    _doid_by_synonym = {k: next(iter(v)) for k, v in _syn.items() if len(v) == 1 and next(iter(v)) in _doid_allowed}
+                def _to_doid_exact(value):
+                    key = str(value).strip().lower()
+                    if len(key) <= 3 or key in _MISSING_VALUES or key == 'disease':
+                        return None
+                    return _doid_labels.get(key) or _doid_by_synonym.get(key)
+                for _c in _doid_cols:
+                    _fill('DOIDCommonName', df_study[_c].map(_to_doid_exact).where(_real_sample))
+
+            #refine NCBITaxonomy from the Variant/Strain column
+            #######
+            # Only an NCBI name that starts with the recorded species name ('Saccharomyces
+            # cerevisiae BY4741' for 'Saccharomyces cerevisiae'), i.e. a lower rank of it
+            _var_cols = [c for c in df_study.columns if re.fullmatch(r'Samples_(?:variant|strain)(?:_\d+)?', str(c), re.I)]
+            if _var_cols and 'NCBITaxonomy' in df_study.columns:
+                for _c in _var_cols:
+                    def _refine(term, variant):
+                        if not isinstance(term, str) or '|' not in term:
+                            return None
+                        species = term.split('|', 1)[1].strip().lower()
+                        v = re.sub(r'\s+', ' ', str(variant)).strip()
+                        if not v.lower().startswith(species + ' ') or len(v) <= len(species) + 1:
+                            return None
+                        hit = _ncbi_term_by_name(allowedTerm_dict).get(v.lower())
+                        return hit if hit and '|' in hit and hit != term and hit.split('|', 1)[1].strip().lower() == v.lower() else None
+                    _cache = {}
+                    _ref = pd.Series([_cache.setdefault((t, v), _refine(t, v)) for t, v in zip(df_study['NCBITaxonomy'], df_study[_c])],
+                                     index=df_study.index, dtype=object)
+                    _use = _ref.notna() & _real_sample
+                    df_study.loc[_use, 'NCBITaxonomy'] = _ref[_use]
+
             #add MassiveID and USIs
             #######
             df_study['MassiveID'] = study_id
@@ -1068,6 +1704,7 @@ if __name__ == "__main__":
     doid_table = pd.read_csv(args.path_to_doid_csv) if args.path_to_doid_csv != 'none' else None
     biofluid_vs_tissue_path = os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv')
     biofluid_vs_tissue = pd.read_csv(biofluid_vs_tissue_path) if os.path.exists(biofluid_vs_tissue_path) else None
+    sheets = load_metabolights_sheets(transSheet_dir, allowedTerm_dict)
 
 
     REDU_dataframes = []
@@ -1080,7 +1717,7 @@ if __name__ == "__main__":
             print(f'Processing study {study_id}...')
             redu_table_single = Metabolights2REDU(study_id, allowedTerm_dict = allowedTerm_dict, ontology_table = ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                   ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table, NCBIRankDivision_table=NCBIRankDivision_table,
-                                                  doid_table=doid_table, biofluid_vs_tissue=biofluid_vs_tissue)
+                                                  doid_table=doid_table, biofluid_vs_tissue=biofluid_vs_tissue, **sheets)
         except StudyNotAvailable as e:
             print(f"Study {study_id} is not available: {e}")
             not_public_studies.append(study_id)
