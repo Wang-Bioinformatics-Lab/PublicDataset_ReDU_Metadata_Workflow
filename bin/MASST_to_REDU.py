@@ -127,7 +127,12 @@ def main():
     parser.add_argument('--path_to_doid_csv', default=None)
     parser.add_argument('--path_to_exposure_csv', default=None)
     parser.add_argument("--AllowedTermJson_path", type=str, help="Path to json with allowed terms")
+    parser.add_argument('--supplement_output', default=None,
+                        help='TSV for the MASST rows of files that GNPS metadata already describes (with the '
+                             'USI of the GNPS row); merge_metadata.py fills only their missing fields from it')
     args = parser.parse_args()
+    if args.supplement_output:
+        open(args.supplement_output, 'w').close()
 
     df_redu = pd.read_csv(args.path_REDUtable, sep='\t', dtype=str)
     df_redu['filename'] = df_redu['filename'].str.slice(2)
@@ -136,6 +141,13 @@ def main():
     # give the file name are compared by dataset + name
     redu_files = set(zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename']))
     redu_stems = set(zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename'].map(_stem)))
+    # USI of each GNPS-described file, for the supplement rows (a name that fits several
+    # files of the dataset, e.g. pos/ and neg/ copies, is not used)
+    usi_by_path, usis_by_stem = {}, collections.defaultdict(set)
+    if 'USI' in df_redu.columns:
+        for m, f, u in zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename'], df_redu['USI']):
+            usi_by_path[(m, f)] = u
+            usis_by_stem[(m, _stem(f))].add(u)
 
     with open(args.AllowedTermJson_path, 'r') as json_file:
         allowed_terms = json.load(json_file)
@@ -224,7 +236,15 @@ def main():
             in_redu = [p in redu_files for p in paths]
             shadowed = [p in taken_paths or s in taken_stems for p, s in zip(paths, stems)]
         keep = [not a and not b for a, b in zip(in_redu, shadowed)]
-        print(f"{name}MASST: {len(df)} files, {sum(in_redu)} described by GNPS metadata, "
+        # GNPS-described files of the most specific table listing them: supplement rows
+        if name in basename_only:
+            target = [next(iter(usis_by_stem[s])) if a and not b and len(usis_by_stem.get(s, ())) == 1 else ''
+                      for s, a, b in zip(stems, in_redu, shadowed)]
+        else:
+            target = [usi_by_path.get(p, '') if a and not b else '' for p, a, b in zip(paths, in_redu, shadowed)]
+        supplement = [bool(t) for t in target]
+        print(f"{name}MASST: {len(df)} files, {sum(in_redu)} described by GNPS metadata "
+              f"({sum(supplement)} as supplement rows), "
               f"{sum(b and not a for a, b in zip(in_redu, shadowed))} taken from a more specific MASST table, "
               f"{sum(keep)} kept")
         # every listed file (also the GNPS-described ones) shadows the less specific tables
@@ -232,7 +252,8 @@ def main():
             taken_stems.update(stems)
         else:
             taken_paths.update(paths)
-        df = df[keep]
+        df['USI'] = target
+        df = df[[k or u for k, u in zip(keep, supplement)]]
         df['_masst_table'] = name
         df_list.append(df)
 
@@ -261,7 +282,15 @@ def main():
         kwargs['ExposureIndex_table'] = exposure_table
     df_massts_filled = complete_and_fill_REDU_table(df_massts, allowedTerm_dict=allowed_terms,
                                                     NCBIRankDivision_table=NCBIRankDivision_table,
-                                                    NCBI_name_resolver=ncbi_name_resolver, **kwargs)
+                                                    NCBI_name_resolver=ncbi_name_resolver, keep_usi=True, **kwargs)
+    if len(df_massts_filled) == 0:
+        print("No MASST rows left after validation")
+        return
+    is_supplement = df_massts_filled['USI'].fillna('').astype(str).str.startswith('mzspec:')
+    if args.supplement_output:
+        df_massts_filled[is_supplement].to_csv(args.supplement_output, sep='\t', index=False)
+        print(f"Supplement rows for GNPS-described files: {int(is_supplement.sum())}")
+    df_massts_filled = df_massts_filled[~is_supplement].drop(columns=['USI'])
 
     # save output, one file per dataset
     for massive_id in df_massts_filled['MassiveID'].unique():

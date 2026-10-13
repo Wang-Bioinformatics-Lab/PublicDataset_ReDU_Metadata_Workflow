@@ -337,6 +337,7 @@ process mergeAllMetadata {
     path metabolights_redu
     path norman_redu
     path masst_metadata
+    path masst_supplement
 
     output:
     path 'merged_metadata_wo_cache_columns.tsv'
@@ -349,6 +350,7 @@ process mergeAllMetadata {
     --metabolights_metadata $metabolights_redu \
     --norman_metadata $norman_redu \
     --masst_metadata $masst_metadata \
+    --masst_supplement $masst_supplement \
     --output_metadata merged_metadata_wo_cache_columns.tsv
     """
 }
@@ -513,10 +515,13 @@ process MASST_to_REDU {
     path exposure_csv
 
     output:
-    file 'adjusted_metadata_folder'
+    path 'adjusted_metadata_folder', emit: folder
+    // MASST rows of files GNPS metadata describes: they only fill missing fields in the merge
+    path 'masst_supplement.tsv', emit: supplement
 
     """
     mkdir adjusted_metadata_folder
+    : > masst_supplement.tsv
     timeout ${params.source_timeout} python $TOOL_FOLDER/MASST_to_REDU.py \
     ${redu_table} \
     adjusted_metadata_folder \
@@ -533,7 +538,8 @@ process MASST_to_REDU {
     --path_to_uberon_cl_po_csv ${uberon_cl_po_csv} \
     --path_to_doid_csv ${doid_csv} \
     --path_to_exposure_csv ${exposure_csv} \
-    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; true; }
+    --supplement_output masst_supplement.tsv \
+    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_supplement.tsv; }
     """
 }
 
@@ -663,7 +669,7 @@ workflow {
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
         ref.microbe_masst, ref.plant_masst, ref.food_masst, ref.food_masst_full, ref.personal_care_masst,
         ref.microbiome_masst, ref.nodes, ref.names, uberon_cl_co_onto, doid_onto, exposure_onto)
-    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
+    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch.folder, allowed_terms)
 
     // Metabolomics Workbench
     mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus)
@@ -679,7 +685,7 @@ workflow {
     norman_metadata_ch = normanRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
 
     // Combine everything
-    merged_ch = mergeAllMetadata(allowed_terms, gnps_metadata_instruments_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch)
+    merged_ch = mergeAllMetadata(allowed_terms, gnps_metadata_instruments_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch, masst_metadata_ch.supplement)
 
 
     // Make sure we dont loose older data
