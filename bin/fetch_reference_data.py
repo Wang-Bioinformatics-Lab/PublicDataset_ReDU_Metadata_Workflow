@@ -6,6 +6,9 @@ version the workflow was tested with (url + sha256). Newer upstream releases are
 picked up on their own; moving to a new version means testing it and then changing the
 pin. What is present is recorded in data/.reference_data_state.json.
 
+- Entries with "refresh": "every_run" (the MASST tables, which are data that grow
+  continuously) are downloaded on every run instead; they have no checksum, and the
+  previous copy is kept if a download fails.
 - A file is downloaded only when it is missing or is not the pinned version (different
   url/sha256 in the record, or the file on disk no longer matches its checksum).
 - Files present without a record (e.g. from an earlier manual get_data.sh run) are
@@ -78,6 +81,10 @@ def download(url, path, attempts=3):
     return None
 
 
+def sha256_of_outputs(entry, data_dir):
+    return sha256_of(os.path.join(data_dir, outputs_of(entry)[0]))
+
+
 def looks_valid(path, check):
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return False
@@ -126,6 +133,8 @@ def needs_update(entry, record, data_dir):
     """Reason why the file has to be (re)downloaded, or None if the pinned version is present."""
     if not outputs_present(entry, data_dir):
         return 'missing'
+    if entry.get('refresh') == 'every_run':
+        return 'refreshed on every run'
     if not record:
         return 'no record of which version the present file is'
     if record.get('url') != entry['url'] or record.get('sha256') != entry['sha256']:
@@ -175,13 +184,13 @@ def main():
             continue
         log(f"{name}: downloading ({reason})")
         part = download(entry['url'], os.path.join(data_dir, name))
-        if part and sha256_of(part) != entry['sha256']:
+        if part and entry.get('sha256') and sha256_of(part) != entry['sha256']:
             log(f"{name}: download does not match the pinned sha256 (the source changed?), discarded")
             os.remove(part)
             part = None
         if part and looks_valid(part, entry['check']):
             install(entry, part, data_dir)
-            state[name] = {'url': entry['url'], 'sha256': entry['sha256'], 'fetched_at': now_utc(),
+            state[name] = {'url': entry['url'], 'sha256': entry.get('sha256') or sha256_of_outputs(entry, data_dir), 'fetched_at': now_utc(),
                            'files': outputs_of(entry),
                            'sizes': {m: os.path.getsize(os.path.join(data_dir, m)) for m in outputs_of(entry)}}
             with open(state_path + '.part', 'w') as handle:
@@ -193,7 +202,8 @@ def main():
             log(f"{name}: download did not pass the format check, discarded")
             os.remove(part)
         if outputs_present(entry, data_dir):
-            log(f"WARNING {name}: could not get the pinned version, keeping the existing file")
+            what = 'a new copy' if entry.get('refresh') == 'every_run' else 'the pinned version'
+            log(f"WARNING {name}: could not get {what}, keeping the existing file")
         elif not entry.get('required', True):
             log(f"WARNING {name}: not available; the column it feeds stays empty")
             for output in outputs_of(entry):

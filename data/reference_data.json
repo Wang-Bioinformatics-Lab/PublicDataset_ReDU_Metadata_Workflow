@@ -1,5 +1,5 @@
 {
-    "_comment": "Reference data the workflow needs in data/, each pinned to the exact version the workflow was tested with (url + sha256 of the file). Set up automatically by the first workflow step (bin/fetch_reference_data.py): a file is downloaded only when it is missing or not the pinned version. Newer upstream releases are NOT picked up automatically; to move to a new version, test it, then change url and sha256 here. 'required': false means the workflow runs without the file (the column it feeds stays empty).",
+    "_comment": "Reference data the workflow needs in data/, each pinned to the exact version the workflow was tested with (url + sha256 of the file). Set up automatically by the first workflow step (bin/fetch_reference_data.py): a file is downloaded only when it is missing or not the pinned version. Newer upstream releases are NOT picked up automatically; to move to a new version, test it, then change url and sha256 here. Exception: entries with \"refresh\": \"every_run\" (the MASST tables, which grow with every MASST-indexed dataset and take seconds to download) are re-downloaded on every run without a checksum; the previous copy is kept if the download fails. 'required': false means the workflow runs without the file (the column it feeds stays empty).",
     "files": [
         {
             "name": "uberon.owl",
@@ -52,17 +52,17 @@
         },
         {
             "name": "microbe_masst_table.csv",
-            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/5dd2a0f6981697d9a10c26750c45013ca50ab328/data/microbe_masst_table.csv",
-            "sha256": "cdb321081dc69dee76d0acbdc81d8013f38a2ed7aa05b6e311d5ffc27dde3fa1",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/microbe_masst_table.csv",
             "check": "text",
-            "required": true
+            "required": true,
+            "refresh": "every_run"
         },
         {
             "name": "plant_masst_table.csv",
-            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/5dd2a0f6981697d9a10c26750c45013ca50ab328/data/plant_masst_table.csv",
-            "sha256": "642aae895d97657705c5ce16b5547f3083752007775ca8a4ec6dc73462b6d572",
+            "url": "https://raw.githubusercontent.com/robinschmid/microbe_masst/master/data/plant_masst_table.csv",
             "check": "text",
-            "required": true
+            "required": true,
+            "refresh": "every_run"
         },
         {
             "name": "taxdmp.zip",
