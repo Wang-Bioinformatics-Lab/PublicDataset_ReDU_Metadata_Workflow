@@ -1,4 +1,5 @@
 import argparse
+import collections
 import math
 import pandas as pd
 import glob
@@ -37,6 +38,29 @@ def _cached(name, source, build):
     if key not in _LOOKUP_CACHE:
         _LOOKUP_CACHE[key] = build()
     return _LOOKUP_CACHE[key]
+
+
+_DOID_ITEM = re.compile(r'(?i)^DOID[:_]?(\d+)$')
+
+
+def normalize_doid_list(value, doid_ids, missing_value='missing value'):
+    """'DOID:526|DOID:1596' style list of DOID IDs. Items may be separated by | , ; or
+    whitespace and written DOID_526 / doid:526; each is written DOID:<digits>. IDs that are
+    not in doid_ids (unknown or obsolete) are dropped, as are repeats (the submitter's order
+    is kept). Returns missing_value when no valid ID remains."""
+    text = str(value).strip()
+    if not text:
+        return missing_value
+    text = re.sub(r'(?i)\bDOID\s*([:_])\s*', r'DOID\1', text)
+    ids = []
+    for item in re.split(r'[|,;\s]+', text):
+        m = _DOID_ITEM.match(item.strip())
+        if not m:
+            continue
+        doid = 'DOID:' + m.group(1)
+        if doid in doid_ids and doid not in ids:
+            ids.append(doid)
+    return '|'.join(ids) if ids else missing_value
 
 
 def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi = False, other_allowed_file_extensions = [], attempt_adding_file_extensions = False, case_insensitive_terms = False, **kwargs):
@@ -152,6 +176,10 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     NCBIRankDivision_table['NCBIRank'] = NCBIRankDivision_table['NCBIRank'].astype(str)
     NCBIRankDivision_table['NCBIDivision'] = NCBIRankDivision_table['NCBIDivision'].astype(str)
 
+    # resolves NCBI names that are not allowed scientific names (synonyms, merged taxa,
+    # strains) to an allowed term, or returns None
+    ncbi_name_resolver = kwargs.get('NCBI_name_resolver')
+
     # Convert all columns to String (missing values become '' rather than the string 'nan')
     df = df.fillna('').astype(str)
 
@@ -217,6 +245,23 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             # Extract unique values from the DataFrame column
             unique_values = df[key].unique()
             
+            if key == 'ComorbidityListDOIDIndex':
+                # a list of DOID IDs, not a fixed set of combinations: every ID must be a
+                # current (non-obsolete) DOID class of the DOID table
+                doid_ids = _cached('doid_ids', doid_ontology_table, lambda: set(
+                    doid_ontology_table['DOIDOntologyIndex'].dropna().astype(str).str.strip())
+                    if 'DOIDOntologyIndex' in doid_ontology_table.columns else set())
+                if not doid_ids and any(str(v).strip() not in ('', missing_value) for v in unique_values):
+                    print(f'{key}: no DOID table given; IDs cannot be checked and are set to {missing_value}')
+                value_map = {v: normalize_doid_list(v, doid_ids, missing_value) for v in unique_values}
+                df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
+                filtered_map = {k: v for k, v in value_map.items() if k != v}
+                if filtered_map:
+                    print(f"{key}:")
+                    for k, v in filtered_map.items():
+                        print(f"  {k}: {v}")
+                continue
+
             # Initialize value_map for each condition
             if key not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) >= 1 \
                     and allowed_terms[0] not in ['00', 'datetime', 'numeric', 'numeric|numeric']:
@@ -301,7 +346,14 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                             if hit:
                                 return hit
 
-                        # 5) No match
+                        # 5) Name that NCBI lists for another (current) taxon, e.g. a
+                        #    synonym or the name of a merged taxon (GNPS only; optional)
+                        if ncbi_name_resolver is not None and oname:
+                            hit = ncbi_name_resolver(oname)
+                            if hit:
+                                return hit
+
+                        # 6) No match
                         return missing_value
 
                     value_map = {ov: resolve_ncbi(ov) for ov in unique_values}
@@ -554,10 +606,6 @@ _VALUE_SYNONYMS = {
         'england': 'United Kingdom', 'scotland': 'United Kingdom', 'wales': 'United Kingdom',
         'northern ireland': 'United Kingdom',
     },
-    'SampleType': {
-        'standard': 'molecular_standards', 'culture_mamalian': 'culture_mammalian',
-        'deceased animal': 'animal', 'blank': 'blank_analysis', 'pool': 'pool_QC', 'qc': 'pool_QC',
-    },
     'IonizationSourceAndPolarity': {
         'heated electrospray ionization (positive)': 'electrospray ionization (positive)',
         'heated electrospray ionization (negative)': 'electrospray ionization (negative)',
@@ -566,11 +614,100 @@ _VALUE_SYNONYMS = {
     'ChromatographyAndPhase': {
         'reverse phase (polar c18)': 'reverse phase (C18)',
     },
+    # first-generation template values
+    'SampleType': {
+        'standard': 'molecular_standards', 'culture_mamalian': 'culture_mammalian',
+        'deceased animal': 'animal', 'blank': 'blank_analysis', 'pool': 'pool_QC', 'qc': 'pool_QC',
+        'animal_mammalia_nos': 'animal', 'human': 'animal',
+    },
+    'SmokingStatus': {
+        'nonsmoker': 'non-smoker', 'non smoker': 'non-smoker',
+        'ex-smoker': 'former smoker', 'exsmoker': 'former smoker', 'ex smoker': 'former smoker',
+    },
 }
 
 # Prefixes of the first-generation ReDU template (e.g. 'ATTRIBUTE_Curated_SampleType',
-# 'Subject_BiologicalSex', 'Analysis_MassSpectrometer') in front of current field names
+# 'Subject_BiologicalSex', 'ATTRIBUTE_Analysis_MassSpectrometer') in front of current
+# field names, and first-generation names that differ from the current ones (lower case,
+# after the prefixes). Same rules as template_column in gnps_downloader.py.
 _LEGACY_COLUMN_PREFIXES = ('ATTRIBUTE_Curated_', 'ATTRIBUTE_', 'Subject_', 'Analysis_', 'Study_', 'Curated_')
+_LEGACY_COLUMN_ALIASES = {
+    'sex': 'BiologicalSex', 'health': 'HealthStatus', 'bodypartontologyname': 'UBERONBodyPartName',
+    'bmi': 'BodyMassIndex', 'diseasecommonname': 'DOIDCommonName', 'smoking': 'SmokingStatus',
+    'sampletype_sub1': 'SampleTypeSub1', 'comorbidity_listdoids': 'ComorbidityListDOIDIndex',
+    'massiveid': 'MassiveID', 'datasetaccession': 'MassiveID',
+}
+
+
+def _template_column(column, allowedTerm_dict):
+    """The current field a (first-generation or differently cased) column name stands for."""
+    by_lower = _cached('keys_lower', allowedTerm_dict, lambda: {k.lower(): k for k in allowedTerm_dict})
+    name = str(column).strip()
+    while True:
+        if name in allowedTerm_dict:
+            return name
+        if name.lower() in by_lower:
+            return by_lower[name.lower()]
+        if name.lower() in _LEGACY_COLUMN_ALIASES:
+            return _LEGACY_COLUMN_ALIASES[name.lower()]
+        for prefix in _LEGACY_COLUMN_PREFIXES:
+            if name.lower().startswith(prefix.lower()) and len(name) > len(prefix):
+                name = name[len(prefix):]
+                break
+        else:
+            return None
+
+
+_LATLON_NUMBER = r'([+-]?\d{1,3}(?:\.\d+)?)'
+_LATLON = re.compile(r'^' + _LATLON_NUMBER + r'\s*°?\s*([NnSs])?\s*(AND|and|And|[;,|/]|\s)\s*'
+                     + _LATLON_NUMBER + r'\s*°?\s*([EeWw])?$')
+
+
+def _is_redu_latlon(value):
+    """The format the ReDU validation accepts ('lat|lon', numbers without a '+')."""
+    parts = str(value).split('|')
+    return len(parts) == 2 and all(re.fullmatch(r'-?\d+(\.\d+)?', p) for p in parts)
+
+
+def parse_latitude_longitude(value):
+    """'lat|lon' from '32.842;-117.258', '48.2,-124.3', '32.842AND-117.258', '-33.99|+25.70',
+    '41.8719 N, 12.5674 E' or '48.27 -124.45' (latitude first; N/S/E/W give the sign and
+    exclude a minus sign). The numbers keep their digits. None if the value is not such a
+    pair or out of range."""
+    m = _LATLON.match(str(value).strip())
+    if not m:
+        return None
+    lat, ns, separator, lon, ew = m.groups()
+    if separator == ',' and '.' not in lat + lon:
+        return None  # '41,87' may be one number with a decimal comma
+    out = []
+    for number, hemisphere, negative, limit in ((lat, ns, 'sS', 90), (lon, ew, 'wW', 180)):
+        number = number.lstrip('+')
+        if hemisphere:
+            if number.startswith('-'):
+                return None
+            if hemisphere in negative:
+                number = '-' + number
+        if abs(float(number)) > limit:
+            return None
+        out.append(number)
+    return '|'.join(out)
+
+
+def _load_ms_aliases():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'translation_sheets', 'GNPS_MassSpectrometer_aliases.csv')
+    if not os.path.exists(path):
+        return {}
+    table = pd.read_csv(path, dtype=str).dropna()
+    return {g.strip().lower(): r.strip() for g, r in zip(table['GNPS'], table['REDU'])}
+
+
+def _diet_key(value):
+    return re.sub(r'[\s_\-]+', '', str(value).strip().lower())
+
+
+def _solvent_key(value):
+    return str(value).strip().lower()
 
 _MISSING_LIKE = {'', 'nan', 'na', 'n/a', 'none', 'missing value', 'missing_value', 'not specified', 'not collected',
                  'not applicable', 'not_applicable', 'ml import: not available', 'not available'}
@@ -586,16 +723,23 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
     validation, so the values are kept instead of being replaced by 'missing value'."""
     df = df.copy()
 
-    # first-generation template column names -> current names
+    # first-generation template column names (and case variants) -> current names; when
+    # the current column exists too, its empty values are taken from the old one
     for column in list(df.columns):
         if column in allowedTerm_dict:
             continue
-        for prefix in _LEGACY_COLUMN_PREFIXES:
-            name = column[len(prefix):]
-            if column.startswith(prefix) and name in allowedTerm_dict and name not in df.columns:
-                df = df.rename(columns={column: name})
-                print(f"Renamed legacy column {column} -> {name}")
-                break
+        name = _template_column(column, allowedTerm_dict)
+        if name is None or name == column:
+            continue
+        if name not in df.columns:
+            df = df.rename(columns={column: name})
+            print(f"Renamed legacy column {column} -> {name}")
+        else:
+            empty = df[name].map(_is_missing_like) & ~df[column].map(_is_missing_like)
+            if empty.any():
+                df.loc[empty, name] = df.loc[empty, column]
+                print(f"Filled {int(empty.sum())} empty {name} values from legacy column {column}")
+            df = df.drop(columns=[column])
 
     # files without a dataset column: the accession is known from the file name
     if 'MassiveID' not in df.columns and dataset_accession:
@@ -643,9 +787,95 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
             df.loc[healthy & no_status, 'HealthStatus'] = 'healthy'
             df.loc[healthy, 'DOIDCommonName'] = ''
 
+    # 'disease NOS' says the subject is ill without naming the disease
+    if 'DOIDCommonName' in df.columns:
+        nos = df['DOIDCommonName'].astype(str).str.strip().str.lower() == 'disease nos'
+        if nos.any():
+            if 'HealthStatus' not in df.columns:
+                df['HealthStatus'] = ''
+            fill = nos & df['HealthStatus'].map(_is_missing_like)
+            df.loc[fill, 'HealthStatus'] = 'unhealthy (NOS)'
+            if fill.any():
+                print(f"HealthStatus 'unhealthy (NOS)' for {int(fill.sum())} rows with DOIDCommonName 'disease NOS'")
+
     # 'lat | lon' with spaces, Excel float years
     if 'LatitudeandLongitude' in df.columns:
         df['LatitudeandLongitude'] = df['LatitudeandLongitude'].astype(str).str.replace(r'\s*\|\s*', '|', regex=True).str.strip()
+        # other separators / hemisphere letters (values already in ReDU format are kept)
+        def _latlon(v):
+            if _is_redu_latlon(v) or _is_missing_like(v):
+                return v
+            return parse_latitude_longitude(v) or v
+        df['LatitudeandLongitude'] = df['LatitudeandLongitude'].map(_latlon)
+
+    # MassSpectrometer given as a bare MS accession, as the bare label of an allowed term
+    # or as a first-generation name ('Maxis_ImpactHD'; translation_sheets/GNPS_MassSpectrometer_aliases.csv)
+    if 'MassSpectrometer' in df.columns and 'MassSpectrometer' in allowedTerm_dict:
+        ms_terms = allowedTerm_dict['MassSpectrometer']['allowed_values']
+
+        def _build_ms():
+            by_id, by_label = {}, {}
+            for t in ms_terms:
+                label, _, acc = str(t).partition('|')
+                by_id[acc.strip().upper()] = t
+                by_label.setdefault(label.strip().lower(), set()).add(t)
+            return set(ms_terms), by_id, by_label, _load_ms_aliases()
+        ms_set, ms_by_id, ms_by_label, ms_aliases = _cached('ms_lookup', ms_terms, _build_ms)
+
+        def _ms(v):
+            if v in ms_set or _is_missing_like(v):
+                return v
+            text = str(v).strip()
+            if re.fullmatch(r'(?i)MS[:_]\d{7}', text):
+                return ms_by_id.get('MS:' + text[3:], v)
+            label = ms_by_label.get(text.lower())
+            if label and len(label) == 1:
+                return next(iter(label))
+            alias = ms_aliases.get(text.lower())
+            return alias if alias in ms_set else v
+        df['MassSpectrometer'] = df['MassSpectrometer'].map(_ms)
+
+    # SampleExtractionMethod: a bare solvent is the 100% term ('methanol' -> 'methanol (100%)'),
+    # '<solvent> (80%)' the solvent-water ratio ('acetonitrile-water (4:1)'); only when that
+    # term is allowed
+    if 'SampleExtractionMethod' in df.columns and 'SampleExtractionMethod' in allowedTerm_dict:
+        sem_terms = allowedTerm_dict['SampleExtractionMethod']['allowed_values']
+        sem_set = set(sem_terms)
+
+        def _sem(v):
+            if v in sem_set or _is_missing_like(v):
+                return v
+            text = _solvent_key(v)
+            if re.fullmatch(r'[a-z][a-z \-]*[a-z]', text) and f'{text} (100%)' in sem_set:
+                return f'{text} (100%)'
+            m = re.fullmatch(r'([a-z][a-z \-]*[a-z])\s*\((\d{1,2})\s*%\)', text)
+            if m and m.group(1) != 'water':
+                part = int(m.group(2))
+                g = math.gcd(part, 100 - part)
+                term = f'{m.group(1)}-water ({part // g}:{(100 - part) // g})'
+                if term in sem_set:
+                    return term
+            return v
+        df['SampleExtractionMethod'] = df['SampleExtractionMethod'].map(_sem)
+
+    # Diet: spelling variants that differ only in case, spaces, '_' or '-' ('High_Fat_Diet')
+    if 'Diet' in df.columns and 'Diet' in allowedTerm_dict:
+        diet_terms = allowedTerm_dict['Diet']['allowed_values']
+
+        def _build_diet():
+            keys = {}
+            for t in diet_terms:
+                keys.setdefault(_diet_key(t), set()).add(t)
+            return keys
+        diet_keys = _cached('diet_keys', diet_terms, _build_diet)
+        diet_set = set(diet_terms)
+
+        def _diet(v):
+            if v in diet_set or _is_missing_like(v):
+                return v
+            hits = diet_keys.get(_diet_key(v), set())
+            return next(iter(hits)) if len(hits) == 1 else v
+        df['Diet'] = df['Diet'].map(_diet)
     if 'YearOfAnalysis' in df.columns:
         df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str).str.replace(r'^\s*(\d{4})\.0+\s*$', r'\1', regex=True)
 
@@ -681,6 +911,94 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
             df[key] = df[key].map(lambda v: envo_by_id.get(str(v).strip(), v))
 
     return df
+
+
+_NCBI_NAME_CLASSES = ('scientific name', 'synonym', 'equivalent name')
+
+
+def build_ncbi_name_resolver(names_dmp, names, allowed_ncbi_terms, NCBIRankDivision_table=None):
+    """Resolver for NCBI names that are not the scientific name of an allowed taxon:
+    - a synonym / equivalent name / scientific name of exactly one taxon (in names.dmp)
+      that is allowed, e.g. 'Clostridium coccoides' -> '33035|Blautia producta', including
+      names of merged taxa ('37480|Streptomyces pluricolorescens');
+    - a strain or other name below species ('Staphylococcus aureus JE3') that NCBI does not
+      list at all -> its species, when the first two words are the name of exactly one
+      allowed taxon of rank species. Hybrids ('A b x c') are not reduced.
+    Only names written like a scientific name are considered (at least two words, the
+    first a capitalised genus: not placeholders such as 'not specified', which NCBI lists
+    as a synonym of 32644 'unidentified'). names: the names that occur in the metadata, so
+    only those are kept from names.dmp."""
+    def scientific_like(name):
+        name = str(name).strip()
+        return re.match(r'^[A-Z][a-z]+(\s+\S+)+$', name) is not None and not _is_missing_like(name)
+    wanted = {str(n).strip().lower() for n in names if scientific_like(n)}
+    if not wanted:
+        return None
+    resolving = collections.defaultdict(set)
+    known = set()
+    with open(names_dmp, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            parts = line.split('\t|\t')
+            if len(parts) < 4:
+                continue
+            name = parts[1].strip().lower()
+            if name not in wanted:
+                continue
+            known.add(name)
+            name_class = parts[3].rstrip('\t|\n').strip()
+            if name_class in _NCBI_NAME_CLASSES:
+                resolving[name].add(parts[0].strip())
+    allowed_by_id = {}
+    allowed_by_name = collections.defaultdict(set)
+    for term in allowed_ncbi_terms:
+        if '|' in term:
+            tid, tname = term.split('|', 1)
+            allowed_by_id[tid.strip()] = term
+            allowed_by_name[tname.strip().lower()].add(term)
+    rank = {}
+    if NCBIRankDivision_table is not None:
+        rank = dict(zip(NCBIRankDivision_table['TaxonID'].astype(str), NCBIRankDivision_table['NCBIRank'].astype(str)))
+    print(f"NCBI names.dmp: {len(resolving)} of {len(wanted)} metadata names are NCBI names")
+
+    def resolve(name):
+        name = str(name).strip()
+        key = name.lower()
+        if key not in wanted or not scientific_like(name):
+            return None
+        ids = resolving.get(key)
+        if ids:
+            taxid = next(iter(ids))
+            # never to the catch-all 'unidentified' taxon
+            return allowed_by_id.get(taxid) if len(ids) == 1 and taxid != '32644' else None
+        if key in known:
+            return None  # listed by NCBI, but not as a name of one taxon
+        words = name.split()
+        if len(words) < 3 or re.search(r'(?i)\sx\s|×', name):
+            return None
+        species = allowed_by_name.get(' '.join(words[:2]).lower(), set())
+        if len(species) != 1:
+            return None
+        term = next(iter(species))
+        return term if rank.get(term.split('|', 1)[0].strip()) == 'species' else None
+    return resolve
+
+
+def _ncbi_names_in_files(paths, allowedTerm_dict):
+    """Organism names in the NCBITaxonomy columns (any template name) of metadata files."""
+    names = set()
+    for path in paths:
+        try:
+            header = pd.read_csv(path, sep='\t', dtype=str, nrows=0).columns
+            columns = [c for c in header if _template_column(c, allowedTerm_dict) == 'NCBITaxonomy']
+            if not columns:
+                continue
+            table = pd.read_csv(path, sep='\t', dtype=str, usecols=columns)
+        except Exception:
+            continue
+        for column in columns:
+            for value in table[column].dropna().unique():
+                names.add(str(value).split('|', 1)[-1].strip())
+    return names
 
 
 def process_filename(filename):
@@ -720,6 +1038,8 @@ if __name__ == '__main__':
     parser.add_argument('--path_to_doid_csv')
     parser.add_argument('--path_to_hpo_csv', default='none')
     parser.add_argument('--path_to_exposure_csv', default='none')
+    parser.add_argument('--path_to_ncbi_names_dmp', default='none',
+                        help='NCBI names.dmp; resolves synonyms, merged taxa and strains of NCBITaxonomy names')
     args = parser.parse_args()
 
     with open(args.AllowedTermJson_path, 'r') as json_file:
@@ -753,6 +1073,12 @@ if __name__ == '__main__':
     all_metadata_files = glob.glob(f"{args.path_to_github_metadata}/*.tsv")
 
     print("Processing", len(all_metadata_files), "files")
+
+    ncbi_name_resolver = None
+    if args.path_to_ncbi_names_dmp != 'none':
+        ncbi_name_resolver = build_ncbi_name_resolver(
+            args.path_to_ncbi_names_dmp, _ncbi_names_in_files(all_metadata_files, allowed_terms),
+            allowed_terms['NCBITaxonomy']['allowed_values'], NCBIRankDivision_table)
    
 
     for file_path in all_metadata_files:
@@ -791,7 +1117,8 @@ if __name__ == '__main__':
                                               ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                               ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
                                               attempt_adding_file_extensions=True,
-                                              case_insensitive_terms=True)
+                                              case_insensitive_terms=True,
+                                              NCBI_name_resolver=ncbi_name_resolver)
             
             if len(df) > 0:
             

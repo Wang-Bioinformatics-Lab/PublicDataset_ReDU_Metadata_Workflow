@@ -12,6 +12,7 @@ the workflow is never blocked by this optional enrichment.
 """
 import argparse
 import json
+import re
 import shutil
 import sys
 import time
@@ -43,14 +44,38 @@ def fetch_instruments(session, accession, retries=3, timeout=(10, 60)):
     return None
 
 
+def _is_placeholder(instrument):
+    return instrument.get("accession") in PLACEHOLDER_ACCESSIONS \
+        or str(instrument.get("name", "")).strip().lower() == "instrument model"
+
+
+def free_text_instrument(value, allowed_ms_terms):
+    """Allowed term for the submitter's free text of a generic 'instrument model' entry,
+    e.g. 'Q Exactive|1001911' (MS accession number after a '|'), 'MS:1002634' or a name
+    such as 'Exactive (Thermo Scientific)'; None unless it maps to exactly one term."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    number = re.fullmatch(r"(.*?)\|\s*(?:MS:)?(\d{7})", text)
+    if number:
+        return match_mass_spectrometer(None, allowed_ms_terms, accession="MS:" + number.group(2))
+    return match_mass_spectrometer(text, allowed_ms_terms)
+
+
 def dataset_instrument(instruments, allowed_ms_terms):
     """The allowed MassSpectrometer term for a dataset's instrument list, or None."""
-    instruments = [i for i in instruments if i.get("accession") not in PLACEHOLDER_ACCESSIONS
-                   and str(i.get("name", "")).strip().lower() != "instrument model"]
-    if len(instruments) != 1:
+    named = [i for i in instruments if not _is_placeholder(i)]
+    if len(named) == 1:
+        return match_mass_spectrometer(named[0].get("name"), allowed_ms_terms,
+                                       accession=named[0].get("accession"))
+    if named:
         return None
-    return match_mass_spectrometer(instruments[0].get("name"), allowed_ms_terms,
-                                   accession=instruments[0].get("accession"))
+    # only generic 'instrument model' entries: use their free text when all of them name
+    # the same instrument
+    terms = {free_text_instrument(i.get("value"), allowed_ms_terms) for i in instruments if i.get("value")}
+    if len(terms) != 1 or None in terms:
+        return None
+    return next(iter(terms))
 
 
 def main():

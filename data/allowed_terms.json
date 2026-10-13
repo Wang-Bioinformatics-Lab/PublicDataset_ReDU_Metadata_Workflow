@@ -513,15 +513,10 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "DOID IDs of comorbidities. Please separate multiple comorbidities by a |. You can find all allowed IDs in the resource link.",
+        "description": "DOID IDs of comorbidities, in any number and combination. Please separate multiple comorbidities by a |. Every listed ID must be a current (not obsolete) DOID ID; you can find all IDs in the resource link.",
         "example": "DOID:526|DOID:1596",
         "source": "https://www.ebi.ac.uk/ols4/ontologies/doid",
-        "allowed_values": [
-            "DOID:526|DOID:1596",
-            "DOID:1596|DOID:635",
-            "DOID:526|DOID:1596|DOID:635",
-            "DOID:526|DOID:635"
-        ]
+        "allowed_values": []
     },
     "HPOCommonName": {
         "generate": "False",

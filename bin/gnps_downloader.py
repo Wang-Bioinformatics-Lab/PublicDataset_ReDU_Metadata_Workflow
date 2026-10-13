@@ -8,6 +8,8 @@ import sys
 import collections
 import argparse
 import time
+import re
+import json
 from ftplib import FTP_TLS, all_errors as ftp_errors
 
 
@@ -97,6 +99,258 @@ def download_gnps_metadata(out_path="gnps_metadata.tsv", page_size=1000, max_pag
     df = pd.DataFrame.from_records(all_rows)
     print(f"✅ Saved {len(df)} rows to {out_path}", file=sys.stderr)
     return df
+
+CACHE_FILENAME_URL = "https://datasetcache.gnps2.org/datasette/database/filename.json"
+PROXI_URL = "https://massive.ucsd.edu/ProteoSAFe/proxi/v0.1/datasets/{}"
+
+# ReDU-format sheets that are not named *gnps_metadata.tsv (other names, .txt, .csv,
+# .xlsx, .tsv.tsv): tabular files with 'metadata' in their path (name or folder), outside
+# ccms_metadata/. Only those whose header is the ReDU template are used.
+TEMPLATE_SHEET_EXTENSIONS = ('.tsv', '.txt', '.csv', '.xlsx', '.xls')
+OTHER_SHEETS_WHERE = (
+    "filepath like '%metadata%' "
+    "and filepath not like '%ccms_metadata/%' and filepath not like '%gnps_metadata.tsv' and ("
+    + " or ".join(f"filepath like '%{ext}'" for ext in TEMPLATE_SHEET_EXTENSIONS) + ")")
+MAX_SHEET_BYTES = 50 * 1024 * 1024
+# a sheet counts as ReDU-format when it has a filename column and at least this many
+# ReDU template columns (current names or first-generation names)
+MIN_TEMPLATE_COLUMNS = 4
+
+# first-generation template column names (prefixes in front of current names, and names
+# that differ) -> current names
+LEGACY_PREFIXES = ('ATTRIBUTE_Curated_', 'ATTRIBUTE_', 'Subject_', 'Analysis_', 'Study_', 'Curated_')
+LEGACY_ALIASES = {
+    'sex': 'BiologicalSex', 'health': 'HealthStatus', 'bodypartontologyname': 'UBERONBodyPartName',
+    'bmi': 'BodyMassIndex', 'diseasecommonname': 'DOIDCommonName', 'smoking': 'SmokingStatus',
+    'sampletype_sub1': 'SampleTypeSub1', 'comorbidity_listdoids': 'ComorbidityListDOIDIndex',
+    'massiveid': 'MassiveID', 'datasetaccession': 'MassiveID',
+}
+
+
+def template_column(column, template_keys):
+    """The current ReDU template column a sheet column stands for, or None.
+    Same rules as normalize_gnps_metadata in read_and_validate_redu_from_github.py."""
+    by_lower = {k.lower(): k for k in template_keys}
+    name = str(column).strip()
+    while True:
+        if name in template_keys:
+            return name
+        if name.lower() in by_lower:
+            return by_lower[name.lower()]
+        if name.lower() in LEGACY_ALIASES:
+            return LEGACY_ALIASES[name.lower()]
+        for prefix in LEGACY_PREFIXES:
+            if name.lower().startswith(prefix.lower()) and len(name) > len(prefix):
+                name = name[len(prefix):]
+                break
+        else:
+            return None
+
+
+def is_template_sheet(df, template_keys):
+    targets = {template_column(c, template_keys) for c in df.columns} - {None}
+    return 'filename' in targets and len(targets) >= MIN_TEMPLATE_COLUMNS
+
+
+def _excel_sheet(content, template_keys=None):
+    """The worksheet of an Excel file to use: the first one, unless only another sheet has
+    the ReDU template columns (e.g. instructions on sheet 1, the table on sheet 2)."""
+    sheets = pd.read_excel(io.BytesIO(content), dtype=str, sheet_name=None)
+    if not sheets:
+        return None
+    for df in sheets.values():
+        df.columns = [str(c).strip() for c in df.columns]
+    frames = list(sheets.values())
+    if template_keys is None or is_template_sheet(frames[0], template_keys):
+        return frames[0]
+    redu = [df for df in frames[1:] if is_template_sheet(df, template_keys)]
+    return redu[0] if len(redu) == 1 else frames[0]
+
+
+def read_sheet(content, name, template_keys=None):
+    """Reads a tabular metadata file (tsv/txt/csv/xlsx) as strings, or returns None."""
+    lower = name.lower()
+    try:
+        if lower.endswith(('.xlsx', '.xls')):
+            # needs openpyxl (.xlsx) / xlrd (.xls); without them the file is skipped
+            return _excel_sheet(content, template_keys)
+        for encoding in ('utf-8', 'latin-1'):
+            try:
+                text = content.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        text = text.lstrip('\ufeff')
+        separators = [',', '\t', ';'] if lower.endswith('.csv') else ['\t', ',']
+        for sep in separators:
+            df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str)
+            if df.shape[1] > 1:
+                df.columns = [str(c).strip() for c in df.columns]
+                return df
+    except Exception as e:
+        print(f"Could not read {name}: {type(e).__name__}: {e}")
+    return None
+
+
+def _canonical_column(df, target, template_keys):
+    """Renames the column standing for target (e.g. 'ATTRIBUTE_filename') to target."""
+    if target in df.columns:
+        return df
+    for column in df.columns:
+        if template_column(column, template_keys) == target:
+            return df.rename(columns={column: target})
+    return df
+
+
+def _sample_key(filename):
+    """File name without folders, upper/lower case and data-file extension, so a newer
+    version listing x.mzML also describes the x.mzXML of an older version."""
+    base = os.path.basename(str(filename).strip().replace('\\', '/')).lower()
+    return re.sub(r'\.(mzml|mzxml|raw|d|wiff|cdf|mzdata|mgf)$', '', base)
+
+
+def combine_versions(sheets, dataset, template_keys):
+    """One table from several metadata files of a dataset, given newest first. Rows of the
+    newest file are all kept; an older file only adds rows of this dataset for files (same
+    file name, ignoring folders, case and .mzML/.mzXML) that no newer file describes."""
+    described = set()
+    parts = []
+    for rank, (df, source) in enumerate(sheets):
+        df = _canonical_column(df, 'filename', template_keys)
+        df = _canonical_column(df, 'MassiveID', template_keys)
+        if 'filename' not in df.columns:
+            continue
+        if 'MassiveID' not in df.columns:
+            df = df.assign(MassiveID=dataset)
+        df = df.copy()
+        accession = df['MassiveID'].fillna('').astype(str).str.strip()
+        accession = accession.where(accession.str.match(r'^R?MSV\d+$'), dataset)
+        if rank > 0:
+            df['MassiveID'] = accession
+        keys = list(zip(accession, df['filename'].map(_sample_key)))
+        # rows without a file name (empty template rows) describe nothing; rows an older
+        # file has for another dataset are left to that dataset's own metadata
+        has_name = ~df['filename'].fillna('').astype(str).str.strip().str.lower().isin(['', 'nan'])
+        own = accession == dataset
+        new = [rank == 0 or (named and mine and k not in described) for k, named, mine in zip(keys, has_name, own)]
+        described.update(k for k, named in zip(keys, has_name) if named)
+        kept = df[new]
+        if rank > 0:
+            print(f"  {source}: {int(sum(new))} of {len(df)} rows describe files no newer version describes")
+        if len(kept):
+            parts.append(kept)
+    if not parts:
+        return None
+    return pd.concat(parts, ignore_index=True, sort=False)
+
+
+def list_cache_files(where, page_size=1000, max_retries=5):
+    """Files of the dataset cache matching an SQL condition on filepath (all pages)."""
+    params = {"_where": where, "_shape": "objects", "_size": page_size,
+              "_col": ["filepath", "dataset", "create_time", "size"]}
+    rows = []
+    next_token = None
+    page = 0
+    while True:
+        page += 1
+        if next_token:
+            params["_next"] = next_token
+        payload = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                r = requests.get(CACHE_FILENAME_URL, params=params, timeout=300)
+                if r.status_code == 200:
+                    payload = r.json()
+                    break
+                print(f"[page {page}] Attempt {attempt} bad status {r.status_code}", file=sys.stderr)
+            except Exception as e:
+                print(f"[page {page}] Attempt {attempt} failed: {e}", file=sys.stderr)
+            time.sleep(2 ** attempt)
+        if payload is None:
+            raise RuntimeError(f"[page {page}] All {max_retries} attempts failed")
+        rows.extend(payload.get("rows", []))
+        next_token = payload.get("next")
+        if not next_token or not payload.get("rows"):
+            break
+        time.sleep(0.2)
+    return pd.DataFrame.from_records(rows, columns=["dataset", "filepath", "create_time", "size"])
+
+
+# Proteomics datasets are not taken in through other-named sheets. Same signals and
+# order as the survey's dataset classification, from the PROXI record and the cache.
+_METABOLOMICS_TERMS = re.compile(r'(?i)metabolom|metabolite|lipidom|\blipid|natural product|small[- ]molecule|exposom|molecular network|\bFBMN\b|feature[- ]based|mzmine|spectral librar|secondary metabol|untargeted|\bLC-?MS/?MS\b.*extract|\bmetabolic profil|volatil|\bDOM\b|dissolved organic|xenobiotic|drug metabol|bile acid|glycan|oligosacchar|polyketide|alkaloid|terpen|flavon|phenolic|peptidic natural|siderophore|lipopeptide|\bMASST\b|chemical standard|reference standard|food|\bdiet\b|plant extract|fecal|stool')
+_PROTEOMICS_TERMS = re.compile(r'(?i)proteom|peptid(?!ic natural)|phospho|\bTMT\b|iTRAQ|SILAC|ubiquit|\bSUMO|glycoproteo|cross-?link|interactom|immunopeptid|top-?down|\bPTM|tryp(sin|tic)|\bdigest|histone|acetylom|proteoform|\bDIA\b|SWATH|immunoprecipitation|\bIP-MS|\bAP-MS|BioID|kinase|protein|\bHLA\b|\bMHC\b|antibod|\bPRM\b|\bSRM\b|MS/MS of proteins|deep learning.*spectra|PXD\d+')
+_PROTEOMICS_MODIFICATIONS = re.compile(r'(?i)UNIMOD|\bMOD:|oxidation|carbamidomethyl|phospho|acetyl|TMT|iTRAQ|deamid|methyl')
+PROTEOMICS_FILE_EXTENSIONS = ('.fasta', '.mzid', '.mzidentml', '.pepxml', '.protxml', '.msf', '.pdresult', '.dat', '.blib')
+
+
+def fetch_proxi(session, accession, retries=3):
+    for attempt in range(1, retries + 1):
+        try:
+            r = session.get(PROXI_URL.format(accession), timeout=(10, 60))
+            if r.status_code == 200:
+                return json.loads(r.content.decode("utf-8", errors="replace"))
+            if r.status_code < 500 and r.status_code != 429:
+                return None
+        except (requests.RequestException, ValueError) as e:
+            print(f"PROXI attempt {attempt} failed for {accession}: {e}")
+        time.sleep(min(2 ** attempt, 30))
+    return None
+
+
+def cache_dataset_signals(accession):
+    """(number of proteomics identification files, set of cache sample types) of a dataset."""
+    def query(extra):
+        r = requests.get(CACHE_FILENAME_URL, params={"dataset": accession, "_size": 0, **extra}, timeout=300)
+        r.raise_for_status()
+        return r.json()
+    ext_where = " or ".join(f"filepath like '%{ext}'" for ext in PROTEOMICS_FILE_EXTENSIONS)
+    n_proteomics_files = int(query({"_where": f"({ext_where})"}).get("filtered_table_rows_count") or 0)
+    facet = query({"_facet": "sample_type"}).get("facet_results", {}).get("sample_type", {})
+    sample_types = {str(f.get("value")) for f in facet.get("results", []) if f.get("count")}
+    return n_proteomics_files, sample_types
+
+
+def dataset_class(proxi, n_proteomics_files, sample_types):
+    """'metabolomics', 'proteomics' or 'unclear' for a dataset without GNPS/ReDU metadata."""
+    if not proxi:
+        return 'unclear'
+    def text(entries):
+        return '; '.join(str(e.get('value') or '') for e in entries or [] if isinstance(e, dict))
+    title = str(proxi.get('title') or '')
+    keywords = text(proxi.get('keywords'))
+    summary = str(proxi.get('summary') or '')[:600]
+    modifications = '; '.join(str(m.get('name') or '') + ' ' + str(m.get('value') or '')
+                              for m in proxi.get('modifications') or [] if isinstance(m, dict)
+                              and m.get('accession') != 'MS:1002864')
+    title_keywords = title + ' ; ' + keywords
+    dataset_type = re.search(r'DatasetType:\s*([^;]*)', keywords)
+    dataset_type = dataset_type.group(1).strip() if dataset_type else ''
+    if re.match(r'(?i)metabolomics|other \((.*lipidom|.*metabolom|exposom|xenobiot|pfas|glycomics|np|natural)', dataset_type):
+        return 'metabolomics'
+    if re.match(r'(?i)proteomics|other \((.*prote|.*peptid|hdx|native|intact|.*protein|msp-ms)', dataset_type):
+        return 'proteomics'
+    metabolomics_kw = bool(_METABOLOMICS_TERMS.search(title_keywords))
+    proteomics = n_proteomics_files > 0 or bool(_PROTEOMICS_MODIFICATIONS.search(modifications)) \
+        or bool(_PROTEOMICS_TERMS.search(title_keywords))
+    gnps = 'GNPS' in sample_types or bool(re.search(r'(?i)(^|[^a-z])GNPS', title)) \
+        or bool(re.search(r'(?i)^(MetaboLights|Metabolomics Workbench) (MTBLS|ST)\d+', title))
+    if gnps and not proteomics:
+        return 'metabolomics'
+    if gnps and proteomics:
+        return 'metabolomics' if metabolomics_kw and not (n_proteomics_files or _PROTEOMICS_MODIFICATIONS.search(modifications)) else 'unclear'
+    if metabolomics_kw and not proteomics:
+        return 'metabolomics'
+    if proteomics:
+        return 'proteomics' if not metabolomics_kw else 'unclear'
+    if _PROTEOMICS_TERMS.search(summary) and not _METABOLOMICS_TERMS.search(summary):
+        return 'proteomics'
+    if 'MASSIVE' in sample_types and 'GNPS' not in sample_types and not _METABOLOMICS_TERMS.search(summary):
+        return 'proteomics'
+    if _METABOLOMICS_TERMS.search(summary) and not _PROTEOMICS_TERMS.search(summary) and 'MASSIVE' not in sample_types:
+        return 'metabolomics'
+    return 'unclear'
+
 
 def _dataset_path(dataset, filepath):
     """Returns <dataset>/<filepath>, without doubling the prefix if filepath already has it."""
@@ -198,7 +452,13 @@ def main():
     # Args parse
     parser = argparse.ArgumentParser(description='Download GNPS files')
     parser.add_argument('output_metadata_folder')
+    parser.add_argument('--allowed_terms', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'allowed_terms.json'),
+                        help='allowed terms json (only its column names are used, to recognise ReDU-format sheets)')
+    parser.add_argument('--no_other_sheets', action='store_true', help='only read files named *gnps_metadata.tsv')
     args = parser.parse_args()
+
+    with open(args.allowed_terms) as f:
+        template_keys = set(json.load(f).keys())
 
     # Print message to indicate importing is done
     print("echo Importing Done!")
@@ -219,23 +479,19 @@ def main():
     gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'], errors='coerce')
 
 
-    # Sort the DataFrame by the create time column (missing times first, so they are
-    # only selected when a dataset has no file with a valid create time)
-    gnps_df = gnps_df.sort_values(by='create_time', na_position='first')
-
-    # Group the DataFrame by the dataset column
-    groups = gnps_df.groupby('dataset')
-
-    # Select the row with the highest create time value for each group
-    selected_rows = []
-    for name, group in groups:
-        selected_rows.append(group.iloc[-1])
+    # All *gnps_metadata.tsv files of a dataset, newest first (by create time; missing
+    # times count as oldest): the newest version is read in full, older versions only
+    # add files the newer ones do not describe
+    versions = collections.OrderedDict()
+    for name, group in gnps_df.groupby('dataset'):
+        group = group.sort_values(['create_time', 'filepath'], na_position='first')
+        versions[name] = [_dataset_path(name, fp) for fp in reversed(group['filepath'].tolist())]
 
     # Names of GNPS Files, as dataset-relative paths prefixed with the dataset accession
     # (the cache's filepath column no longer carries the MSV prefix, but the MassIVE
     # download URL needs f.<MSV>/<path>)
-    gnps_list = [_dataset_path(row['dataset'], row['filepath']) for row in selected_rows]
-    print("Total gnps file are ", len(gnps_list))
+    gnps_list = [paths[0] for paths in versions.values()]
+    print("Total gnps file are ", len(gnps_list), f"({sum(len(v) for v in versions.values())} versions)")
     os.system("echo Filepath list generated ... ")
 
     # Get already present github files by listing file paths in the output_metadata_folder
@@ -255,18 +511,7 @@ def main():
     failed_downloads = []
     session = requests.Session()
 
-    # Download files from the links in the gnps_list and store them locally
-    for index, link in enumerate(gnps_list):
-
-        # get parentfolder of path in link
-        msv_id = link.split(os.sep)[0]
-
-        # Check if the files is already present from github
-        if msv_id in existing_files:
-            print(f"File {msv_id} already present in the folder from github!")
-            continue
-
-        print(f"Downloading {link}")
+    def fetch(link):
         content = ftps.download(link)
         if content is not None:
             downloaded_via["FTPS"] += 1
@@ -276,19 +521,115 @@ def main():
                 downloaded_via["HTTP"] += 1
         if content is None:
             failed_downloads.append(link)
-            continue
+        return content
+
+    def save(msv_id, index, content, links):
         # The dataset accession leads the name so the harmonization step can recover it
         # for files that lack a MassiveID column
         file_name = os.path.join(args.output_metadata_folder, f"{msv_id}_{index}_gnps_metadata.tsv")
         file_paths["sys_name"].append(file_name)
-        file_paths["svr_name"].append(link)
-        with open(file_name,'wb') as f:
-            f.write(content) #Downloading
+        file_paths["svr_name"].append(';'.join(links))
+        with open(file_name, 'wb') as f:
+            f.write(content)
+
+    # Download files from the links in the gnps_list and store them locally
+    for index, (msv_id, links) in enumerate(versions.items()):
+
+        # Check if the files is already present from github
+        if msv_id in existing_files:
+            print(f"File {msv_id} already present in the folder from github!")
+            continue
+
+        print(f"Downloading {links[0]}")
+        content = fetch(links[0])
+        if content is None:
+            continue
+        if len(links) == 1:
+            save(msv_id, index, content, links)
+            continue
+
+        # older versions: the newest file is kept as downloaded when they add nothing
+        sheets = []
+        newest = read_sheet(content, links[0])
+        if newest is None:
+            print(f"WARNING: could not parse {links[0]}; older versions are not combined with it")
+            save(msv_id, index, content, links[:1])
+            continue
+        sheets.append((newest, links[0]))
+        for link in links[1:]:
+            print(f"Downloading older version {link}")
+            older = fetch(link)
+            older = read_sheet(older, link) if older is not None else None
+            if older is not None:
+                sheets.append((older, link))
+        combined = combine_versions(sheets, msv_id, template_keys)
+        if combined is None or len(combined) <= len(newest):
+            save(msv_id, index, content, links[:1])
+        else:
+            print(f"{msv_id}: {len(combined) - len(newest)} rows from older versions added to {len(newest)}")
+            save(msv_id, index, combined.to_csv(sep='\t', index=False).encode('utf-8'), [l for _, l in sheets])
+
+    # ReDU-format sheets with other names, in datasets that have no *gnps_metadata.tsv
+    # and no GitHub file
+    if not args.no_other_sheets:
+        try:
+            other = list_cache_files(OTHER_SHEETS_WHERE)
+        except Exception as e:
+            print(f"WARNING: could not list other metadata sheets ({e}); continuing without them")
+            other = pd.DataFrame(columns=["dataset", "filepath", "create_time", "size"])
+        other = other[~other['dataset'].isin(set(versions) | set(existing_files))]
+        extensions = TEMPLATE_SHEET_EXTENSIONS
+        for extension, module in (('.xlsx', 'openpyxl'), ('.xls', 'xlrd')):
+            try:
+                __import__(module)  # pandas needs it to read this Excel format
+            except ImportError:
+                print(f"WARNING: {module} is not installed; {extension} sheets are not checked")
+                extensions = tuple(e for e in extensions if e != extension)
+        other = other[other['filepath'].str.lower().str.endswith(extensions)]
+        other = other[pd.to_numeric(other['size'], errors='coerce').fillna(0) <= MAX_SHEET_BYTES]
+        other['create_time'] = pd.to_datetime(other['create_time'], errors='coerce')
+        print(f"Checking {len(other)} other metadata sheets in {other['dataset'].nunique()} datasets")
+        index = len(versions)
+        n_sheets = collections.Counter()
+        for msv_id, group in other.groupby('dataset'):
+            group = group.sort_values(['create_time', 'filepath'], na_position='first')
+            sheets = []
+            for filepath in reversed(group['filepath'].tolist()):
+                link = _dataset_path(msv_id, filepath)
+                content = fetch(link)
+                df = read_sheet(content, link, template_keys) if content is not None else None
+                if df is None:
+                    n_sheets['unreadable'] += 1
+                elif not is_template_sheet(df, template_keys):
+                    n_sheets['not_redu_format'] += 1
+                else:
+                    sheets.append((df, link))
+            if not sheets:
+                continue
+            try:
+                proxi = fetch_proxi(session, msv_id)
+                n_proteomics_files, sample_types = cache_dataset_signals(msv_id)
+                kind = dataset_class(proxi, n_proteomics_files, sample_types)
+            except Exception as e:
+                print(f"Could not classify {msv_id} ({e}); its sheets are not used")
+                kind = 'unclear'
+            if kind != 'metabolomics':
+                print(f"Skipping ReDU-format sheets of {msv_id}: dataset classified as {kind}")
+                n_sheets[f'redu_format_{kind}_dataset'] += len(sheets)
+                continue
+            combined = combine_versions(sheets, msv_id, template_keys)
+            if combined is None:
+                continue
+            n_sheets['redu_format_used'] += len(sheets)
+            print(f"{msv_id}: {len(combined)} rows from ReDU-format sheets {[l for _, l in sheets]}")
+            save(msv_id, index, combined.to_csv(sep='\t', index=False).encode('utf-8'), [l for _, l in sheets])
+            index += 1
+        print(f"Other metadata sheets: {dict(n_sheets)}")
 
     ftps.close()
     print(f"Downloaded metadata files: {dict(downloaded_via)}")
     if failed_downloads:
-        print(f"WARNING: failed to download {len(failed_downloads)} of {len(gnps_list)} metadata files:")
+        print(f"WARNING: failed to download {len(failed_downloads)} of {len(failed_downloads) + sum(downloaded_via.values())} metadata files:")
         for link in failed_downloads:
             print(f"  {link}")
 

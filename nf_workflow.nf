@@ -397,6 +397,7 @@ process gnpsHarmonize {
     path allowed_terms
     path hpo_csv
     path exposure_csv
+    path names_dmp
 
     output:
     file 'adjusted_metadata_folder'
@@ -414,6 +415,7 @@ process gnpsHarmonize {
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_to_hpo_csv ${hpo_csv} \
     --path_to_exposure_csv ${exposure_csv} \
+    --path_to_ncbi_names_dmp ${names_dmp} \
     || { echo "WARNING: gnpsHarmonize failed or timed out; GNPS rows from earlier runs are kept" >&2; true; }
     """
 }
@@ -616,7 +618,7 @@ workflow {
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
-    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto)
+    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names)
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
     gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
