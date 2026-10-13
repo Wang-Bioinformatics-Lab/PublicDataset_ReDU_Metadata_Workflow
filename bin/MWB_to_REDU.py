@@ -602,6 +602,8 @@ _DISEASE_KEY_RE = r'^(disease|diagnosis|disease state|disease status|disease_sta
 DOID_LOOKUP = {}
 # prepared DOID ontology table; set from --path_to_doid_csv
 DOID_TABLE = None
+# DOID is_a links (DOIDOntologyIndex, ParentDOIDOntologyIndex); set from --path_to_doid_parents_csv
+DOID_PARENTS_CSV = 'none'
 
 
 def build_doid_lookup(doid_table):
@@ -615,6 +617,459 @@ def build_doid_lookup(doid_table):
             if isinstance(name, str) and len(name.strip()) >= 4:
                 names.setdefault(name.strip().lower(), set()).add(f'{label}|{idx}')
     return {name: next(iter(v)) for name, v in names.items() if len(v) == 1}
+
+
+# ---------------------------------------------------------------------------------
+# Study-level disease (Workbench REST 'disease', e.g. "Cancer", "Diabetes") given to
+# the samples of a study's case groups, and HealthStatus 'healthy' to samples of
+# explicitly healthy control groups. Health is decided per individual (Subject ID):
+# one case sample makes all samples of that subject cases. Only fills gaps.
+# ---------------------------------------------------------------------------------
+_DOID_CANCER = 'DOID:162'
+_DOID_INFECTIOUS = 'DOID:0050117'
+# prepared study-level disease of the study being converted (MWB_to_REDU_study_wrapper)
+_STUDY_DISEASE = None
+_DOID_INDEX_CACHE = {}
+_DISEASE_RE_CACHE = {}
+
+# adjectives of single-word disease names ('diabetic' for diabetes)
+_DISEASE_ADJECTIVES = {
+    'diabetes': ['diabetic', 'diabetics'], 'diabetes mellitus': ['diabetic', 'diabetics'], 'obesity': ['obese'],
+    'asthma': ['asthmatic', 'asthmatics'], 'anemia': ['anemic', 'anaemic'], 'autism': ['autistic'],
+    'epilepsy': ['epileptic'], 'schizophrenia': ['schizophrenic'], 'tuberculosis': ['tuberculous'],
+    'psoriasis': ['psoriatic'], 'malaria': ['malarial'], 'hypertension': ['hypertensive'],
+    'arthritis': ['arthritic'], 'cirrhosis': ['cirrhotic'], 'atherosclerosis': ['atherosclerotic'],
+    'ischemia': ['ischemic', 'ischaemic'], 'colitis': ['colitic'], 'neuropathy': ['neuropathic'],
+    'cardiomyopathy': ['cardiomyopathic'], 'glaucoma': ['glaucomatous'], 'cancer': ['cancerous'],
+    'dementia': ['demented'], 'hyperglycemia': ['hyperglycemic'], 'hypoglycemia': ['hypoglycemic'],
+    'steatosis': ['steatotic'], 'preeclampsia': ['preeclamptic'], 'pre eclampsia': ['preeclamptic'],
+}
+# DOID names that are ordinary words in factor values
+_DISEASE_NAME_SKIP = {'all', 'aids', 'cold', 'pain', 'fever', 'shock', 'stress', 'injury', 'disease', 'diseases',
+                      'syndrome', 'disorder', 'infection', 'tumor', 'tumour', 'neoplasm', 'lesion', 'mass', 'growth',
+                      'obese', 'lean', 'aging', 'ageing', 'sick', 'case', 'cases', 'control', 'normal', 'positive',
+                      'negative', 'mild', 'severe', 'acute', 'chronic', 'primary', 'secondary', 'early', 'late',
+                      'stage', 'grade', 'high', 'low', 'type', 'wild type', 'mutant', 'carrier', 'carriers'}
+
+_DIS_NA_VALUES = {'', 'na', 'n a', 'nan', 'none', 'null', 'not applicable', 'not available', 'unknown', 'not specified',
+                  'not reported', 'missing', 'missing value', 'other', 'others', 'unspecified'}
+_DIS_QC_RE = re.compile(r'\b(?:qcs?|pool|pools|pooled|blanks?|standards?|nist|srm|solvent|water|buffer|calibra\w*|'
+                        r'quality controls?|system suitability|process controls?|extraction controls?|method controls?|'
+                        r'reference material|reference sample|internal standards?|tech(?:nical)? rep\w*|matrix blank)\b')
+_DIS_KEY_TISSUE_RE = re.compile(r'\b(?:sample source|sample type|sampletype|sample types|tissue|tissues|tissue type|organ|'
+                                r'organs|matrix|specimen|specimens|histology|biospecimen|material|body site|sample matrix|'
+                                r'biofluid|fluid)\b')
+_DIS_KEY_IGNORE_RE = re.compile(r'\b(?:time|times|timepoint|timepoints|day|days|week|weeks|month|months|hour|hours|hr|'
+                                r'hrs|h|min|mins|minutes|age|ages|sex|gender|batch|order|replicate|replicates|rep|run|'
+                                r'plate|well|position|weight|bmi|race|ethnicity|ethnic|smoking|smoker|smoke|diet|diets|'
+                                r'concentration|conc|dose|dosage|volume|tracer|labeling|labelling|label|isotope|isotopic|'
+                                r'medium|media|extraction|polarity|mode|instrument|date|year|years|site|location|region|'
+                                r'country|center|centre|visit|fraction|injection|id|ids|raw|file|filename|height|length|'
+                                r'ph|temperature|vial|tube|storage|cell|cells|line|lines|clone|organoid|organoids|culture|'
+                                r'passage|zt|zeitgeber|compartment|ionization|column|sequence|well|bed|room|cage|tank|'
+                                r'pen|farm|family|sibling|twin|mother|father|maternal|paternal|offspring|parity)\b')
+_DIS_KEY_STRICT_RE = re.compile(r'\b(?:disease|diseases|diagnosis|diagnoses|diagnosed|health|healthy|case|cases|'
+                                r'casestatus|patient|patients|clinical|pathology|pathological|disorder|infection|'
+                                r'infected|illness)\b')
+_DIS_KEY_TREAT_RE = re.compile(r'\b(?:treatment|treatments|treated|treat|drug|drugs|exposure|exposed|intervention|'
+                               r'interventions|compound|compounds|stimulus|stimulation|genotype|genotypes|strain|strains|'
+                               r'knockout|transgene|transgenic|mutation|mutations|mutant|operation|surgery|inhibitor|'
+                               r'agent|irradiation|radiation|protocol|vaccine|vaccination|infusion|supplement|'
+                               r'supplementation|challenge|transfection|overexpression|knockdown|variant|allele)\b')
+
+# groups that are neither cases of the study disease nor healthy (other patients, risk
+# groups, benign lesions, recovered individuals, test-negative individuals)
+_DIS_OTHER_RE = re.compile(r'\b(?:disease controls?|patient controls?|hospital controls?|symptomatic controls?|'
+                           r'other diseases?|non \w+ patients?|non\w+ patients?|pre ?diabet\w*|pre ?cancer\w*|'
+                           r'pre ?malignan\w*|pre ?neoplas\w*|pre ?symptomatic|borderline|benign|polyps?|'
+                           r'adenomas?|dysplas\w*|at risk|high risk|risk|suspected|suspect|possible|probable|remission|'
+                           r'recovered|recovering|recovery|convalescen\w*|survivors?|history|former|resolved|cured|'
+                           r'unhealthy|non ?healthy|carriers?|exposed|contacts?|relatives?|siblings?|'
+                           r'unaffected relatives?|latent|prone|susceptible|discharged|survived|deceased|died|exitus)\b')
+# 'negative' that is about the measurement, not a test result
+_DIS_NOT_STATUS_RE = re.compile(r'\b(?:mode|ion|ions|esi|hilic|rp|c18|lipidomics|polarity|scaffold|control|controls)\b')
+_DIS_MOCK_RE = re.compile(r'\b(?:mock|sham|placebo)\b')
+_DIS_PLAIN_CONTROL_RE = re.compile(r'(?:the )?(?:controls?|ctrls?|ctl|ctr|ctrl group|con|cont|hc|hcs|nc|normal|normals|'
+                                   r'normal controls?|nondiseased|non diseased)'
+                                   r'(?: (?:group|groups|subjects?|individuals?|samples?|participants?|cohort|population|'
+                                   r'people|persons?|volunteers?|donors?|mice|mouse|animals?|rats?|dogs?|women|men|'
+                                   r'children|adults?))?(?: ?\d{1,3})?')
+_DIS_MODEL_RE = re.compile(r'\b(?:wild ?type|wt|vehicle|veh|untreated|non ?treated|baseline|ambient|normoxi\w*|chow|'
+                           r'naive|dmso|pbs|saline|unstimulated|diet|scrambled|scr|empty vector|knock ?out|ko|transgenic|'
+                           r'treated|treatment|drug|dose|vector|sham|mock|placebo|pre|post|before|after|day|week|'
+                           r'month|time|timepoint|surgery|operated|injected|exposure|exposed|air|water|food)\b')
+_DIS_HEALTHY_RE = re.compile(r'(?<!un)(?<!non )(?<!non)(?<!not )\b(?:healthy|healty|heatlhy|helathy|healthly|heathy|'
+                             r'disease ?free|free of disease|non ?diseased|'
+                             r'normal (?:subjects?|volunteers?|individuals?|donors?|participants?|people|persons?|'
+                             r'adults?|children|child|women|men|cohort|population))\b')
+_DIS_HEALTHY_TISSUE_RE = re.compile(r'(?<!un)(?<!non )(?<!non)\b(?:healthy|healty|heatlhy) (?:mouse|mice|rats?|donors?|'
+                                    r'subjects?|volunteers?|individuals?|controls?|people|persons?|participants?|'
+                                    r'dogs?|animals?|humans?|adults?|children|women|men|cohort)\b')
+# values describing a treatment, not the individual's health
+_DIS_TREATED_RE = re.compile(r'\b(?:treated|treatment|injected|injection|dose|dosed|mg|kg|ug|um|nm|mm|exposed|exposure|'
+                             r'infused|fed|diet|drug|vehicle|dmso|stimulated|transfected|knock ?out|ko)\b')
+_DIS_CASE_WORD_RE = re.compile(r'\b(?:patients?|cases?|diseased?|affected|sick|ill)\b')
+_DIS_HUMAN_CASE_WORD_RE = re.compile(r'\b(?:patients?|cases?)\b')
+_DIS_CANCER_WORD_RE = re.compile(r'\b(?:tumou?rs?|tumou?ral|intratumou?ral|tumou?r ?bearing|cancers?|cancerous|carcinomas?|'
+                                 r'adenocarcinomas?|malignan\w*|metasta\w*|neoplas\w*|sarcomas?|lymphomas?|leuka?emi\w*|'
+                                 r'melanomas?|gliomas?|glioblastomas?|\w+blastomas?|myelomas?|mesotheliomas?|xenografts?)\b')
+# samples of cultured / isolated cells, organoids or media: not an individual's sample
+_DIS_CULTURE_RE = re.compile(r'\b(?:cells?|cell lines?|cultures?|cultured|organoids?|spheroids?|lysates?|supernatants?|'
+                             r'media|medium|ipscs?|hipscs?|fibroblasts?|macrophages?|monocytes?|lymphocytes?|pbmcs?|'
+                             r'neurons?|hepatocytes?|astrocytes?|microglia|myotubes?|explants?|in vitro|exosomes?|'
+                             r'extracellular vesicles?|evs?|mitochondria|organelles?|tdcls?)\b')
+# patient tissue next to a tumour ('adjacent normal', 'Normal area of the pancreas with tumor')
+_DIS_ADJACENT_RE = re.compile(r'\b(?:adjacent|paired normal|matched normal|para ?(?:carcinoma|cancer|tumou?r)\w*|'
+                              r'paracancerous|peri ?tumou?r\w*|distant normal|normal\b.*\bwith\b)\b')
+_DIS_INFECTION_WORD_RE = re.compile(r'\b(?:infected|infection|infections|infested|infestation)\b')
+_DIS_POSITIVE_RE = re.compile(r'\bpositive\b|\bpos\b|\+$')
+
+
+def _norm_doid_name(name):
+    return _norm_value(name).replace('+', ' ').strip()
+
+
+def _doid_index(doid_table, path_to_csvs):
+    """Name, label and hierarchy indexes of the DOID table (cached)."""
+    key = (id(doid_table), len(doid_table), str(path_to_csvs))
+    if key in _DOID_INDEX_CACHE:
+        return _DOID_INDEX_CACHE[key]
+    names, norm_names, labels, id_names = {}, {}, {}, {}
+    for idx, label, syn in doid_table[['DOIDOntologyIndex', 'Label', 'Synonym']].itertuples(index=False):
+        if not isinstance(label, str) or not isinstance(idx, str) or label.lower().startswith('obsolete'):
+            continue
+        labels[idx] = label
+        for name in {label, syn}:
+            if isinstance(name, str) and name.strip():
+                names.setdefault(name.strip().lower(), set()).add(idx)
+                n = _norm_doid_name(name)
+                norm_names.setdefault(n, set()).add(idx)
+                id_names.setdefault(idx, set()).add(n)
+    children = {}
+    try:
+        if DOID_PARENTS_CSV == 'none':
+            raise FileNotFoundError('no --path_to_doid_parents_csv given')
+        parents = pd.read_csv(DOID_PARENTS_CSV, dtype=str)
+        for child, parent in parents[['DOIDOntologyIndex', 'ParentDOIDOntologyIndex']].itertuples(index=False):
+            children.setdefault(parent, set()).add(child)
+    except Exception as e:
+        print(f"Could not read the DOID hierarchy: {type(e).__name__}: {e}")
+    aliases = {}
+    try:
+        al = pd.read_csv(os.path.join(path_to_csvs, 'MWB_disease_aliases.csv'), dtype=str, keep_default_na=False)
+        for mwb, redu in al[['MWB', 'REDU']].itertuples(index=False):
+            aliases[mwb.strip().lower()] = redu.strip()
+    except Exception as e:
+        print(f"Could not read the disease aliases: {type(e).__name__}: {e}")
+    label_ids = {}
+    for idx, label in labels.items():
+        label_ids.setdefault(label.lower(), set()).add(idx)
+    index = {'names': names, 'norm_names': norm_names, 'labels': labels, 'id_names': id_names,
+             'children': children, 'aliases': aliases, 'label_ids': label_ids, 'desc': {}}
+    _DOID_INDEX_CACHE.clear()
+    _DOID_INDEX_CACHE[key] = index
+    return index
+
+
+def _doid_descendants(index, doid):
+    """doid and all its DOID subclasses."""
+    if doid not in index['desc']:
+        seen, todo = {doid}, [doid]
+        while todo:
+            for c in index['children'].get(todo.pop(), ()):
+                if c not in seen:
+                    seen.add(c)
+                    todo.append(c)
+        index['desc'][doid] = seen
+    return index['desc'][doid]
+
+
+def mwb_disease_categories(disease_json):
+    """Disease categories of a Workbench REST 'disease' response; 'A; B' gives two."""
+    if isinstance(disease_json, dict):
+        disease_json = [disease_json] if 'Disease' in disease_json else list(disease_json.values())
+    if not isinstance(disease_json, list):
+        return []
+    out = []
+    for item in disease_json:
+        if isinstance(item, dict) and isinstance(item.get('Disease'), str):
+            for name in item['Disease'].split(';'):
+                name = re.sub(r'\s+', ' ', name).strip()
+                if name and name not in out:
+                    out.append(name)
+    return out
+
+
+def _disease_name_regex(index, doid):
+    """Regex for the names (labels, exact synonyms, adjectives) of doid and its subclasses."""
+    if doid in _DISEASE_RE_CACHE:
+        return _DISEASE_RE_CACHE[doid]
+    names = set()
+    for d in _doid_descendants(index, doid):
+        for n in index['id_names'].get(d, ()):
+            names.add(n)
+            names.update(_DISEASE_ADJECTIVES.get(n, []))
+    names = {n for n in names if len(n) >= 3 and n not in _DISEASE_NAME_SKIP and not n.isdigit()}
+    rx = None
+    if names:
+        rx = re.compile(r'(?<![a-z0-9])(?:' + '|'.join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+                        + r')(?![a-z0-9])')
+    _DISEASE_RE_CACHE[doid] = rx
+    return rx
+
+
+def prepare_study_disease(raw_names, doid_table, path_to_csvs='translation_sheets'):
+    """DOID terms of a study's disease categories (exact label/exact synonym, or an
+    exact-meaning alias from MWB_disease_aliases.csv). Categories without a DOID
+    term are skipped. Returns None if no category has one."""
+    if doid_table is None or len(doid_table) == 0 or not raw_names:
+        return None
+    index = _doid_index(doid_table, path_to_csvs)
+    cats, skipped = [], []
+    for raw in raw_names:
+        low = raw.strip().lower()
+        if low in index['aliases']:
+            target = index['aliases'][low]
+            ids = index['label_ids'].get(target.lower(), set()) if target else set()
+        else:
+            ids = index['names'].get(low, set())
+        if len(ids) != 1:
+            skipped.append(raw)
+            continue
+        doid = next(iter(ids))
+        if doid == 'DOID:4' or any(c['id'] == doid for c in cats):
+            continue
+        desc = _doid_descendants(index, doid)
+        cats.append({'raw': raw, 'id': doid, 'label': index['labels'][doid], 'desc': desc,
+                     'cancer': doid in _doid_descendants(index, _DOID_CANCER),
+                     'infectious': doid in _doid_descendants(index, _DOID_INFECTIOUS),
+                     'name_re': _disease_name_regex(index, doid)})
+    if skipped:
+        print(f"Study disease categories without a DOID term: {skipped}")
+    if not cats:
+        return None
+    return {'cats': cats, 'index': index}
+
+
+def _pick_disease(study, cat_ids, specific):
+    """'label|DOID' for a case: the specific term, else the single (deepest) category."""
+    index = study['index']
+    if len(specific) == 1:
+        d = next(iter(specific))
+        return f"{index['labels'][d]}|{d}"
+    cats = [c for c in study['cats'] if c['id'] in cat_ids]
+    # keep the deepest of nested categories ('Cancer' and 'Lung cancer' -> lung cancer)
+    deepest = [c for c in cats if all(c['id'] in o['desc'] for o in cats)]
+    if len(deepest) == 1:
+        return f"{deepest[0]['label']}|{deepest[0]['id']}"
+    return None
+
+
+def _disease_key_class(key):
+    k = _norm_key(key)
+    if not k:
+        return 'ignore'
+    if _DIS_KEY_TISSUE_RE.search(k):
+        return 'tissue'
+    if _DIS_KEY_IGNORE_RE.search(k):
+        return 'ignore'
+    if _DIS_KEY_STRICT_RE.search(k):
+        return 'strict'
+    if _DIS_KEY_TREAT_RE.search(k):
+        return 'treat'
+    return 'group'
+
+
+def classify_disease_value(value, key_class, study, key=''):
+    """Class of one factor value: ('case', category ids, specific DOID ids), ('healthy',),
+    ('control',) (plain 'Control', healthy only in context), ('otherdis',) (other patients,
+    risk groups, ...), ('other',), ('qc',) or ('na',)."""
+    v = _norm_value(value)
+    if v in _DIS_NA_VALUES or v.replace(' ', '').isdigit():
+        return ('na',)
+    if qc_sample_type(key, value) or _DIS_QC_RE.search(v):
+        return ('qc',)
+    cats, index = study['cats'], study['index']
+    all_ids = {c['id'] for c in cats}
+    if _DIS_MOCK_RE.search(v):
+        return ('other',)
+    if key_class == 'tissue':
+        cancer_ids = {c['id'] for c in cats if c['cancer']}
+        if cancer_ids and _DIS_ADJACENT_RE.search(v):
+            return ('case', cancer_ids, set())
+    # 'non-diabetic', 'tumor-free', 'without asthma', 'uninfected': explicitly without the disease
+    vn = v.replace('+', ' ').strip()
+    neg = re.match(r'^(?:non|un|not|no|without|free of)\s?(.*)$', vn)
+    free = re.match(r'^(.*?)\s?free(?: (?:subjects?|individuals?|controls?|mice|group|volunteers?|participants?))?$', vn)
+    def _names_disease(text, full):
+        m = (lambda rx: rx.fullmatch(text)) if full else (lambda rx: rx.match(text))
+        return any(c['name_re'] is not None and m(c['name_re']) for c in cats) \
+            or (any(c['cancer'] for c in cats) and m(_DIS_CANCER_WORD_RE)) \
+            or (any(c['infectious'] for c in cats) and m(re.compile(r'(?:infected|infection)'))) \
+            or m(re.compile(r'(?:diseased?|affected)'))
+    for rest in [m.group(1) for m in (neg, free) if m]:
+        rest = re.sub(r' (?:controls?|subjects?|individuals?|mice|group|volunteers?|participants?|donors?|women|men|'
+                      r'children|adults?)$', '', rest).strip()
+        if not rest or _DIS_OTHER_RE.search(rest) or _DIS_CASE_WORD_RE.search(rest):
+            continue
+        if key_class == 'tissue' or rest.startswith('malignan'):
+            # non-tumour tissue / non-malignant: not a statement about a healthy individual
+            if _names_disease(rest, full=False):
+                return ('other',) if key_class == 'tissue' else ('otherdis',)
+            continue
+        if _names_disease(rest, full=True):
+            return ('healthy',)
+    # 'patients without CKD', 'participant without the virus infection': not cases
+    for m in re.finditer(r'\b(?:(?:without|w o|no|not|free of)\s+|non\s?)(?:the |any |a )?(.+)$', vn):
+        if _names_disease(m.group(1), full=False):
+            return ('otherdis',)
+    if _DIS_OTHER_RE.search(v) or (re.search(r'\bnegative\b', v) and not _DIS_NOT_STATUS_RE.search(v)):
+        return ('otherdis',)
+    # exact DOID name, possibly with 'patients'/'group' around it
+    forms = {vn, re.sub(r'\s*(?:patients?|cases?|group|subjects?|individuals?|samples?|cohort|mice|tissues?)$', '', vn),
+             re.sub(r'^(?:patients? with|subjects? with|individuals? with)\s*', '', vn)}
+    for f in forms:
+        ids = index['norm_names'].get(f, set()) - {'DOID:4'}
+        if len(ids) == 1 and f not in _DISEASE_NAME_SKIP:
+            d = next(iter(ids))
+            under = {c['id'] for c in cats if d in c['desc']}
+            if under:
+                return ('case', under, {d} if d not in all_ids else set())
+            # another disease; short abbreviations ('con', 'dss') are too ambiguous to tell
+            if len(f) >= 5:
+                return ('otherdis',)
+    hit = {c['id'] for c in cats if c['name_re'] is not None and c['name_re'].search(v)}
+    if any(c['cancer'] for c in cats) and _DIS_CANCER_WORD_RE.search(v):
+        hit |= {c['id'] for c in cats if c['cancer']}
+    if any(c['infectious'] for c in cats) and _DIS_INFECTION_WORD_RE.search(v):
+        hit |= {c['id'] for c in cats if c['infectious']}
+    if _DIS_CASE_WORD_RE.search(v):
+        hit |= all_ids
+    if not hit and _DIS_POSITIVE_RE.search(v):
+        k = _norm_value(key)
+        if any(c['name_re'] is not None and c['name_re'].search(k) for c in cats) or \
+                (any(c['infectious'] for c in cats) and _DIS_INFECTION_WORD_RE.search(k)):
+            hit = all_ids
+    if hit:
+        return ('case', hit, set())
+    if len(v) <= 60 and not _DIS_TREATED_RE.search(v):
+        if key_class == 'tissue':
+            if _DIS_HEALTHY_TISSUE_RE.search(v):
+                return ('healthy',)
+        elif _DIS_HEALTHY_RE.search(v):
+            return ('healthy',)
+    if _DIS_PLAIN_CONTROL_RE.fullmatch(v):
+        return ('control',)
+    return ('other',)
+
+
+def study_disease_assignment(df, study):
+    """Per sample ('filename'): (HealthStatus, 'DOID label|DOID id' or None) from the
+    study-level disease. df has one row per sample factor (filename, Key, Value,
+    SubjectIdentifierAsRecorded). Returns {filename: (health, doid)}; health is
+    'unhealthy (NOS)', 'healthy' or 'healthy if human'."""
+    if study is None or len(df) == 0:
+        return {}
+    rows = df[['filename', 'Key', 'Value']].dropna(subset=['filename']).copy()
+    rows['Key'] = rows['Key'].astype(str).str.strip().str.lower()
+    rows['Value'] = rows['Value'].astype(str).str.strip().str.lower()
+    rows = rows.drop_duplicates()
+    rows['kc'] = rows['Key'].map(_disease_key_class)
+    rows = rows[rows['kc'] != 'ignore']
+    if len(rows) == 0:
+        return {}
+    cls = {}
+    for key, kc, val in rows[['Key', 'kc', 'Value']].drop_duplicates().itertuples(index=False):
+        cls[(key, val)] = classify_disease_value(val, kc, study, key=key)
+    # plain 'Control' is a healthy control only under a disease-status key, or when every
+    # other group of that factor is a case group (in treatment/tissue factors: a human
+    # study or a 'patient'/'case' group)
+    control_ok = {}
+    for (key, kc), g in rows.groupby(['Key', 'kc']):
+        vals = set(g['Value'])
+        kinds = [cls[(key, v)][0] for v in vals]
+        has_case = 'case' in kinds
+        pure = all(k in ('case', 'control', 'healthy', 'qc', 'na') for k in kinds)
+        human_case = any(cls[(key, v)][0] == 'case' and _DIS_HUMAN_CASE_WORD_RE.search(v) for v in vals)
+        if kc == 'strict':
+            control_ok[key] = 'healthy'
+        elif kc == 'group':
+            control_ok[key] = 'healthy' if has_case and pure else None
+        else:
+            if has_case and pure and human_case:
+                control_ok[key] = 'healthy'
+            elif has_case and pure and kc == 'treat':
+                control_ok[key] = 'healthy if human'
+            else:
+                control_ok[key] = None
+    # per sample
+    per_sample = {}
+    cultured = set(rows.loc[(rows['kc'] == 'tissue') & rows['Value'].map(lambda x: bool(_DIS_CULTURE_RE.search(_norm_value(x)))),
+                            'filename'])
+    for fn, g in rows.groupby('filename'):
+        if fn in cultured:
+            continue
+        case_ids, specific, healthy, otherdis, case = set(), set(), None, False, False
+        for key, val in g[['Key', 'Value']].itertuples(index=False):
+            c = cls[(key, val)]
+            if c[0] == 'case':
+                case = True
+                case_ids |= c[1]
+                specific |= c[2]
+            elif c[0] == 'healthy':
+                healthy = 'healthy'
+            elif c[0] == 'control' and control_ok.get(key):
+                healthy = healthy or control_ok[key]
+            elif c[0] == 'otherdis':
+                otherdis = True
+        if case and healthy:
+            per_sample[fn] = ('conflict',)
+        elif case:
+            per_sample[fn] = ('case', case_ids, specific)
+        elif healthy and not otherdis:
+            per_sample[fn] = ('healthy', healthy)
+        elif otherdis:
+            per_sample[fn] = ('otherdis',)
+    # per individual
+    subj = df[['filename', 'SubjectIdentifierAsRecorded']].dropna(subset=['filename']).copy() \
+        if 'SubjectIdentifierAsRecorded' in df.columns else pd.DataFrame(columns=['filename', 'SubjectIdentifierAsRecorded'])
+    subj['sid'] = subj['SubjectIdentifierAsRecorded'].fillna('').astype(str).str.strip().str.lower()
+    subj = subj[~subj['sid'].isin(['', '-', 'na', 'n/a', 'nan', 'none'])].drop_duplicates(['filename', 'sid'])
+    # a sample listed under several Subject IDs is judged alone
+    subj = subj[~subj['filename'].duplicated(keep=False)]
+    out = {}
+    done = set()
+    for sid, g in subj.groupby('sid'):
+        files = list(g['filename'])
+        if len(files) < 2:
+            continue
+        states = [per_sample.get(f, ('none',)) for f in files]
+        kinds = {s[0] for s in states}
+        done.update(files)
+        if 'case' in kinds:
+            ids = set().union(*[s[1] for s in states if s[0] == 'case'])
+            spec = set().union(*[s[2] for s in states if s[0] == 'case'])
+            doid = _pick_disease(study, ids, spec)
+            if 'healthy' in kinds or 'conflict' in kinds:
+                # contradicting group labels for one Subject ID: only the case samples
+                for f, s in zip(files, states):
+                    if s[0] == 'case':
+                        out[f] = ('unhealthy (NOS)', doid)
+            else:
+                for f in files:
+                    out[f] = ('unhealthy (NOS)', doid)
+        elif 'healthy' in kinds and not kinds & {'otherdis', 'conflict'}:
+            h = 'healthy' if any(s[0] == 'healthy' and s[1] == 'healthy' for s in states) else 'healthy if human'
+            for f in files:
+                out[f] = (h, None)
+    for f, s in per_sample.items():
+        if f in done:
+            continue
+        if s[0] == 'case':
+            out[f] = ('unhealthy (NOS)', _pick_disease(study, s[1], s[2]))
+        elif s[0] == 'healthy':
+            out[f] = (s[1], None)
+    return {f: r for f, r in out.items() if f not in cultured}
 
 
 _COUNTRY_ALIASES = {
@@ -1724,6 +2179,20 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         for col in ['MWB_depth', 'MWB_collection_date', 'MWB_healthy', 'MWB_doid', 'MWB_lifestage']:
             if col in df.columns:
                 df = df.drop(columns=[col])
+    # study-level disease for the samples of case groups and healthy-control groups
+    # (filled in translate_MWB_to_REDU_by_logic where nothing per-sample was found)
+    df['MWB_study_health'] = None
+    df['MWB_study_doid'] = None
+    if _STUDY_DISEASE is not None:
+        try:
+            _assigned = study_disease_assignment(df, _STUDY_DISEASE)
+            if _assigned:
+                df['MWB_study_health'] = df['filename'].map(lambda f: _assigned.get(f, (None, None))[0])
+                df['MWB_study_doid'] = df['filename'].map(lambda f: _assigned.get(f, (None, None))[1])
+        except Exception as e:
+            print(f"Could not assign the study-level disease: {type(e).__name__}: {e}")
+            df['MWB_study_health'] = None
+            df['MWB_study_doid'] = None
     df['LatitudeandLongitude'] = df.apply(
         lambda x: f'{x.Latitude}|{x.Longitude}' if x.Latitude is not None and x.Longitude is not None and not np.isnan(
             x.Latitude) and not np.isnan(x.Longitude) else None, axis=1)
@@ -2374,6 +2843,28 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
                 doid = MWB_table.loc[fill, 'MWB_doid'].astype(str).str.split('|')
                 MWB_table.loc[fill, 'DOIDCommonName'] = doid.str[0]
                 MWB_table.loc[fill, 'DOIDOntologyIndex'] = doid.str[1]
+        if 'MWB_study_health' in MWB_table.columns:
+            # study-level disease: whole organisms only (no cultures, blanks, QC), and
+            # never against a per-sample HealthStatus / DOIDCommonName
+            organism = MWB_table['SampleType'].astype(str).isin(['animal', 'plant']) \
+                if 'SampleType' in MWB_table.columns else pd.Series(False, index=MWB_table.index)
+            if 'SUBJECT_TYPE' in MWB_table.columns:
+                organism &= ~MWB_table['SUBJECT_TYPE'].astype(str).str.contains(r'cell|cultur|synthetic|water', case=False)
+            study_h = MWB_table['MWB_study_health']
+            human = MWB_table['NCBITaxonomy'].astype(str).str.startswith('9606|') \
+                if 'NCBITaxonomy' in MWB_table.columns else pd.Series(False, index=MWB_table.index)
+            study_h = study_h.where(study_h != 'healthy if human', np.where(human, 'healthy', None))
+            h_missing, d_missing = _is_missing('HealthStatus'), _is_missing('DOIDCommonName')
+            current_h = MWB_table['HealthStatus'].astype(str)
+            case = organism & (study_h == 'unhealthy (NOS)') & (h_missing | (current_h != 'healthy'))
+            MWB_table.loc[case & h_missing, 'HealthStatus'] = 'unhealthy (NOS)'
+            fill = case & d_missing & MWB_table['MWB_study_doid'].notna()
+            if fill.any():
+                doid = MWB_table.loc[fill, 'MWB_study_doid'].astype(str).str.split('|')
+                MWB_table.loc[fill, 'DOIDCommonName'] = doid.str[0]
+                MWB_table.loc[fill, 'DOIDOntologyIndex'] = doid.str[1]
+            healthy = organism & (study_h == 'healthy') & h_missing & d_missing
+            MWB_table.loc[healthy, 'HealthStatus'] = 'healthy'
         if 'MWB_depth' in MWB_table.columns:
             MWB_table['DepthorAltitudeMeters'] = MWB_table['MWB_depth']
         # study-level SUBJECT GENDER / AGE_OR_AGE_RANGE, only for studies without any
@@ -2557,6 +3048,22 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
     global _STUDY_N_MS_ANALYSES
     _STUDY_N_MS_ANALYSES = sum(1 for a in stdy_info.values() if isinstance(a, dict) and a.get('analysis_type') == 'MS')
+
+    # curated study-level disease category ('Cancer', 'Diabetes', ...); a missing or
+    # unreadable answer only means no study-level disease
+    global _STUDY_DISEASE
+    _STUDY_DISEASE = None
+    try:
+        _doid_full = kwargs.get('DOIDOntologyIndex_table')
+        if _doid_full is None:
+            _doid_full = DOID_TABLE
+        if _doid_full is not None and len(_doid_full):
+            _dis = _mwb_get(f'https://www.metabolomicsworkbench.org/rest/study/study_id/{str(study_id)}/disease').json()
+            _STUDY_DISEASE = prepare_study_disease(mwb_disease_categories(_dis), _doid_full, path_to_csvs)
+            if _STUDY_DISEASE is not None:
+                print(f"Study disease: {[c['label'] for c in _STUDY_DISEASE['cats']]}")
+    except Exception as e:
+        print(f"No study-level disease: {type(e).__name__}: {e}")
 
     redu_dfs = []
     for analysis_id, analysis_details in stdy_info.items():
@@ -2827,6 +3334,7 @@ if __name__ == '__main__':
     parser.add_argument("--duplicate_raw_file_handling", "-duplStrat", type=str, help="What should be done with duplicate filenames across studies? Can be 'keep_pols_dupl' to keep cases where files can be distinguished by their polarity or 'remove_duplicates' to only keep cases where files can be assigned unambiguously (i.e. cases with only one analysis per study_id)(optional)", default='remove_duplicates')
     parser.add_argument("--path_to_polarity_info", type=str, help="Path to the polarity file.", default='none')
     parser.add_argument("--path_to_doid_csv", type=str, help="Prepared DOID ontology csv (optional); enables exact disease-name matching", default='none')
+    parser.add_argument("--path_to_doid_parents_csv", type=str, help="DOID is_a links from prepare_ontologies.py (optional); enables the most specific disease term", default='none')
 
     print('Starting MWB2REDU script,..')
 
@@ -2849,6 +3357,7 @@ if __name__ == '__main__':
     # Read polarity file
     polarity_table = pd.read_csv(args.path_to_polarity_info)
 
+    DOID_PARENTS_CSV = args.path_to_doid_parents_csv
     if args.path_to_doid_csv != 'none':
         DOID_TABLE = pd.read_csv(args.path_to_doid_csv, dtype=str)
         DOID_LOOKUP = build_doid_lookup(DOID_TABLE)

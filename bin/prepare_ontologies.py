@@ -99,6 +99,25 @@ def get_uberon_table(owl_path):
 
 
 
+def get_doid_parents(owl_path):
+    """Direct is_a links between DOID classes (used to pick the most specific disease term):
+    asserted subclass links plus the genus of equivalent-class definitions (e.g.
+    adenocarcinoma = cancer and has_material_basis_in ..., so adenocarcinoma is_a cancer)."""
+    onto = owlready2.World().get_ontology(owl_path).load()
+    rows = []
+    for cls in onto.classes():
+        if not cls.name.startswith('DOID_') or True in getattr(cls, 'deprecated', []):
+            continue
+        parents = list(cls.is_a)
+        for definition in cls.equivalent_to:
+            parents += list(getattr(definition, 'Classes', []))
+        for parent in parents:
+            name = getattr(parent, 'name', None)
+            if isinstance(name, str) and name.startswith('DOID_') and name != cls.name:
+                rows.append({'DOIDOntologyIndex': cls.name.replace('_', ':'), 'ParentDOIDOntologyIndex': name.replace('_', ':')})
+    return pd.DataFrame(rows, columns=['DOIDOntologyIndex', 'ParentDOIDOntologyIndex']).drop_duplicates()
+
+
 def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex'):
     # Each ontology gets its own owlready2 World: in the shared default world, classes an
     # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
@@ -199,6 +218,7 @@ if __name__ == '__main__':
     print('Processing disease ontology,..')
     doid_ontology_table = get_ontology_table(args.path_to_doid_owl, ont_prefix = 'DOID_', index_column_name = 'DOIDOntologyIndex')
     doid_ontology_table['DOIDOntologyIndex'] = doid_ontology_table['DOIDOntologyIndex'].str.replace('_', ':')
+    doid_parents_table = get_doid_parents(args.path_to_doid_owl)
 
 
 
@@ -230,6 +250,7 @@ if __name__ == '__main__':
 
     uberon_ontology_table.to_csv('UBERON_CL_PO_ontology.csv', index=False)
     doid_ontology_table.to_csv('DOID_ontology.csv', index=False)
+    doid_parents_table.to_csv('DOID_parents.csv', index=False)
     hpo_ontology_table.to_csv('HPO_ontology.csv', index=False)
     exposure_ontology_table.to_csv('Exposure_ontology.csv', index=False)
     envBiome_onto.to_csv('ENVO_biome_ontology.csv', index=False)

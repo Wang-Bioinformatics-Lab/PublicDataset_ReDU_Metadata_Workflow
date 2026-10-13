@@ -131,6 +131,7 @@ process mwbRun {
     path ncbi_rank_division
     path allowed_terms
     path doid_csv
+    path doid_parents_csv
 
     output:
     file 'REDU_from_MWB_all.tsv'
@@ -147,6 +148,7 @@ process mwbRun {
     --path_ncbi_rank_division ${ncbi_rank_division} \
     --path_to_polarity_info $DATA_FOLDER/MWB_polarity_table.csv \
     --path_to_doid_csv ${doid_csv} \
+    --path_to_doid_parents_csv ${doid_parents_csv} \
     || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; }
     """
 }
@@ -207,6 +209,7 @@ process mlRun {
     path ncbi_rank_division
     path allowed_terms
     path doid_csv
+    path doid_parents_csv
 
     output:
     file 'Metabolights2REDU_ALL.tsv'
@@ -222,6 +225,7 @@ process mlRun {
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
     --path_to_doid_csv ${doid_csv} \
+    --path_to_doid_parents_csv ${doid_parents_csv} \
     || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; }
     """
 }
@@ -350,6 +354,7 @@ process prepare_ontologies {
     path 'NCBI_Rank_Division.csv'
     path 'HPO_ontology.csv'
     path 'Exposure_ontology.csv'
+    path 'DOID_parents.csv'
 
     """
     python $TOOL_FOLDER/prepare_ontologies.py \
@@ -590,7 +595,7 @@ workflow {
 
     //  Reference data, then ontologies
     ref = fetchReferenceData()
-    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, hpo_onto, exposure_onto) = prepare_ontologies(
+    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, hpo_onto, exposure_onto, doid_parents) = prepare_ontologies(
         ref.uberon, ref.cl, ref.po, ref.doid, ref.biome, ref.material,
         ref.nodes, ref.division, ref.hp, ref.ecto, ref.peco)
     allowed_terms = updateAllowedTerms(
@@ -609,12 +614,12 @@ workflow {
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch, allowed_terms)
 
     // Metabolomics Workbench
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto)
+    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents)
     mwb_files_ch = mwbFiles(1)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto)
+    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents)
     ml_files_ch = mlFiles(1)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 

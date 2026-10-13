@@ -1,0 +1,42 @@
+alias,DOIDCommonName,note
+insulin resistance,,DOID lists it as a synonym of type 2 diabetes mellitus; not the same condition
+type 1 diabetes,type 1 diabetes mellitus,
+t1d,type 1 diabetes mellitus,abbreviation
+t1dm,type 1 diabetes mellitus,abbreviation
+t2d,type 2 diabetes mellitus,abbreviation
+t2dm,type 2 diabetes mellitus,abbreviation
+gdm,gestational diabetes,abbreviation (DOID synonym)
+covid,COVID-19,
+hcc,hepatocellular carcinoma,abbreviation
+crc,colorectal cancer,abbreviation
+copd,chronic obstructive pulmonary disease,abbreviation (DOID synonym)
+ibd,inflammatory bowel disease,abbreviation (DOID lists IBD under irritable bowel syndrome)
+ibs,irritable bowel syndrome,abbreviation
+ckd,chronic kidney disease,abbreviation (DOID synonym)
+sle,systemic lupus erythematosus,abbreviation
+asd,autism spectrum disorder,abbreviation
+pcos,polycystic ovary syndrome,abbreviation (DOID synonym)
+aml,acute myeloid leukemia,abbreviation
+cll,chronic lymphocytic leukemia,abbreviation (DOID synonym)
+cml,chronic myeloid leukemia,abbreviation (DOID synonym)
+mds,myelodysplastic syndrome,abbreviation (DOID also uses MDS for Miller-Dieker lissencephaly syndrome)
+nafld,metabolic dysfunction-associated steatotic liver disease,abbreviation (DOID synonym)
+masld,metabolic dysfunction-associated steatotic liver disease,abbreviation (DOID synonym)
+nash,metabolic dysfunction-associated steatohepatitis,abbreviation (DOID synonym)
+mash,metabolic dysfunction-associated steatohepatitis,abbreviation (DOID synonym)
+dlbcl,diffuse large B-cell lymphoma,abbreviation (DOID synonym)
+diffuse large b cell lymphoma,diffuse large B-cell lymphoma,spelling
+rcc,renal cell carcinoma,abbreviation (DOID synonym)
+ccrcc,clear cell renal cell carcinoma,abbreviation
+ptb,pulmonary tuberculosis,abbreviation
+chronic renal failure,chronic kidney disease,DOID synonym 'chronic kidney failure'
+chronic hepatitis b infection,hepatitis B,DOID synonym 'chronic hepatitis B'
+cardiovascular disorder,cardiovascular system disease,
+triple-negative breast cancer,triple-receptor negative breast cancer,
+tnbc,triple-receptor negative breast cancer,abbreviation
+caries,dental caries,
+gvhd,graft-versus-host disease,abbreviation
+all,acute lymphoblastic leukemia,abbreviation (DOID synonym); only in disease columns or next to the study disease
+spms,secondary progressive multiple sclerosis,abbreviation (DOID synonym)
+rrms,relapsing-remitting multiple sclerosis,abbreviation (DOID synonym)
+hsp,IgA vasculitis,abbreviation of Henoch-Schoenlein purpura (DOID synonym); also used for hereditary spastic paraplegia elsewhere
