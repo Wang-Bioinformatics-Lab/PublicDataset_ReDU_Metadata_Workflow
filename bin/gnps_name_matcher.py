@@ -58,17 +58,46 @@ AMBIGUOUS = []
 MATCH_REPORT = []
 
 
+# The dataset cache's whole file table (https://datasetcache.gnps2.org/dataset/uniquemri, a
+# ~1 GB export the cache regenerates about every 3 h), downloaded once per run by the
+# workflow (--files_table): dataset -> its mz(X)ML file rows sorted by usi, i.e. what the
+# per-dataset query below returns. One query per dataset took 20-90 min per run and a query
+# that timed out dropped all rows of its dataset (MSV000087612, 192 rows, on 2026-10-14).
+# Set by load_files_table().
+FILES_TABLE = None
+# the condition of the per-dataset query, filepath__endswith=%.mz%ML, i.e. SQLite
+# "filepath LIKE '%.mz%ML'" (LIKE ignores upper/lower case of ASCII letters)
+_LIKE_MZ_ML = r'\.[mM][zZ].*[mM][lL]\Z'
+
+
+def load_files_table(path):
+    """Reads the uniquemri export once and indexes its mz(X)ML rows by dataset."""
+    global FILES_TABLE
+    df = pd.read_csv(path, usecols=['usi', 'filepath', 'dataset'], dtype=str, keep_default_na=False, na_values=[])
+    df = df[df['filepath'].str.contains(_LIKE_MZ_ML, regex=True, flags=re.DOTALL)]
+    # the per-dataset query orders by usi (SQLite BINARY collation = code point order)
+    df = df.sort_values('usi', kind='stable')
+    FILES_TABLE = {dataset: group.reset_index(drop=True) for dataset, group in df.groupby('dataset', sort=False)}
+    print(f"Dataset cache table {path}: {len(df)} mz(X)ML files in {len(FILES_TABLE)} datasets")
+
+
 def _fetch_dataset_files(dataset):
     """mz(X)ML files of a dataset from the dataset cache, or None if they could not be fetched."""
-    url_f = "{}{}&filepath__endswith=%25.mz%25ML&_size=max".format(ccms_peak_link, dataset)
+    if FILES_TABLE is not None and dataset in FILES_TABLE:
+        MATCH_STATS['datasets_from_files_table'] += 1
+        return FILES_TABLE[dataset]
+    # Not in the table (no mz(X)ML files when the export was made, or no table): ask the cache.
+    # _stream=on returns all rows (without it at most max_returned_rows = 50000); the
+    # timeout is short, as the cache answers within its 60 s SQL time limit or not at all
+    url_f = "{}{}&filepath__endswith=%25.mz%25ML&_size=max&_stream=on".format(ccms_peak_link, dataset)
     print("Fetching {}".format(url_f))
+    MATCH_STATS['datasets_queried'] += 1
 
-    # Request URL and retry 3 times after waiting 5 seconds if ccms_df does not have a column named 'filepath'
     retry_attempts = 3
     for attempt in range(retry_attempts):
         print(f"Checking dataset {dataset} by going to the dataset cache")
         try:
-            dataset_files_response = requests.get(url_f, timeout=300)
+            dataset_files_response = requests.get(url_f, timeout=(15, 120))
             dataset_files_response.raise_for_status()
             attempt_df = pd.read_csv(StringIO(dataset_files_response.text))
             if 'filepath' in attempt_df.columns:
@@ -77,6 +106,7 @@ def _fetch_dataset_files(dataset):
             print(f"Attempt {attempt + 1} error: {e}")
         print(f"Attempt {attempt + 1} failed. Retrying in 5 seconds...")
         sleep(5)
+    MATCH_STATS['datasets_query_failed'] += 1
     return None
 
 
@@ -84,10 +114,13 @@ class DatasetFiles:
     """File lookups of one dataset (by name, name without .mzML/.mzXML, lower-case name)."""
 
     def __init__(self, ccms_df):
-        ccms_df = ccms_df.copy()
+        ccms_df = ccms_df.reset_index(drop=True)
         ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
         ccms_df["_dir_parts"] = ccms_df["filepath"].apply(lambda p: tuple(Path(p).parts[:-1]))
         self.df = ccms_df
+        # plain lists (row i = position i) for the per-row candidate scoring in _select
+        self.filepaths = ccms_df["filepath"].tolist()
+        self.dir_parts = ccms_df["_dir_parts"].tolist()
         self.by_name = collections.defaultdict(list)
         self.by_stem = collections.defaultdict(list)
         self.by_lower = collections.defaultdict(list)
@@ -124,15 +157,12 @@ class DatasetFiles:
 def _select(files, rows, meta_path):
     """The best candidate file path, or None (with a reason) if several fit equally well."""
     meta_dir_parts = tuple(Path(meta_path).parts[:-1])  # () if no dirs present
-    candidates = files.df.loc[rows, ["filepath", "_dir_parts", "query_path"]].copy()
 
     # Score candidates by longest common directory suffix with the metadata path
     # (all score 0 when the metadata has no directory info); keep the best ones
-    candidates["_dir_score"] = candidates["_dir_parts"].apply(
-        lambda dp: longest_common_dir_suffix_score(meta_dir_parts, dp)
-    )
-    best_score = candidates["_dir_score"].max()
-    found_file_paths = list(dict.fromkeys(candidates.loc[candidates["_dir_score"] == best_score, "filepath"].tolist()))
+    scores = [longest_common_dir_suffix_score(meta_dir_parts, files.dir_parts[i]) for i in rows]
+    best_score = max(scores)
+    found_file_paths = list(dict.fromkeys(files.filepaths[i] for i, score in zip(rows, scores) if score == best_score))
 
     # The same file can be present in several top-level folders (e.g. the
     # converted ccms_peak copy and the uploaded peak/raw copy); prefer them in
@@ -243,8 +273,17 @@ def main():
     parser.add_argument('output_filename')
     parser.add_argument('path_allowed_terms_json')
     parser.add_argument('--match_report', default=None, help='optional TSV with the matching result of every metadata row')
+    parser.add_argument('--files_table', default=None,
+                        help='local copy of https://datasetcache.gnps2.org/dataset/uniquemri; without it (or if it '
+                             'cannot be read, e.g. empty after a failed download) every dataset is queried from the dataset cache')
 
     args = parser.parse_args()
+    if args.files_table:
+        try:
+            load_files_table(args.files_table)
+        except Exception as e:
+            print(f"WARNING: could not read the dataset cache table {args.files_table} ({type(e).__name__}: {e}); "
+                  f"querying the dataset cache per dataset")
      
     ccms_filenames = collections.defaultdict(set)
     

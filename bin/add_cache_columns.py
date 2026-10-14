@@ -1,10 +1,36 @@
 import pandas as pd
 import argparse
 import requests
-from io import StringIO
 from time import sleep
 import numpy as np
+import os
 
+
+# only these columns of the export are used
+CACHE_COLUMNS = ['usi', 'classification', 'spectra_ms2']
+DOWNLOAD_PATH = 'uniquemri.part.csv'
+
+
+def fetch_cache_table(url, timeout=1800):
+    """Downloads the dataset cache export to a file and reads its used columns. Same values
+    as reading the whole response text (the undecodable bytes replaced, as requests' .text
+    does), but with ~2 GB instead of ~10 GB of memory."""
+    try:
+        with requests.get(url, timeout=timeout, stream=True) as response:
+            response.raise_for_status()
+            # (with a Content-Encoding the length is that of the encoded body)
+            expected = None if response.headers.get('Content-Encoding') else response.headers.get('Content-Length')
+            with open(DOWNLOAD_PATH, 'wb') as handle:
+                for chunk in response.iter_content(chunk_size=1 << 20):
+                    handle.write(chunk)
+        size = os.path.getsize(DOWNLOAD_PATH)
+        if expected and int(expected) != size:
+            raise IOError(f"incomplete download: {size} of {expected} bytes")
+        return pd.read_csv(DOWNLOAD_PATH, usecols=lambda c: c in CACHE_COLUMNS,
+                           encoding='utf-8', encoding_errors='replace')
+    finally:
+        if os.path.exists(DOWNLOAD_PATH):
+            os.remove(DOWNLOAD_PATH)
 
 
 if __name__ == "__main__":
@@ -26,10 +52,8 @@ if __name__ == "__main__":
     for attempt in range(retry_attempts):
         print(f"Attempt {attempt + 1} to fetch the dataset cache")
         try:
-            dataset_files_response = requests.get(url_cache_datasette, timeout=1800)
-            dataset_files_response.raise_for_status()
-            cache_df = pd.read_csv(StringIO(dataset_files_response.text))
-        except (requests.RequestException, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+            cache_df = fetch_cache_table(url_cache_datasette)
+        except (requests.RequestException, IOError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
             print(f"Attempt {attempt + 1} failed: {e}")
             cache_df = pd.DataFrame()
 

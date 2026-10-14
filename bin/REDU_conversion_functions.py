@@ -108,10 +108,91 @@ def age_category(age):
         return ''
     
 
+# ---- NCBI lineage --------------------------------------------------------------------
+# The lineage of a taxon comes from the NCBI taxonomy pinned in data/reference_data.json
+# (nodes.dmp, names.dmp and merged.dmp of the taxdmp archive) once a converter has called
+# use_pinned_ncbi_taxonomy() (MWB_to_REDU.py does, from its --path_to_ncbi_*_dmp
+# arguments). It is the lineage NCBI's E-utilities efetch returns for that release: the
+# scientific names of all ancestors, top-down, without the root and without the taxon itself
+# ('cellular organisms; Eukaryota; ...; Homo' for 9606); merged IDs get the lineage of the
+# taxon they were merged into, IDs neither in nodes.dmp nor in merged.dmp have none.
+#
+# Converters that have not called use_pinned_ncbi_taxonomy() still ask E-utilities (with a
+# warning in the log); a missing lineage is never cached there, so a failed request is
+# retried for the next study instead of being remembered as 'no lineage'.
+
+_PINNED_LINEAGE = None
+
+
+class PinnedNcbiLineage:
+    """efetch-style lineages from nodes.dmp / names.dmp / merged.dmp of the pinned taxdump."""
+
+    def __init__(self, nodes_dmp, names_dmp, merged_dmp):
+        import numpy as np
+        from ncbi_database import Taxonomy, ROOT
+        t0 = time.time()
+        self.taxonomy = Taxonomy(nodes_dmp, names_dmp, merged_dmp)
+        self.root = ROOT
+        # a lineage only holds ancestors, i.e. taxa that are the parent of another taxon
+        parents = np.frombuffer(self.taxonomy.parent, dtype=np.int32)
+        internal = set(np.unique(parents[parents >= 0]).tolist())
+        self.names = self.taxonomy.scientific_names(internal)
+        unnamed = sorted(internal - set(self.names) - {self.root})
+        if unnamed:
+            raise ValueError(f"{names_dmp}: no scientific name for {len(unnamed)} taxa of {nodes_dmp}, "
+                             f"e.g. {unnamed[:10]}")
+        self.lineages = {}           # resolved taxon ID -> lineage (only found ones are kept)
+        self.reported = set()        # IDs already reported as having no lineage
+        print(f"NCBI lineage from the pinned taxonomy: {self.taxonomy.n_taxa} taxa in {nodes_dmp}, "
+              f"{len(self.taxonomy.merged)} merged IDs, {len(self.names)} ancestor names "
+              f"({time.time() - t0:.1f} s)", flush=True)
+
+    def lineage(self, ncbi_id):
+        """Lower-cased lineage tuple of a taxon ID, or None if the pinned taxonomy has no such taxon."""
+        text = str(ncbi_id).strip()
+        try:
+            taxid = int(text)
+        except ValueError:
+            taxid = None
+        target = self.taxonomy.resolve(taxid) if taxid is not None else None
+        if target is None:
+            if text not in self.reported:
+                self.reported.add(text)
+                print(f"NCBI taxon {text!r} is neither in nodes.dmp nor in merged.dmp of the pinned taxonomy "
+                      "(deleted or invalid ID): no lineage", flush=True)
+            return None
+        cached = self.lineages.get(target)
+        if cached is not None:
+            return cached
+        ancestors = []
+        parent = self.taxonomy.parent
+        node = parent[target]
+        for _ in range(1000):
+            if target == self.root or node == self.root:
+                break
+            ancestors.append(self.names[node])
+            node = parent[node]
+        else:
+            raise ValueError(f"nodes.dmp: no path from taxon {target} to the root")
+        # the same text efetch's <Lineage> holds, split the same way ('' for a child of the root)
+        lineage = tuple(s.lower() for s in '; '.join(reversed(ancestors)).split('; '))
+        self.lineages[target] = lineage
+        return lineage
+
+
+def use_pinned_ncbi_taxonomy(nodes_dmp, names_dmp, merged_dmp):
+    """Take NCBI lineages from the pinned taxdump from now on (loaded here, so a missing or
+    broken file stops the run before any study is converted)."""
+    global _PINNED_LINEAGE
+    _PINNED_LINEAGE = PinnedNcbiLineage(nodes_dmp, names_dmp, merged_dmp)
+    return _PINNED_LINEAGE
+
+
 # NCBI allows 3 requests/s without an API key; going faster returns HTTP 429
 _NCBI_MIN_INTERVAL = 0.4
 _ncbi_last_request = [0.0]
 NCBI_TIMEOUT = (10, 60)
+_LIVE_LINEAGE_WARNED = [False]
 
 
 def _ncbi_throttle():
@@ -143,12 +224,12 @@ def _ncbi_get(url, retries=4):
         time.sleep(min(2 ** attempt, 30))
 
 
-@functools.lru_cache(maxsize=None)
-def _get_ncbi_lineage(ncbi_id, retries=3):
-    """Returns the lowercased lineage of an NCBI taxon id, or None if NCBI has no lineage for it.
+class _NoLiveLineage(Exception):
+    """E-utilities answered without a lineage (not cached by _live_ncbi_lineage)."""
 
-    Cached, as the same ids recur across studies. Network errors propagate (and are not cached).
-    """
+
+@functools.lru_cache(maxsize=None)
+def _live_ncbi_lineage(ncbi_id, retries=3):
     for attempt in range(1, retries + 1):
         response = _ncbi_get(f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=taxonomy&id={ncbi_id}")
         soup = BeautifulSoup(response.text, "xml")
@@ -159,80 +240,92 @@ def _get_ncbi_lineage(ncbi_id, retries=3):
         # NCBI occasionally answers 200 with an error document; retry before giving up
         print(f"No lineage in NCBI response for {ncbi_id} (attempt {attempt}/{retries})")
         time.sleep(2)
-    return None
+    raise _NoLiveLineage(ncbi_id)
 
 
-@functools.lru_cache(maxsize=None)
-def _get_ncbi_scientific_name(ncbi_id):
-    """Cached esummary lookup; network errors propagate and are not cached."""
-    response = _ncbi_get(f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=taxonomy&id={ncbi_id}&retmode=json")
-    summary = response.json().get("result", {}).get(ncbi_id, {})
-    return summary.get("scientificname") or None
+def _get_ncbi_lineage(ncbi_id, retries=3):
+    """Returns the lowercased lineage of an NCBI taxon id, or None if there is none.
 
-
-def get_taxonomic_name_from_id(ncbi_id):
-    """Returns the scientific name of an NCBI taxon id, or None if NCBI does not know it.
-
-    Uses the E-utilities esummary endpoint; the Taxonomy Browser page this used to scrape
-    no longer carries the name in its title.
+    From the pinned taxonomy after use_pinned_ncbi_taxonomy(); otherwise from E-utilities,
+    where found lineages are cached (the same ids recur across studies) but a missing one is
+    not, and network errors propagate.
     """
+    if _PINNED_LINEAGE is not None:
+        return _PINNED_LINEAGE.lineage(ncbi_id)
+    if not _LIVE_LINEAGE_WARNED[0]:
+        _LIVE_LINEAGE_WARNED[0] = True
+        print("WARNING: NCBI lineages come from the live E-utilities, not from the pinned taxonomy "
+              "(use_pinned_ncbi_taxonomy was not called)", flush=True)
     try:
-        return _get_ncbi_scientific_name(str(ncbi_id).strip())
-    except (requests.RequestException, ValueError) as e:
-        print(f"Could not get the taxonomic name for {ncbi_id}: {e}")
+        return _live_ncbi_lineage(ncbi_id, retries)
+    except _NoLiveLineage:
         return None
+
+
+def _sample_type_from_lineage(classification, cell_culture_key1='', cell_culture_key2=''):
+    cell_culture_key_words = ["cell", "media", "culture"]
+    SampleType = None
+    SampleTypeSub1 = None
+
+    if "viridiplantae" in classification:
+        SampleType = "plant"
+        SampleTypeSub1 = "plant_NOS"
+        if "Algae" in classification or 'rhodophyta' in classification or "phaeophyceae" in classification:
+            SampleType = "algae"
+        if "chlorophyta" in classification or "microalgae" in classification or "microalga" in classification:
+            SampleType = "microalgae"
+        if "streptophyta" in classification:
+            SampleTypeSub1 = "plant_angiospermae"
+        if "cyanobacteria" in classification:
+            SampleTypeSub1 = "marine_cyanobacteria_insitu"
+        if "bacillariophyta" in classification:
+            SampleTypeSub1 = "marine_diatom"
+    elif "metazoa" in classification:
+        SampleType = "animal"
+        if "mammalia" in classification and any(
+                word in cell_culture_key1.lower() for word in cell_culture_key_words) or any(
+                word in cell_culture_key2.lower() for word in cell_culture_key_words):
+            SampleType = "culture_mammalian"
+            SampleTypeSub1 = "culture_mammalian"
+        if "amphibia" in classification:
+            if "Caudata" in classification or "urodela" in classification or "echinodermata" in classification:
+                SampleTypeSub1 = "salamander"
+            else:
+                SampleTypeSub1 = "frog"
+        if "insecta" in classification:
+            SampleTypeSub1 = "insect"
+        if "porifera" in classification or "mollusca" in classification:
+            SampleTypeSub1 = "marine_invertebrates"
+        if "cnidaria" in classification:
+            SampleTypeSub1 = "marine_coral"
+    elif "fungi" in classification:
+        SampleType = "culture_fungal"
+        SampleTypeSub1 = "culture_fungal"
+    elif "bacteria" in classification:
+        SampleType = "culture_bacterial"
+        SampleTypeSub1 = "culture_bacterial"
+    return [SampleType, SampleTypeSub1]
 
 
 def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
     if ncbi_id is not None and ncbi_id != "NA":
-        cell_culture_key_words = ["cell", "media", "culture"]
+        if _PINNED_LINEAGE is not None:
+            # errors of the pinned taxonomy itself propagate; an ID without a lineage was
+            # reported by the lookup
+            classification = _PINNED_LINEAGE.lineage(ncbi_id)
+            if classification is None:
+                return [None, None]
+            try:
+                return _sample_type_from_lineage(classification, cell_culture_key1, cell_culture_key2)
+            except Exception as e:
+                print(f"Could not get taxonomy info for {ncbi_id}: {type(e).__name__}: {e}")
+                return [None, None]
         try:
             #try to get taxa via API
             classification = _get_ncbi_lineage(str(ncbi_id))
             if classification is None:
                 raise Exception(f"No lineage found for NCBI id {ncbi_id}.")
-
-            SampleType = None
-            SampleTypeSub1 = None
-
-            if "viridiplantae" in classification:
-                SampleType = "plant"
-                SampleTypeSub1 = "plant_NOS"
-                if "Algae" in classification or 'rhodophyta' in classification or "phaeophyceae" in classification:
-                    SampleType = "algae"
-                if "chlorophyta" in classification or "microalgae" in classification or "microalga" in classification:
-                    SampleType = "microalgae"
-                if "streptophyta" in classification:
-                    SampleTypeSub1 = "plant_angiospermae"
-                if "cyanobacteria" in classification:
-                    SampleTypeSub1 = "marine_cyanobacteria_insitu"
-                if "bacillariophyta" in classification:
-                    SampleTypeSub1 = "marine_diatom"
-            elif "metazoa" in classification:
-                SampleType = "animal"
-                if "mammalia" in classification and any(
-                        word in cell_culture_key1.lower() for word in cell_culture_key_words) or any(
-                        word in cell_culture_key2.lower() for word in cell_culture_key_words):
-                    SampleType = "culture_mammalian"
-                    SampleTypeSub1 = "culture_mammalian"
-                if "amphibia" in classification:
-                    if "Caudata" in classification or "urodela" in classification or "echinodermata" in classification:
-                        SampleTypeSub1 = "salamander"
-                    else:
-                        SampleTypeSub1 = "frog"
-                if "insecta" in classification:
-                    SampleTypeSub1 = "insect"
-                if "porifera" in classification or "mollusca" in classification:
-                    SampleTypeSub1 = "marine_invertebrates"
-                if "cnidaria" in classification:
-                    SampleTypeSub1 = "marine_coral"
-            elif "fungi" in classification:
-                SampleType = "culture_fungal"
-                SampleTypeSub1 = "culture_fungal"
-            elif "bacteria" in classification:
-                SampleType = "culture_bacterial"
-                SampleTypeSub1 = "culture_bacterial"
-            return [SampleType, SampleTypeSub1]
+            return _sample_type_from_lineage(classification, cell_culture_key1, cell_culture_key2)
         except Exception as e:
             print(f"Could not get taxonomy info for {ncbi_id}: {e}")
             return [None, None]
@@ -365,7 +458,32 @@ def map_instrument_to_allowed(instrument, allowed_values):
     return best
 
 
+_TAXONOMY_TERM_INDEX = []   # [(allowed-values list, its length, by_id, by_name)]
+
+
+def _taxonomy_term_index(taxonomy_data):
+    """(ID -> first 'ID|Name' term, lower-cased name -> first 'ID|Name' term) over the
+    allowed terms with exactly one '|', built once per allowed-terms list (the list is kept
+    referenced with the index, so its id cannot be reused)."""
+    if _TAXONOMY_TERM_INDEX and _TAXONOMY_TERM_INDEX[0][0] is taxonomy_data \
+            and _TAXONOMY_TERM_INDEX[0][1] == len(taxonomy_data):
+        return _TAXONOMY_TERM_INDEX[0][2], _TAXONOMY_TERM_INDEX[0][3]
+    by_id, by_name = {}, {}
+    for entry in taxonomy_data:
+        parts = entry.split('|')
+        if len(parts) == 2:
+            ncbi_id, name = parts
+            term = ncbi_id + '|' + str(name)
+            by_id.setdefault(str(ncbi_id), term)
+            by_name.setdefault(name.lower(), term)
+    _TAXONOMY_TERM_INDEX[:] = [(taxonomy_data, len(taxonomy_data), by_id, by_name)]
+    return by_id, by_name
+
+
 def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
+    """First allowed 'ID|Name' NCBITaxonomy term with the ID popped from kwargs['ncbi_id']
+    (a set), else the first one whose name is organism_name (case-insensitive), else None.
+    Dictionary lookups; the same result as scanning the allowed terms in order."""
 
     allowedTerm_dict = kwargs['allowedTerm_dict']
     taxonomy_data = allowedTerm_dict["NCBITaxonomy"]["allowed_values"]
@@ -380,77 +498,14 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
         # ncbi_id_input cannot be made numeric, return None or an appropriate error message
         ncbi_id_input = ''
 
-    
+    by_id, by_name = _taxonomy_term_index(taxonomy_data)
     if ncbi_id_input != '':
-        ncbi_id_input = str(ncbi_id_input)
-        for entry in taxonomy_data:
-            parts = entry.split('|')
-            if len(parts) == 2:
-                ncbi_id, name = parts
-                if str(ncbi_id) == ncbi_id_input:
-                    return ncbi_id + '|' + str(name)
-            else:
-                continue
-
+        hit = by_id.get(str(ncbi_id_input))
+        if hit is not None:
+            return hit
 
     organism_name = str(organism_name)
-    for entry in taxonomy_data:
-        parts = entry.split('|')
-        if len(parts) == 2:
-            ncbi_id, name = parts
-            if name.lower() == organism_name.lower():
-                return ncbi_id + '|' + str(name)
-        else:
-            continue
-
-    return None
-    req_ncbi_name = get_taxonomy_id_from_name(organism_name)
-
-    if req_ncbi_name is not None:
-
-        req_name = get_taxonomic_name_from_id(req_ncbi_name)
-        return ncbi_id + '|' + str(req_name)
-
-    return None
-
-
-def get_taxonomy_id_from_name(species_name, retries=3):
-    if species_name is None or species_name in ["NA", "N/A"]:
-        return None
-
-    attempts = 0
-    while attempts < retries:
-        try:
-            _ncbi_throttle()
-            response = requests.get(
-                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&term={species_name}&retmode=xml",
-                timeout=NCBI_TIMEOUT
-            )
-
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "xml")
-                id_list = soup.find("IdList")
-                if id_list is not None and id_list.find("Id") is not None:
-                    ncbi_id = id_list.find("Id").text
-                    term = soup.find("Term").text.split("[")[0].strip()
-                    if term.lower() == species_name.lower():
-                        return str(ncbi_id) + '|' + species_name
-                    else:
-                        return None
-                else:
-                    return  None
-            else:
-                print(f"Server responded with status code {response.status_code} for {species_name}.")
-                time.sleep(10)
-
-        except Exception as e:
-            print(f"Attempt {attempts + 1} failed for {species_name}: {e}")
-            time.sleep(10)
-
-        attempts += 1
-
-    print(f'{species_name} returned no NCBI-ID after {retries} attempts')
-    return  None
+    return by_name.get(organism_name.lower())
 
 
 

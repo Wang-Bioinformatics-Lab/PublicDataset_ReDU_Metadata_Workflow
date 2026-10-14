@@ -19,6 +19,8 @@ from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
 from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
+import REDU_conversion_functions as _rcf
+from getAllWorkbench_file_paths import fetch_archive_listing, listing_query, ArchiveListingError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -346,8 +348,41 @@ def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
         print(f"Could not resolve analysis conflicts from file paths: {type(e).__name__}: {e}")
 
 
-    # Group by 'USI' and apply the processing function to each group
-    df = df.groupby('filename').apply(process_group)
+    # groupby drops rows without a filename (dropna=True); so does the fast path below
+    df = df[df['filename'].notna()]
+    dup = df['filename'].duplicated(keep=False)
+    if len(df) == 0 or not (~dup).any():
+        # Group by 'USI' and apply the processing function to each group
+        df = df.groupby('filename').apply(process_group)
+    else:
+        # Files listed once (most of them) need no per-group work: for a one-row group
+        # process_group only turns None into 'missing value' (and 'None' in SampleType /
+        # SampleTypeSub1). Only files under several analyses go through process_group.
+        # Rows come out in the order groupby.apply gives (sorted by filename), with its index.
+        group_no = df.groupby('filename').ngroup()
+        single = df[~dup].copy()
+        for col in single.columns:
+            if single[col].dtype != object:
+                continue
+            if col in ('SampleType', 'SampleTypeSub1'):
+                is_none = np.fromiter((v is None or (isinstance(v, str) and v == 'None') for v in single[col].values), bool, len(single))
+            else:
+                is_none = np.fromiter((v is None for v in single[col].values), bool, len(single))
+            if is_none.any():
+                single.loc[is_none, col] = 'missing value'
+        parts = [single]
+        if dup.any():
+            multi = df[dup].groupby('filename').apply(process_group)
+            multi.index = multi.index.droplevel(0)
+            parts.append(multi)
+        df = pd.concat(parts)
+        df = df.iloc[np.argsort(group_no.loc[df.index].values, kind='stable')]
+        df.index = pd.MultiIndex.from_arrays([df['filename'].values, df.index], names=['filename', None])
+        # groupby.apply gives a numeric column when no group holds a string (e.g. ints and
+        # floats -> float64): same here
+        for col in df.columns:
+            if df[col].dtype == object and not any(isinstance(v, str) for v in df[col].values):
+                df[col] = df[col].infer_objects()
 
     # Remove duplicates based on 'USI' column
     df = df.drop_duplicates(subset='filename')
@@ -373,6 +408,200 @@ def handle_duplicates(ordered_pairs):
     return d
 
 
+# --- mwTab responses that are not valid JSON -------------------------------------------
+# About 50 MS analyses get an mwTab JSON that json.loads rejects: control characters in
+# strings; '=' or ':' inside a sample's factor / additional-data values, which the JSON
+# writer turns into "key":"a":"b"; and two documents in one response (a copy of the same
+# one, an empty stub plus the real one, or one per study for an analysis shared by two
+# studies). The document of the study is taken; a broken SUBJECT_SAMPLE_FACTORS list is
+# replaced by the one of the mwTab text format (/mwtab/txt). Everything else still comes
+# from the JSON.
+_MWTAB_FIELD_RE = re.compile(r'^[A-Z]{2}:([A-Za-z0-9_]+)[ ]*\t(.*)$')
+_MWTAB_SECTIONS = {'PROJECT', 'STUDY', 'SUBJECT', 'COLLECTION', 'TREATMENT', 'SAMPLEPREP', 'CHROMATOGRAPHY',
+                   'ANALYSIS', 'MS', 'NMR'}
+_MWTAB_JSON_DOC_SPLIT_RE = re.compile(r'\n\}\n\n(?=\{\n"METABOLOMICS WORKBENCH")')
+_MWTAB_SSF_END_RE = re.compile(r'\n\],\n"[A-Z][A-Z_ ]*":')
+
+
+def _mwtab_value(v):
+    # the JSON format has no double quotes and no surrounding spaces
+    return v.replace('"', '').strip(' ')
+
+
+def _mwtab_pairs(text, sep, kv):
+    """[(key, value)] of 'k=v; k=v' (sep '; ', kv '='); a piece without kv continues the
+    previous value ('-&gt; 64 ul' in 'Comment=a-&gt; 64 ul'). In additional sample data the
+    text format sometimes has two spaces where '; ' separated two items
+    ('RAW_FILE_NAME=a.raw  RAW_FILE_NAME=b.raw'); the JSON of such analyses is never valid
+    (its writer cannot have '=' in a value), so this only applies to the fallback."""
+    pieces = text.split(sep)
+    if kv == '=':
+        split = []
+        for piece in pieces:
+            k, found, v = piece.partition(kv)
+            # only inside the value: keys may have two spaces ('Age at  Consent=45')
+            more = re.split(r'\s{2,}(?=[^=;\s][^=;]*=)', v) if found else [v]
+            split.append(k + found + more[0])
+            split.extend(more[1:])
+        pieces = split
+    out = []
+    for piece in pieces:
+        k, found, v = piece.partition(kv)
+        if found:
+            out.append([k, v])
+        elif out:
+            out[-1][1] += sep + piece
+    return [(_mwtab_value(k), _mwtab_value(v)) for k, v in out]
+
+
+def mwtab_text_to_dict(text):
+    """One mwTab text-format document in the layout of the JSON format: the
+    'METABOLOMICS WORKBENCH' header, the key-value sections and SUBJECT_SAMPLE_FACTORS
+    ([{'Subject ID', 'Sample ID', 'Factors', 'Additional sample data'}])."""
+    sections, order, header, factors = {}, [], {}, []
+    section, last_key = None, None
+    for line in text.split('\n'):
+        line = line.rstrip('\r')
+        if line.startswith('#'):
+            last_key = None
+            if line.startswith('#METABOLOMICS WORKBENCH'):
+                section = 'METABOLOMICS WORKBENCH'
+                for tok in line.split():
+                    k, sep, v = tok.partition(':')
+                    if sep and k in ('STUDY_ID', 'ANALYSIS_ID') and k not in header:
+                        header[k] = v
+                continue
+            name = line[1:].split(':')[0].split('\t')[0].strip()
+            section = name if name in _MWTAB_SECTIONS or name == 'SUBJECT_SAMPLE_FACTORS' else None
+            if section in _MWTAB_SECTIONS and section not in sections:
+                sections[section] = {}
+                order.append(section)
+            continue
+        if section == 'METABOLOMICS WORKBENCH':
+            for key in ('VERSION', 'CREATED_ON'):
+                if line.startswith(key):
+                    header[key] = line[len(key):].replace('\t', ' ')
+            continue
+        if section == 'SUBJECT_SAMPLE_FACTORS':
+            parts = line.split('\t')
+            if not line.startswith('SUBJECT_SAMPLE_FACTORS') or len(parts) < 4:
+                continue
+            item = [('Subject ID', _mwtab_value(parts[1])), ('Sample ID', _mwtab_value(parts[2])),
+                    ('Factors', handle_duplicates(_mwtab_pairs(parts[3], ' | ', ':')))]
+            add = _mwtab_pairs('\t'.join(parts[4:]), '; ', '=') if len(parts) > 4 else []
+            if add:
+                item.append(('Additional sample data', handle_duplicates(add)))
+            factors.append(handle_duplicates(item))
+            continue
+        m = _MWTAB_FIELD_RE.match(line) if section in _MWTAB_SECTIONS else None
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2).replace('\t', ' ')
+        d = sections[section]
+        # continuation lines of a field are joined; a field given again later replaces it
+        d[key] = d[key] + ' ' + value if key == last_key else value
+        last_key = key
+    out = {'METABOLOMICS WORKBENCH': {k: _mwtab_value(header[k]) for k in ('STUDY_ID', 'ANALYSIS_ID', 'VERSION', 'CREATED_ON')
+                                      if k in header and _mwtab_value(header[k]) != ''}}
+    for sec in order:
+        out[sec] = {k: _mwtab_value(v) for k, v in sections[sec].items() if _mwtab_value(v) != ''}
+        if sec == 'SUBJECT':
+            out['SUBJECT_SAMPLE_FACTORS'] = factors
+    out.setdefault('SUBJECT_SAMPLE_FACTORS', factors)
+    return out
+
+
+def _mwtab_text_sample_factors(text, study_id, analysis_id):
+    """SUBJECT_SAMPLE_FACTORS of the study's document of an mwTab text response, or None."""
+    docs = [d for d in re.split(r'(?m)^(?=#METABOLOMICS WORKBENCH)', text) if d.startswith('#METABOLOMICS WORKBENCH')]
+    found = []
+    for doc in docs:
+        head = doc.split('\n', 1)[0]
+        # with several documents, the study's is the one whose header names it (a single
+        # document is taken as it is, as the JSON path does)
+        if len(docs) > 1 and not (study_id in re.findall(r'STUDY_ID:(\S+)', head)
+                                  and analysis_id in re.findall(r'ANALYSIS_ID:(\S+)', head)):
+            continue
+        d = mwtab_text_to_dict(doc)
+        if d['SUBJECT_SAMPLE_FACTORS']:
+            found.append(d['SUBJECT_SAMPLE_FACTORS'])
+    if found and all(f == found[0] for f in found):
+        return found[0]
+    return None
+
+
+# analyses left out because the Workbench gave no usable mwTab, with the reason
+DROPPED_ANALYSES = {}
+
+
+def _drop_analysis(study_id, analysis_id, reason):
+    print(f"DROPPED analysis {analysis_id} of {study_id}: {reason}")
+    DROPPED_ANALYSES[f'{study_id}/{analysis_id}'] = reason.split(' (')[0]
+
+
+def mwtab_from_invalid_json(text, study_id, analysis_id, error, get_text=None):
+    """The mwTab of an analysis whose JSON response json.loads rejected, or None (with the
+    reason in the log). get_text(url) returns the text of a Workbench response."""
+    if not text.strip():
+        _drop_analysis(study_id, analysis_id, 'the Workbench answered with an empty mwTab')
+        return None
+    docs = _MWTAB_JSON_DOC_SPLIT_RE.split(text)
+    docs = [d + '\n}' for d in docs[:-1]] + docs[-1:]
+    parsed, problems = [], []
+    for doc in docs:
+        try:
+            parsed.append((json.loads(doc, strict=False, object_pairs_hook=handle_duplicates), False))
+            continue
+        except ValueError as e:
+            doc_error = e
+        start = doc.find('\n"SUBJECT_SAMPLE_FACTORS":[')
+        end = _MWTAB_SSF_END_RE.search(doc, start) if start >= 0 else None
+        if end is None:
+            problems.append(f"{type(doc_error).__name__}: {doc_error}")
+            continue
+        try:
+            rest = doc[:start] + '\n"SUBJECT_SAMPLE_FACTORS":[]' + doc[end.start() + 2:]
+            parsed.append((json.loads(rest, strict=False, object_pairs_hook=handle_duplicates), True))
+        except ValueError as e:
+            problems.append(f"{type(e).__name__}: {e}")
+    def _study_of(d):
+        head = d.get('METABOLOMICS WORKBENCH') if isinstance(d, dict) else None
+        return head.get('STUDY_ID') if isinstance(head, dict) else None
+    # with several documents, the study's are those whose header names it; a single document
+    # is taken as it is, as the JSON path does (some headers name another study or none)
+    mine = [(d, broken) for d, broken in parsed if isinstance(d, dict) and (len(docs) == 1 or _study_of(d) == study_id)]
+    with_samples = [(d, broken) for d, broken in mine if broken or d.get('SUBJECT_SAMPLE_FACTORS')]
+    if with_samples:
+        mine = with_samples
+    distinct = []
+    for d, broken in mine:
+        if not any(d == e and broken == b for e, b in distinct):
+            distinct.append((d, broken))
+    if len(distinct) != 1:
+        _drop_analysis(study_id, analysis_id, f"the mwTab JSON is not valid JSON and has {len(distinct)} usable "
+                                              f"documents of the study ({error}; of {len(docs)} documents: {problems[:3]})")
+        return None
+    mwtab, broken = distinct[0]
+    how = 'control characters in strings accepted' if len(docs) == 1 else f'the document of {study_id} of {len(docs)} documents'
+    if broken:
+        factors = None
+        try:
+            if get_text is not None:
+                factors = _mwtab_text_sample_factors(
+                    get_text(f"https://www.metabolomicsworkbench.org/rest/study/analysis_id/{analysis_id}/mwtab/txt"),
+                    study_id, analysis_id)
+        except Exception as e:
+            print(f"Could not get the mwTab text of {analysis_id}: {type(e).__name__}: {e}")
+        if not factors:
+            _drop_analysis(study_id, analysis_id, f"the samples of the mwTab JSON are not valid JSON and the mwTab "
+                                                  f"text gives none ({error})")
+            return None
+        mwtab['SUBJECT_SAMPLE_FACTORS'] = factors
+        how = ('' if len(docs) == 1 else how + '; ') + f'its {len(factors)} samples (SUBJECT_SAMPLE_FACTORS) from the mwTab text'
+    print(f"mwTab JSON of {analysis_id} is not valid JSON ({error}): read with {how}")
+    return mwtab
+
+
 # Some archive listings carry raw 7z listing columns in front of the path,
 # e.g. '2014-10-05 10:45:02 ..H.A           80               MX183900 .../x.d'
 _7Z_LISTING_PREFIX = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \S{5} +\d+ +(?:\d+ +)?')
@@ -392,11 +621,13 @@ def collapse_d_folder(path):
     return path
 
 
+# studies left out because the Workbench gave no file list, with the reason
+DROPPED_STUDIES = {}
+
+
 def _get_metabolomicsworkbench_files(dataset_accession):
     try:
-        dataset_list_url = "https://www.metabolomicsworkbench.org/data/show_archive_contents_json.php?STUDY_ID={}".format(
-            dataset_accession)
-        mw_file_list = _mwb_get(dataset_list_url).json()
+        mw_file_list, _ = fetch_archive_listing(dataset_accession, _mwb_get)
 
         acceptable_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
 
@@ -410,7 +641,7 @@ def _get_metabolomicsworkbench_files(dataset_accession):
         workbench_df["USI"] = workbench_df["URL"].apply(
             lambda url: "mzspec:{}:{}".format(
                 dataset_accession,
-                collapse_d_folder(clean_listing_path(parse_qs(urlparse(url).query).get('F', [''])[0]))
+                collapse_d_folder(clean_listing_path(listing_query(url).get('F', [''])[0]))
             )
         )
 
@@ -420,8 +651,13 @@ def _get_metabolomicsworkbench_files(dataset_accession):
         workbench_df["size_mb"] = (workbench_df["FILESIZE"] / 1024 / 1024).astype(int)
 
         workbench_df = workbench_df[["filename", "size_mb", "USI"]]
+    except ArchiveListingError as e:
+        print(f"DROPPED {dataset_accession}: no archive listing ({e})")
+        DROPPED_STUDIES[dataset_accession] = 'no archive listing'
+        workbench_df = pd.DataFrame()
     except Exception as e:
         print(f"Failed to list files for {dataset_accession}: {type(e).__name__}: {e}")
+        DROPPED_STUDIES[dataset_accession] = f'file list unreadable ({type(e).__name__})'
         workbench_df = pd.DataFrame()
 
     return workbench_df
@@ -2422,9 +2658,6 @@ def study_fasting_from_texts(joined):
     return found.pop() if len(found) == 1 else None
 
 
-_NCBI_NAME_CACHE = {}
-
-
 # ---- CellLine (Cellosaurus) and cell types (Cell Ontology) ----
 # Cell-line names under sample factor keys ('Cell line', 'cell_type', ...) and in the
 # study-level CELL_STRAIN_DETAILS; matched to the shipped Cellosaurus table (exact
@@ -2657,18 +2890,9 @@ def assign_cell_lines(MWB_table):
 
 
 def _ncbi_name_lookup(allowedTerm_dict):
-    """lower-cased NCBI name -> first allowed 'ID|Name' term with that name."""
-    terms = allowedTerm_dict['NCBITaxonomy']['allowed_values']
-    key = (id(terms), len(terms))
-    if key not in _NCBI_NAME_CACHE:
-        lookup = {}
-        for entry in terms:
-            parts = entry.split('|')
-            if len(parts) == 2:
-                lookup.setdefault(parts[1].lower(), parts[0] + '|' + parts[1])
-        _NCBI_NAME_CACHE.clear()
-        _NCBI_NAME_CACHE[key] = lookup
-    return _NCBI_NAME_CACHE[key]
+    """lower-cased NCBI name -> first allowed 'ID|Name' term with that name (the index
+    get_taxonomy_id_from_name__allowedTerms uses; one copy of the ~3M names)."""
+    return _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])[1]
 
 
 def get_key_info_into_outer(df, key_vars, new_col):
@@ -3091,7 +3315,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         else:
             split_by_this = r'; ?|,| '
 
-        df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this).apply(lambda x: list(set(x)))).explode('filename_raw')
+        df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this).apply(lambda x: sorted(set(x)))).explode('filename_raw')
 
         df.reset_index(drop=True, inplace=True)
 
@@ -3222,11 +3446,15 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                 
                 #create dict to assign matches
                 match_indices = {}
+                # first row label of each file stem (the column was scanned once per match)
+                _first_label = {}
+                for _lbl, _stem_value in zip(raw_file_name_df.index, raw_file_name_df['filename_base_wo_extension']):
+                    _first_label.setdefault(_stem_value, _lbl)
 
                 for df_value, matches in potential_matches.items():
                     if matches:
-                        for match_value in matches:  
-                            match_index = raw_file_name_df.index[raw_file_name_df['filename_base_wo_extension'] == match_value].tolist()[0] 
+                        for match_value in matches:
+                            match_index = _first_label[match_value]
                             if df_value not in match_indices:
                                 match_indices[df_value] = [match_index]
                             else:
@@ -3668,12 +3896,19 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             print(f"Could not assign exposures: {type(e).__name__}: {e}")
             df['MWB_exposure'] = None
             df['MWB_exposure_plant'] = None
-    df['LatitudeandLongitude'] = df.apply(
-        lambda x: f'{x.Latitude}|{x.Longitude}' if x.Latitude is not None and x.Longitude is not None and not np.isnan(
-            x.Latitude) and not np.isnan(x.Longitude) else None, axis=1)
-    
-    df[['SampleType_inner', 'SampleTypeSub1_inner']] = df.apply(lambda x: get_blanks(x['Value']), axis=1,
-                                                                result_type='expand')
+    if len(df) == 0:
+        df['LatitudeandLongitude'] = df.apply(
+            lambda x: f'{x.Latitude}|{x.Longitude}' if x.Latitude is not None and x.Longitude is not None and not np.isnan(
+                x.Latitude) and not np.isnan(x.Longitude) else None, axis=1)
+
+        df[['SampleType_inner', 'SampleTypeSub1_inner']] = df.apply(lambda x: get_blanks(x['Value']), axis=1,
+                                                                    result_type='expand')
+    else:
+        # column-wise instead of DataFrame.apply(axis=1) (same values)
+        df['LatitudeandLongitude'] = pd.Series(
+            [f'{lat}|{lon}' if lat is not None and lon is not None and not np.isnan(lat) and not np.isnan(lon) else None
+             for lat, lon in zip(df['Latitude'], df['Longitude'])], index=df.index, dtype=object)
+        df[['SampleType_inner', 'SampleTypeSub1_inner']] = pd.DataFrame([get_blanks(v) for v in df['Value']], index=df.index)
 
     df = translate_MWB_to_REDU_from_csv(df, case='inner', path_to_csvs=path_to_csvs, add_to_cols=add_to_cols, ontology_table=ontology_table, allowedTerm_dict=allowedTerm_dict)
 
@@ -3773,11 +4008,7 @@ def _is_mammal(name, allowedTerm_dict):
     term = _ncbi_name_lookup(allowedTerm_dict).get(name.lower())
     if term is None:
         return False
-    try:
-        from REDU_conversion_functions import _get_ncbi_lineage
-        lineage = _get_ncbi_lineage(term.split('|')[0])
-    except Exception:
-        return False
+    lineage = _rcf._get_ncbi_lineage(term.split('|')[0])
     return lineage is not None and 'mammalia' in lineage
 
 
@@ -4119,6 +4350,33 @@ def uberon_exact_name(values, ontology_table, allowedTerm_dict):
     return values.astype(str).str.strip().str.lower().map(lookup)
 
 
+_SHEET_CACHE = {}
+
+
+def _read_sheet(path, **kwargs):
+    """pd.read_csv of a translation sheet, read once per run (a copy is returned, so
+    callers may change it)."""
+    key = (path, tuple(sorted(kwargs.items())))
+    if key not in _SHEET_CACHE:
+        _SHEET_CACHE[key] = pd.read_csv(path, **kwargs)
+    return _SHEET_CACHE[key].copy()
+
+
+def _miss_run_in_most_orders(n_hits, n_misses, run=100):
+    """True if, of all orders of n_hits found and n_misses not found names, more than half
+    have run misses in a row somewhere (exact count: the misses form n_hits + 1 groups
+    between the hits; orders with every group shorter than run, by inclusion-exclusion)."""
+    if n_misses < run:
+        return False
+    if n_hits == 0:
+        return True
+    from math import comb
+    groups = n_hits + 1
+    short = sum((-1) ** j * comb(groups, j) * comb(n_misses - run * j + n_hits, n_hits)
+                for j in range(0, min(groups, n_misses // run) + 1))
+    return 2 * short < comb(n_misses + n_hits, n_hits)
+
+
 def translate_MWB_to_REDU_from_csv(MWB_table,
                                    column_and_csv_names_outer=['MassSpectrometer',
                                                                'ChromatographyAndPhase',
@@ -4159,7 +4417,7 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
 
         print(f"Translating column {col_csv_name}")
 
-        df_translations = pd.read_csv(path_to_csvs + "/{}.csv".format(str(col_csv_name)), encoding="ISO-8859-1",
+        df_translations = _read_sheet(path_to_csvs + "/{}.csv".format(str(col_csv_name)), encoding="ISO-8859-1",
                                       dtype=str)
         df_translations['MWB'] = df_translations['MWB'].str.lower()
         df_translations = df_translations.drop_duplicates()
@@ -4183,7 +4441,7 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
             # values the shared sheet does not translate
             _extra_sheet = os.path.join(path_to_csvs, 'MWB_{}.csv'.format(col_csv_name))
             if col_csv_name != 'MassSpectrometer' and os.path.exists(_extra_sheet):
-                _extra = pd.read_csv(_extra_sheet, dtype=str, keep_default_na=False)
+                _extra = _read_sheet(_extra_sheet, dtype=str, keep_default_na=False)
                 _extra = dict(zip(_extra['MWB'].str.strip().str.lower(), _extra['REDU']))
                 _allowed = set((allowedTerm_dict.get(col_csv_name) or {}).get('allowed_values') or [])
                 _found = MWB_table['_raw_value'].map(_extra).where(lambda v: v.isin(_allowed))
@@ -4262,7 +4520,6 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
 
 
                 processed_species = {}
-                none_count = 0
                 # raw file names under variant keys and the Sample-ID placeholder rows are
                 # no species names
                 _not_species = (MWB_table['Key'] == 'raw_file_name') | (MWB_table['Key'] == 'Sample ID') \
@@ -4270,18 +4527,19 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                 unique_species = set(MWB_table[~_not_species]['Value'])
                 _names = _ncbi_name_lookup(allowedTerm_dict)
 
+                # same result as get_taxonomy_id_from_name__allowedTerms(species) (first
+                # allowed term with that name, case-insensitive), as a dictionary lookup
                 for species in unique_species:
-                    # same result as get_taxonomy_id_from_name__allowedTerms(species) (first
-                    # allowed term with that name, case-insensitive), as a dictionary lookup
                     result = _names.get(str(species).lower())
-                    if result is None:
-                        none_count += 1
-                        if none_count >= 100:
-                            processed_species = {}
-                            break
-                    else:
-                        none_count = 0  # Reset count if a non-None result is found
+                    if result is not None:
                         processed_species[species] = result
+                # The values are no species names if 100 of them in a row are none. This
+                # used to be decided while trying the values in set order, which changes with
+                # every run (PYTHONHASHSEED): studies lost their NCBITaxonomy - and rows with
+                # nothing else, to the minimum-metadata filter - in some runs only. Decided
+                # now as most of those orders decide it.
+                if _miss_run_in_most_orders(len(processed_species), len(unique_species) - len(processed_species)):
+                    processed_species = {}
 
                 if len(processed_species) > 0:
 
@@ -4410,8 +4668,17 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
             allowed_countries = (allowedTerm_dict.get('Country') or {}).get('allowed_values') or []
             fill = _is_missing('Country')
             if fill.any() and allowed_countries:
-                MWB_table.loc[fill, 'Country'] = MWB_table.loc[fill, 'COLLECTION_LOCATION'].map(
-                    lambda v: country_from_location(v, allowed_countries))
+                # the study-level location is the same on every row: look each distinct
+                # text up once
+                _country_memo = {}
+
+                def _country(v):
+                    if isinstance(v, str):
+                        if v not in _country_memo:
+                            _country_memo[v] = country_from_location(v, allowed_countries)
+                        return _country_memo[v]
+                    return country_from_location(v, allowed_countries)
+                MWB_table.loc[fill, 'Country'] = MWB_table.loc[fill, 'COLLECTION_LOCATION'].map(_country)
         if 'MWB_collection_date' in MWB_table.columns:
             dates = MWB_table['MWB_collection_date'].where(MWB_table['MWB_collection_date'].astype(str) != 'NA')
             if 'COLLECTION_TIME' in MWB_table.columns:
@@ -4468,7 +4735,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
             fill = _is_missing('UBERONBodyPartName') & MWB_table[col].notna() & _sub1_open
             MWB_table.loc[fill, 'UBERONBodyPartName'] = MWB_table.loc[fill, col]
 
-    df_translations = pd.read_csv(path_to_csvs + "/biofluid_tissue_distinction.csv", encoding="ISO-8859-1", dtype=str)
+    df_translations = _read_sheet(path_to_csvs + "/biofluid_tissue_distinction.csv", encoding="ISO-8859-1", dtype=str)
 
     MWB_table = MWB_table.merge(df_translations, left_on='UBERONBodyPartName', right_on='sampletype', how='left')
     
@@ -4787,15 +5054,18 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                 "https://www.metabolomicsworkbench.org/rest/study/analysis_id/{}/mwtab".format(str(MWB_analysis_ID)))
         except Exception as e:
             # one unavailable mwTab must not cost the study its other analyses
-            print(f"Could not get the mwTab of {MWB_analysis_ID}: {type(e).__name__}: {e}")
+            _drop_analysis(str(Massive_ID).split('|')[0], str(MWB_analysis_ID),
+                           f"could not get the mwTab ({type(e).__name__}: {e})")
             return None
 
         try:
             mwTab_json = json.loads(mwb_anlysis_req.text, object_pairs_hook=handle_duplicates)
 
-        except json.JSONDecodeError:
-            print("Did not receive valid mwTab json for {}!".format(str(MWB_analysis_ID)))
-            return None
+        except json.JSONDecodeError as e:
+            mwTab_json = mwtab_from_invalid_json(mwb_anlysis_req.text, str(Massive_ID).split('|')[0], str(MWB_analysis_ID),
+                                                 e, get_text=lambda url: _mwb_get(url).text)
+            if mwTab_json is None:
+                return None
         
     allowedTerm_dict = kwargs['allowedTerm_dict']
     ontology_table = kwargs['ontology_table']
@@ -4958,6 +5228,9 @@ if __name__ == '__main__':
     parser.add_argument("--path_to_hpo_csv", type=str, help="Prepared HPO ontology csv (optional); enables health conditions (HPOCommonName)", default='none')
     parser.add_argument("--path_to_exposure_csv", type=str, help="Prepared ECTO/PECO ontology csv (optional); enables exposures (Exposure)", default='none')
     parser.add_argument("--path_to_cellosaurus_tsv", type=str, help="Cellosaurus table from build_cellosaurus_table.py (optional); enables CellLine / CellLineIndex", default='none')
+    parser.add_argument("--path_to_ncbi_nodes_dmp", type=str, required=True, help="nodes.dmp of the pinned NCBI taxdump (fetchReferenceData); NCBI lineages for SampleType, cell lines")
+    parser.add_argument("--path_to_ncbi_names_dmp", type=str, required=True, help="names.dmp of the pinned NCBI taxdump")
+    parser.add_argument("--path_to_ncbi_merged_dmp", type=str, required=True, help="merged.dmp of the pinned NCBI taxdump")
 
     print('Starting MWB2REDU script,..')
 
@@ -4992,6 +5265,9 @@ if __name__ == '__main__':
         from cellosaurus import load_cellosaurus_table
         CELLOSAURUS_TABLE = load_cellosaurus_table(args.path_to_cellosaurus_tsv)
    
+    # NCBI lineages from the pinned taxonomy (no E-utilities requests)
+    _rcf.use_pinned_ncbi_taxonomy(args.path_to_ncbi_nodes_dmp, args.path_to_ncbi_names_dmp, args.path_to_ncbi_merged_dmp)
+
     # Read NCBI rank and division csv
     NCBIRankDivision_table = pd.read_csv(args.path_ncbi_rank_division, index_col = False)
     NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
@@ -5007,7 +5283,7 @@ if __name__ == '__main__':
             study_dict = studies_dict[key]
             study_list.append(study_dict['study_id'])
 
-        study_list = list(set(study_list))
+        study_list = sorted(set(study_list))
 
         all_results_list = []
         failed_studies = []
@@ -5034,6 +5310,12 @@ if __name__ == '__main__':
                 print(f"Failed to process {study_id}: {type(e).__name__}: {e}")
                 failed_studies.append(study_id)
         print(f"{len(failed_studies)} of {len(study_list)} studies failed to process")
+        if DROPPED_STUDIES:
+            print(f"{len(DROPPED_STUDIES)} studies dropped because the Workbench gave no file list: "
+                  + ', '.join(f'{s} ({r})' for s, r in sorted(DROPPED_STUDIES.items())))
+        if DROPPED_ANALYSES:
+            print(f"{len(DROPPED_ANALYSES)} MS analyses dropped because the Workbench gave no usable mwTab: "
+                  + ', '.join(f'{a} ({r})' for a, r in sorted(DROPPED_ANALYSES.items())))
         merged_df = pd.concat(all_results_list, ignore_index=True)
         merged_df.to_csv('REDU_from_MWB_all.tsv', sep='\t', index=False, header=True)
 

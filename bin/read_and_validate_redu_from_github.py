@@ -1,11 +1,15 @@
 import argparse
 import collections
 import math
+import numpy as np
 import pandas as pd
 import glob
 import re
 import os
 import json
+import sys
+import traceback
+import weakref
 from io import StringIO
 from REDU_conversion_functions import age_category, normalize_redu_datetime
 from blank_qc_names import apply_filename_blank_qc
@@ -30,15 +34,104 @@ def _canonical_term(value):
 
 
 # Lookups derived from the (large, unchanging) allowed-term lists, built once per run
-# instead of once per metadata file
+# instead of once per metadata file. An entry keeps its source, so the id() it is keyed on
+# cannot be taken by another object while the entry exists; at most _LOOKUP_CACHE_MAX
+# entries are kept.
 _LOOKUP_CACHE = {}
+_LOOKUP_CACHE_MAX = 512
 
 
 def _cached(name, source, build):
     key = (name, id(source), len(source))
-    if key not in _LOOKUP_CACHE:
-        _LOOKUP_CACHE[key] = build()
-    return _LOOKUP_CACHE[key]
+    hit = _LOOKUP_CACHE.get(key)
+    if hit is None or hit[0] is not source:
+        if len(_LOOKUP_CACHE) >= _LOOKUP_CACHE_MAX:
+            _LOOKUP_CACHE.clear()
+        hit = (source, build())
+        _LOOKUP_CACHE[key] = hit
+    return hit[1]
+
+
+# Lookups derived from a table argument: one entry per name, for the table object last
+# passed. The entry holds only a weak reference to the table, so tables that callers pass
+# as a new copy per call (Workbench, MetaboLights) are rebuilt, are not kept alive and do
+# not make the cache grow.
+_TABLE_CACHE = {}
+
+
+def _cached_for_table(name, table, build):
+    hit = _TABLE_CACHE.get(name)
+    if hit is not None and hit[0]() is table and hit[1] == len(table):
+        return hit[2]
+    value = build()
+    try:
+        _TABLE_CACHE[name] = (weakref.ref(table), len(table), value)
+    except TypeError:
+        _TABLE_CACHE.pop(name, None)  # not weak-referenceable: not cached
+    return value
+
+
+_NCBI_COLUMNS = ('TaxonID', 'NCBIRank', 'NCBIDivision')
+# The NCBI rank/division table last prepared by _prepare_ncbi_table (one entry)
+_NCBI_PREPARED = {}
+
+
+def _column_buffers(table):
+    # the arrays of the three columns and the address of their data
+    arrays = [table[c].to_numpy() for c in _NCBI_COLUMNS]
+    return arrays, [a.__array_interface__['data'][0] for a in arrays]
+
+
+def _forget_ncbi_table(ref, prepared=_NCBI_PREPARED):
+    # weakref callback: the table is gone, so is its entry (the dict is bound here, as
+    # module globals may already be cleared when this runs at interpreter exit)
+    hit = prepared.get('entry')
+    if hit is not None and hit['table'] is ref:
+        prepared.clear()
+
+
+def _prepare_ncbi_table(table):
+    """Converts TaxonID, NCBIRank and NCBIDivision of the caller's NCBI table to str in
+    place, as complete_and_fill_REDU_table always did, and returns an Index of its TaxonIDs
+    (None for an empty table) to take only the rows of the taxa in a metadata table from it.
+    The ~3M-row table is converted and indexed once per table object: the entry holds a
+    weak reference to the table (it is not kept alive) and the converted column arrays (so
+    their memory cannot be reused), and is used again only for the same table object with
+    the same length and the very same column arrays; a call with another table, or after a
+    column of this one was replaced, converts and indexes again. TaxonIDs edited in place
+    inside the table (no caller does that) are not noticed: a row given the TaxonID of
+    another row is not found under it."""
+    hit = _NCBI_PREPARED.get('entry')
+    if hit is not None and hit['table']() is table and hit['len'] == len(table) \
+            and _column_buffers(table)[1] == hit['addresses']:
+        return hit['index']
+    for c in _NCBI_COLUMNS:
+        table[c] = table[c].astype(str)
+    if not len(table):
+        return None
+    arrays, addresses = _column_buffers(table)
+    # the Index owns a copy of the TaxonIDs: its hash table only borrows references to
+    # the values, so it must not share the table's array (a value replaced in place there
+    # would be freed under it)
+    index = pd.Index(arrays[0], dtype=object, copy=True)
+    try:
+        ref = weakref.ref(table, _forget_ncbi_table)
+    except TypeError:
+        return index
+    _NCBI_PREPARED['entry'] = {'table': ref, 'len': len(table), 'arrays': arrays,
+                               'addresses': addresses, 'index': index}
+    return index
+
+
+def _ncbi_rows_of(table, taxon_index, taxon_ids):
+    """The rows of the NCBI table whose TaxonID is one of taxon_ids, in table order: a
+    left merge with them gives the same rows, values and columns as with the whole table."""
+    needed = pd.unique(taxon_ids.to_numpy(dtype=object))
+    if taxon_index.is_unique:
+        rows = taxon_index.get_indexer(needed)
+    else:
+        rows, _ = taxon_index.get_indexer_non_unique(needed)
+    return table.iloc[np.sort(rows[rows >= 0])]
 
 
 _DOID_ITEM = re.compile(r'(?i)^DOID[:_]?(\d+)$')
@@ -76,6 +169,12 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     A DataFrame that has been filled with default values for missing columns,
     with values replaced by the corresponding "missing" value from the dictionary
     if they are not in the allowed terms or are missing/empty, except for specific columns.
+
+    The ontology and NCBI tables passed in are changed in place: their 'Label' columns
+    (and TaxonID, NCBIRank, NCBIDivision of the NCBI table) become str, so NaN becomes
+    'nan', and a DOID table's 'UBERONOntologyIndex' column is renamed 'DOIDOntologyIndex'.
+    Callers read these tables after the call (e.g. Metabolights2REDU matches ENVO labels
+    of the converted table in the next study), so this is kept as it is.
     """
 
     if len(df) == 0:
@@ -173,9 +272,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     else:
         NCBIRankDivision_table = pd.DataFrame(columns=['TaxonID', 'NCBIRank', 'NCBIDivision'])
 
-    NCBIRankDivision_table['TaxonID'] = NCBIRankDivision_table['TaxonID'].astype(str)
-    NCBIRankDivision_table['NCBIRank'] = NCBIRankDivision_table['NCBIRank'].astype(str)
-    NCBIRankDivision_table['NCBIDivision'] = NCBIRankDivision_table['NCBIDivision'].astype(str)
+    # str in place, once per table object; index of its TaxonIDs for the NCBIRank merge
+    ncbi_taxon_index = _prepare_ncbi_table(NCBIRankDivision_table)
 
     # resolves NCBI names that are not allowed scientific names (synonyms, merged taxa,
     # strains) to an allowed term, or returns None
@@ -256,7 +354,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'ComorbidityListDOIDIndex':
                 # a list of DOID IDs, not a fixed set of combinations: every ID must be a
                 # current (non-obsolete) DOID class of the DOID table
-                doid_ids = _cached('doid_ids', doid_ontology_table, lambda: set(
+                doid_ids = _cached_for_table('doid_ids', doid_ontology_table, lambda: set(
                     doid_ontology_table['DOIDOntologyIndex'].dropna().astype(str).str.strip())
                     if 'DOIDOntologyIndex' in doid_ontology_table.columns else set())
                 if not doid_ids and any(str(v).strip() not in ('', missing_value) for v in unique_values):
@@ -294,11 +392,26 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             # Initialize value_map for each condition
             if key not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) >= 1 \
                     and allowed_terms[0] not in ['00', 'datetime', 'numeric', 'numeric|numeric']:
-                # General case for non-specific keys with a list of allowed terms
-                value_map = {
-                    observed_value: next((allowed for allowed in allowed_terms if allowed.replace(" ", "") == str(observed_value).replace(" ", "")), missing_value)
-                    for observed_value in unique_values
-                }
+                # General case for non-specific keys with a list of allowed terms: the first
+                # allowed term that equals the value when spaces are ignored
+                def _build_without_spaces(terms=allowed_terms):
+                    if not all(isinstance(t, str) for t in terms):
+                        return None
+                    first = {}
+                    for allowed in terms:
+                        first.setdefault(allowed.replace(" ", ""), allowed)
+                    return first
+                without_spaces = _cached('without_spaces', allowed_terms, _build_without_spaces)
+                if without_spaces is not None:
+                    value_map = {
+                        observed_value: without_spaces.get(str(observed_value).replace(" ", ""), missing_value)
+                        for observed_value in unique_values
+                    }
+                else:
+                    value_map = {
+                        observed_value: next((allowed for allowed in allowed_terms if allowed.replace(" ", "") == str(observed_value).replace(" ", "")), missing_value)
+                        for observed_value in unique_values
+                    }
                 if case_insensitive_terms:
                     # Fall back to a case/separator-insensitive match when it is unambiguous
                     def _build_canonical(terms=allowed_terms):
@@ -336,6 +449,21 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                     allowed_set, allowed_by_id, allowed_by_name_ci, shared_names_ci = _cached('ncbi', allowed_terms, _build_ncbi)
                     division_by_id = {}
 
+                    def division_of(taxid):
+                        # NCBI division of a TaxonID (None if not in the table)
+                        if ncbi_taxon_index is not None and ncbi_taxon_index.is_unique:
+                            try:
+                                position = ncbi_taxon_index.get_loc(taxid)
+                            except KeyError:
+                                position = None
+                            if position is not None and NCBIRankDivision_table['TaxonID'].iat[position] == taxid:
+                                return NCBIRankDivision_table['NCBIDivision'].iat[position]
+                            if position is None:
+                                return None
+                        if not division_by_id:
+                            division_by_id.update(zip(NCBIRankDivision_table['TaxonID'], NCBIRankDivision_table['NCBIDivision']))
+                        return division_by_id.get(taxid)
+
                     def name_hit(name, oid):
                         terms = shared_names_ci.get(name.lower())
                         if terms is None:
@@ -344,10 +472,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         # (e.g. '1409|Bacillus sp.' is in Bacteria -> 1386|Bacillus, not the insect)
                         if not oid:
                             return None
-                        if not division_by_id:
-                            division_by_id.update(zip(NCBIRankDivision_table['TaxonID'], NCBIRankDivision_table['NCBIDivision']))
-                        division = division_by_id.get(oid)
-                        same_division = [t for t in terms if division and division_by_id.get(t.split("|", 1)[0].strip()) == division]
+                        division = division_of(oid)
+                        same_division = [t for t in terms if division and division_of(t.split("|", 1)[0].strip()) == division]
                         return same_division[0] if len(same_division) == 1 else None
 
                     def resolve_ncbi(observed_value: str) -> str:
@@ -501,14 +627,31 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
 
             if key == 'LifeStage':
-                computed = df.apply(lambda x: age_category(x['AgeInYears']) if x['NCBITaxonomy'] == "9606|Homo sapiens" else value['missing'], axis=1)
+                if df.columns.is_unique:
+                    # the row-wise rule on the two columns it reads (df.apply(axis=1) builds a
+                    # Series of all columns per row)
+                    computed = pd.Series([age_category(age) if taxon == "9606|Homo sapiens" else value['missing']
+                                          for age, taxon in zip(df['AgeInYears'], df['NCBITaxonomy'])],
+                                         index=df.index, dtype=object)
+                else:
+                    computed = df.apply(lambda x: age_category(x['AgeInYears']) if x['NCBITaxonomy'] == "9606|Homo sapiens" else value['missing'], axis=1)
                 computed = computed.replace('', value['missing'])  # age_category gives '' for non-numeric ages
                 # a life stage recorded by the submitter is kept when the age gives none
                 if '_recorded_LifeStage' in df.columns and len(value.get('allowed_values') or []) > 0:
                     recorded = df['_recorded_LifeStage'].where(df['_recorded_LifeStage'].isin(value['allowed_values']))
                     computed = computed.where(computed != value['missing'], recorded).fillna(value['missing'])
                 df[key] = computed
-            if key == 'UniqueSubjectID':
+            if key == 'UniqueSubjectID' and df.columns.is_unique:
+                # the row-wise rule below on the two columns it reads
+                df[key] = pd.Series([str(massive_id) + '_' + str(subject)
+                                     if subject != allowedTerm_dict['SubjectIdentifierAsRecorded']['missing']
+                                     and subject != ''
+                                     and subject != 'not applicable'
+                                     and not pd.isna(subject)
+                                     else value['missing']
+                                     for massive_id, subject in zip(df['MassiveID'], df['SubjectIdentifierAsRecorded'])],
+                                    index=df.index, dtype=object)
+            elif key == 'UniqueSubjectID':
                 df[key] = df.apply(lambda x: str(x['MassiveID']) + '_' + str(x['SubjectIdentifierAsRecorded']) 
                                 if x['SubjectIdentifierAsRecorded'] != allowedTerm_dict['SubjectIdentifierAsRecorded']['missing'] 
                                 and x['SubjectIdentifierAsRecorded'] != ''
@@ -533,7 +676,11 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 if 'CellLine' not in df.columns:
                     df['CellLine'] = allowedTerm_dict.get('CellLine', {}).get('missing', missing_value)
                 if cellosaurus_index is not None:
-                    df[key] = df['CellLine'].map(cellosaurus_index.by_name).fillna(missing_value)
+                    # looked up per distinct value: mapping with the ~160k-name dict itself
+                    # turns it into a Series on every call
+                    by_name = cellosaurus_index.by_name
+                    accession = {v: by_name[v] for v in df['CellLine'].unique() if v in by_name}
+                    df[key] = df['CellLine'].map(accession).fillna(missing_value)
                 else:
                     df[key] = missing_value
             if key == 'HPOOntologyIndex':
@@ -591,7 +738,12 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'NCBIRank':
                 df['TaxonID'] = df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if '|' in x else 'missing value')
                 df['TaxonID'] = df['TaxonID'].astype(str)
-                df = pd.merge(df, NCBIRankDivision_table, on='TaxonID', how='left')
+                ncbi_rows = NCBIRankDivision_table
+                if ncbi_taxon_index is not None:
+                    # only the table rows of these taxa: the same left merge as with the
+                    # whole table, without hashing its ~3M TaxonIDs on every call
+                    ncbi_rows = _ncbi_rows_of(NCBIRankDivision_table, ncbi_taxon_index, df['TaxonID'])
+                df = pd.merge(df, ncbi_rows, on='TaxonID', how='left')
                 df.drop(columns=['TaxonID'], inplace=True)
 
                 if 'NCBIRank' in df.columns:
@@ -644,7 +796,13 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     
     original_row_count = df.shape[0]
     columns_to_check = [col for col in columns_to_consider if col in df.columns]
-    df = df[(df.apply(count_non_missing_specific, cols=columns_to_check, axis=1) >= 1)]
+    if len(df) == 0 or isinstance(df.iloc[0].dtype, pd.api.extensions.ExtensionDtype):
+        df = df[(df.apply(count_non_missing_specific, cols=columns_to_check, axis=1) >= 1)]
+    else:
+        # the same count for all rows at once. The rows df.apply passes hold the cells as
+        # objects (the frame's columns are not all of one extension dtype), so the cells are
+        # compared as objects here too: NaN, None and pd.NA count as not missing
+        df = df[(df[columns_to_check].astype(object) != "missing value").sum(axis=1) >= 1]
 
     print(f"Number of rows removed due to not enough metadata: {original_row_count - df.shape[0]}")
     print(f"Returning {len(df)} rows!")
@@ -842,7 +1000,10 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
                     NCBIRankDivision_table['TaxonID'].astype(str), NCBIRankDivision_table['NCBIDivision'])))
                 animal_divisions = {'Primates', 'Rodents', 'Mammals', 'Vertebrates', 'Invertebrates'}
                 taxid = df.loc[is_sub1, 'NCBITaxonomy'].astype(str).str.split('|').str[0].str.strip()
-                is_animal = taxid.map(division).isin(animal_divisions)
+                # the divisions of these taxa only: mapping with the ~3M-entry dict itself
+                # turns it into a Series on every call
+                division_here = {t: division[t] for t in taxid.unique() if t in division}
+                is_animal = taxid.map(division_here).isin(animal_divisions)
                 inferred = inferred.mask(moved.isin(['biofluid', 'tissue']) & is_animal, 'animal')
             df.loc[is_sub1, 'SampleType'] = inferred
             print(f"Moved {is_sub1.sum()} SampleTypeSub1 values out of SampleType")
@@ -1155,14 +1316,15 @@ if __name__ == '__main__':
             allowed_terms['NCBITaxonomy']['allowed_values'], NCBIRankDivision_table)
    
 
+    # A file that cannot be read or harmonised is reported and skipped; the others are
+    # still harmonised (one bad file used to stop the loop, and the step's '|| true' passed
+    # the partial folder on)
+    failed_files = []
+    written_files = 0
     for file_path in all_metadata_files:
-    #for file_path in ["/home/yasin/projects/ReDU_metadata/metadata/redu_MSV000093329.tsv"]:
-        
-        #if re.match(r'.*redu_MSV\d+\.tsv$', file_path):
-        if True:
-
-            print(f"Processing: {file_path}")
-
+        print(f"Processing: {file_path}")
+        partial_name = None
+        try:
             # Read as strings so e.g. a YearOfAnalysis column with blanks is not parsed as
             # float ('2019.0' would not match the allowed '2019')
             df = pd.read_csv(file_path, sep='\t', dtype=str)
@@ -1198,6 +1360,28 @@ if __name__ == '__main__':
                                               CellLineIndex_table=cellosaurus_table)
             
             if len(df) > 0:
-            
+                # written under a name the next steps do not read (*.tsv), then renamed, so
+                # a failed write leaves no partial file
                 file_name = os.path.join(args.output_metadata_folder, os.path.basename(file_path))
-                df.to_csv(file_name, sep='\t', index=False)
+                partial_name = os.path.join(args.output_metadata_folder, '.' + os.path.basename(file_path) + '.partial')
+                df.to_csv(partial_name, sep='\t', index=False)
+                os.replace(partial_name, file_name)
+                partial_name = None
+                written_files += 1
+        except Exception as e:
+            failed_files.append(file_path)
+            sys.stdout.flush()
+            print(f"WARNING: skipping {file_path}, it could not be harmonised: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+            if partial_name is not None and os.path.exists(partial_name):
+                os.remove(partial_name)
+
+    print(f"Harmonised {len(all_metadata_files) - len(failed_files)} of {len(all_metadata_files)} files "
+          f"({written_files} written, {len(failed_files)} failed)")
+    if failed_files:
+        print(f"WARNING: {len(failed_files)} of {len(all_metadata_files)} files could not be harmonised "
+              f"and are not in the output: {', '.join(os.path.basename(p) for p in failed_files)}", file=sys.stderr)
+        if len(failed_files) == len(all_metadata_files):
+            sys.exit(1)

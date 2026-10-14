@@ -61,6 +61,54 @@ process fetchReferenceData {
 }
 
 
+// One copy of the GNPS2 dataset cache's file table (https://datasetcache.gnps2.org/dataset/uniquemri,
+// a ~1 GB export the cache regenerates about every 3 h; ~3 min). The name matching steps take each
+// dataset's mz(X)ML files from it instead of one dataset cache query per dataset (~1700 queries,
+// 20-90 min per run; a query that timed out dropped all rows of its dataset). It is fetched once the
+// MassIVE listing is done (so the dataset cache is asked one request at a time), while gnpsHarmonize
+// runs. If the download fails or is incomplete the file is left empty and the name matching steps
+// query the cache per dataset, as before.
+process fetchDatasetCache {
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    // the table changes every few hours; never reuse one from an earlier run (-resume)
+    cache false
+
+    input:
+    val after_massive_download
+
+    output:
+    path 'uniquemri.csv', emit: table
+
+    """
+    for attempt in 1 2 3; do
+        problem=""
+        if curl -sS --fail --speed-limit 50000 --speed-time 300 --max-time 5400 \
+                -D uniquemri.headers -o uniquemri.csv https://datasetcache.gnps2.org/dataset/uniquemri; then
+            expected=\$(grep -i '^content-length:' uniquemri.headers | tail -n 1 | tr -dc '0-9' || true)
+            actual=\$(stat -c %s uniquemri.csv)
+            if [ -n "\$expected" ] && [ "\$expected" != "\$actual" ]; then
+                problem="incomplete download: \$actual of \$expected bytes"
+            elif [ "\$(head -c 21 uniquemri.csv)" != 'usi,filepath,dataset,' ]; then
+                problem="unexpected format"
+            elif [ "\$(tail -c 1 uniquemri.csv | od -An -c | tr -d ' ')" != '\\n' ]; then
+                problem="the file does not end with a complete line"
+            fi
+        else
+            problem="download failed (curl exit \$?)"
+        fi
+        if [ -z "\$problem" ]; then break; fi
+        echo "dataset cache table, attempt \$attempt: \$problem" >&2
+        if [ \$attempt -lt 3 ]; then sleep 60; fi
+    done
+    if [ -n "\$problem" ]; then
+        echo "WARNING: dataset cache table not available (\$problem); the name matching queries the dataset cache per dataset" >&2
+        : > uniquemri.csv
+    fi
+    """
+}
+
+
 process updateAllowedTerms {
     publishDir "./nf_output", mode: 'copy'
 
@@ -147,6 +195,10 @@ process mwbRun {
     path hpo_csv
     path exposure_csv
     path cellosaurus_tsv
+    path nodes_dmp
+    path names_dmp
+    path merged_dmp
+    val after_listing
 
     output:
     file 'REDU_from_MWB_all.tsv'
@@ -167,6 +219,9 @@ process mwbRun {
     --path_to_hpo_csv ${hpo_csv} \
     --path_to_exposure_csv ${exposure_csv} \
     --path_to_cellosaurus_tsv ${cellosaurus_tsv} \
+    --path_to_ncbi_nodes_dmp ${nodes_dmp} \
+    --path_to_ncbi_names_dmp ${names_dmp} \
+    --path_to_ncbi_merged_dmp ${merged_dmp} \
     || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; }
     """
 }
@@ -233,6 +288,7 @@ process mlRun {
     // staged for the MetaboLights cell lines; Metabolights2REDU.py does not take
     // --path_to_cellosaurus_tsv yet (its CellLine / CellLineIndex are 'missing value')
     path cellosaurus_tsv
+    val after_listing
 
     output:
     file 'Metabolights2REDU_ALL.tsv'
@@ -452,6 +508,7 @@ process gnpsmatchName {
     // file 'passed_file_names.tsv'
     file 'adjusted_metadata_folder'
     path allowed_terms
+    path files_table
 
     output:
     file 'gnps_metadata_all.tsv'
@@ -462,6 +519,7 @@ process gnpsmatchName {
     adjusted_metadata_folder \
     gnps_metadata_all.tsv \
     ${allowed_terms} \
+    --files_table ${files_table} \
     || { echo "WARNING: gnpsmatchName failed or timed out; GNPS rows from earlier runs are kept" >&2; : > gnps_metadata_all.tsv; }
     """
 }
@@ -554,6 +612,7 @@ process gnpsmatchName_masst {
     input:
     file 'adjusted_metadata_folder' 
     path allowed_terms
+    path files_table
 
     output:
     file 'masst_metadata_all.tsv'
@@ -564,6 +623,7 @@ process gnpsmatchName_masst {
     adjusted_metadata_folder \
     masst_metadata_all.tsv \
     ${allowed_terms} \
+    --files_table ${files_table} \
     || { echo "WARNING: gnpsmatchName_masst failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_metadata_all.tsv; }
     """
 }
@@ -669,24 +729,30 @@ workflow {
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
+    // the dataset cache's file table for the name matching steps, after the MassIVE listing
+    dataset_cache = fetchDatasetCache(file_paths_ch)
     msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names, cellosaurus)
-    gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms)
+    gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms, dataset_cache.table)
     gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
     // MASST tables: microbeMASST, plantMASST, foodMASST, personalCareProductMASST, microbiomeMASST
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
         ref.microbe_masst, ref.plant_masst, ref.food_masst, ref.food_masst_full, ref.personal_care_masst,
         ref.microbiome_masst, ref.nodes, ref.names, uberon_cl_co_onto, doid_onto, exposure_onto)
-    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch.folder, allowed_terms)
+    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch.folder, allowed_terms, dataset_cache.table)
 
     // Metabolomics Workbench
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus)
+    // one request stream per repository: the file listing first, then the converter
     mwb_files_ch = mwbFiles(1)
+    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
+        ref.nodes, ref.names, ref.merged, mwb_files_ch)
     mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
 
     // Metabolights
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus)
+    // one request stream per repository: the file listing first, then the converter
     ml_files_ch = mlFiles(1)
+    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
+        ml_files_ch)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
     // NORMAN

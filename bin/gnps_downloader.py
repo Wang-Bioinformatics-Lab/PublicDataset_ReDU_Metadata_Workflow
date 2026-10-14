@@ -10,97 +10,104 @@ import argparse
 import time
 import re
 import json
-from ftplib import FTP_TLS, all_errors as ftp_errors
+from ftplib import FTP_TLS, error_perm, all_errors as ftp_errors
 
-
-def download_gnps_metadata(out_path="gnps_metadata.tsv", page_size=1000, max_pages=None, max_retries=5):
-    """
-    Downloads all GNPS metadata ending with 'gnps_metadata.tsv' via the Datasette API,
-    paginating with _next and writing results incrementally as TSV.
-
-    Each page is retried up to max_retries times before aborting.
-    """
-    base_url = "https://datasetcache.gnps2.org/datasette/database/filename.json"
-    params = {
-        "_sort": "filepath",
-        "filepath__endswith": "gnps_metadata.tsv",
-        "_size": page_size,
-        "_shape": "objects",  # rows as list of dicts
-    }
-
-    wrote_header = False
-    all_rows = []
-    page = 0
-    next_token = None
-
-    # truncate file
-    with open(out_path, "w", encoding="utf-8") as f_out:
-        pass
-
-    print("Starting paginated download...", file=sys.stderr)
-
-    while True:
-        if next_token:
-            params["_next"] = next_token
-        elif "_next" in params:
-            del params["_next"]
-
-        page += 1
-        if max_pages and page > max_pages:
-            print("Reached max_pages limit; stopping.", file=sys.stderr)
-            break
-
-        attempt = 0
-        success = False
-        while attempt < max_retries and not success:
-            attempt += 1
-            try:
-                r = requests.get(base_url, params=params, timeout=120)
-                if r.status_code != 200:
-                    print(f"[page {page}] Attempt {attempt} bad status {r.status_code}", file=sys.stderr)
-                    time.sleep(2 ** attempt)
-                    continue
-                payload = r.json()
-                success = True
-            except Exception as e:
-                print(f"[page {page}] Attempt {attempt} failed: {e}", file=sys.stderr)
-                time.sleep(2 ** attempt)
-
-        if not success:
-            # A partial listing would silently drop every dataset on the missing pages
-            raise RuntimeError(f"[page {page}] All {max_retries} attempts failed; aborting.")
-
-        rows = payload.get("rows", [])
-        next_token = payload.get("next")
-
-        if not rows:
-            print(f"[page {page}] No rows; stopping.", file=sys.stderr)
-            break
-
-        df_chunk = pd.DataFrame.from_records(rows)
-
-        # write incrementally
-        with open(out_path, "a", encoding="utf-8") as f_out:
-            df_chunk.to_csv(f_out, sep="\t", index=False, header=not wrote_header)
-        wrote_header = True
-
-        all_rows.extend(rows)
-        print(f"[page {page}] Wrote {len(rows)} rows "
-              f"(next={'yes' if next_token else 'no'})", file=sys.stderr)
-
-        if not next_token:
-            break
-
-        time.sleep(0.2)  # be nice to server
-
-    if not all_rows:
-        raise RuntimeError("No data downloaded; all pages failed.")
-
-    df = pd.DataFrame.from_records(all_rows)
-    print(f"✅ Saved {len(df)} rows to {out_path}", file=sys.stderr)
-    return df
 
 CACHE_FILENAME_URL = "https://datasetcache.gnps2.org/datasette/database/filename.json"
+CACHE_SQL_URL = "https://datasetcache.gnps2.org/datasette/database.json"
+# columns of the dataset cache's filename table, in table order
+CACHE_COLUMNS = ["usi", "filepath", "dataset", "collection", "is_update", "update_name", "create_time", "size",
+                 "size_mb", "sample_type", "spectra_ms1", "spectra_ms2", "instrument_vendor", "instrument_model",
+                 "file_processed"]
+# The cache answers each SQL query within 60 s (datasette sql_time_limit_ms) or not at all, and
+# a 'filepath like ...' condition has to look at every one of its ~17 million rows; one query
+# over the whole table took 3 s to over 60 s depending on the load of the cache (it failed on
+# most attempts on 2026-10-14). Listings are therefore made of queries over rowid ranges of
+# this many rows (~0.3 s each when idle); a range that still takes too long is split in two.
+ROWID_CHUNK = 1000000
+MIN_ROWID_CHUNK = 10000
+
+
+class CacheQueryTooSlow(Exception):
+    """The dataset cache stopped the query at its SQL time limit."""
+
+
+def _cache_sql(sql, params, max_retries=6, timeout=(30, 180)):
+    """Result rows of one read-only SQL query of the dataset cache (datasette JSON API)."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(CACHE_SQL_URL, params={"sql": sql, "_shape": "objects", **params}, timeout=timeout)
+            if r.status_code == 200:
+                payload = r.json()
+                if payload.get("ok", True) is not False:
+                    return payload
+                error = str(payload.get("error"))[:200]
+            else:
+                error = f"bad status {r.status_code}"
+                if r.status_code == 400 and "too long" in r.text:
+                    raise CacheQueryTooSlow(f"{params}")
+                if 400 <= r.status_code < 500 and r.status_code not in (408, 429):
+                    # a request error (e.g. invalid SQL) does not go away on retry
+                    raise RuntimeError(f"Dataset cache query {params}: {error}: {r.text[:300]}")
+        except (requests.RequestException, ValueError) as e:
+            error = f"{type(e).__name__}: {e}"
+        print(f"Dataset cache query {params}: attempt {attempt} failed ({error})", file=sys.stderr)
+        if attempt < max_retries:
+            time.sleep(min(10 * 2 ** (attempt - 1), 120))
+    raise RuntimeError(f"Dataset cache query {params} failed {max_retries} times")
+
+
+def list_cache_files(where, columns=("dataset", "filepath", "create_time", "size"), max_retries=6):
+    """Files of the dataset cache's filename table matching an SQL condition, with their rowid
+    (all of them, or an exception: a partial listing would silently drop the datasets it misses). The table is
+    read in rowid ranges, in increasing order, the last range open-ended, so rows added while
+    the listing is made are included; a row seen twice (re-inserted) is kept once."""
+    max_rowid = _cache_sql("select max(rowid) as max_rowid from filename", {}, max_retries)["rows"][0]["max_rowid"] or 0
+    ranges = collections.deque((lo, lo + ROWID_CHUNK if lo + ROWID_CHUNK <= max_rowid else None)
+                               for lo in range(0, max_rowid + 1, ROWID_CHUNK))
+    query_columns = ["rowid as _rowid", "usi"] + [c for c in columns if c != "usi"]
+    sql = "select {} from filename where rowid >= :lo{} and ({})"
+    rows = {}
+    n_queries = n_split = 0
+    while ranges:
+        lo, hi = ranges.popleft()
+        params = {"lo": lo} if hi is None else {"lo": lo, "hi": hi}
+        size = ROWID_CHUNK if hi is None else hi - lo
+        try:
+            n_queries += 1
+            payload = _cache_sql(sql.format(", ".join(query_columns), "" if hi is None else " and rowid < :hi", where),
+                                 params, max_retries)
+        except CacheQueryTooSlow:
+            payload = None
+        # too slow, or more rows than one answer can carry (max_returned_rows): split the range
+        if payload is None or payload.get("truncated"):
+            if size < 2 * MIN_ROWID_CHUNK:
+                raise RuntimeError(f"Dataset cache: no complete answer for rowid range {params}")
+            mid = lo + size // 2
+            ranges.appendleft((mid, hi))
+            ranges.appendleft((lo, mid))
+            n_split += 1
+            continue
+        for row in payload.get("rows", []):
+            rows[row["usi"]] = row
+    print(f"Dataset cache listing ({where}): {len(rows)} files from {n_queries} queries "
+          f"({n_split} ranges split)", file=sys.stderr)
+    return pd.DataFrame.from_records(list(rows.values()), columns=list(columns) + ["_rowid"])
+
+
+def download_gnps_metadata(out_path="gnps_metadata.tsv"):
+    """All files named *gnps_metadata.tsv in the dataset cache (all columns), sorted by
+    filepath, also written to out_path as TSV. Raises if the listing could not be completed."""
+    df = list_cache_files("filepath like '%gnps_metadata.tsv'", CACHE_COLUMNS)
+    if not len(df):
+        raise RuntimeError("the dataset cache lists no *gnps_metadata.tsv files")
+    # (the order of the former single query: by filepath, then rowid)
+    df = df.sort_values(["filepath", "_rowid"], kind="stable").drop(columns="_rowid").reset_index(drop=True)
+    df.to_csv(out_path, sep="\t", index=False)
+    print(f"Saved {len(df)} rows to {out_path}", file=sys.stderr)
+    return df
+
+
 PROXI_URL = "https://massive.ucsd.edu/ProteoSAFe/proxi/v0.1/datasets/{}"
 
 # ReDU-format sheets that are not named *gnps_metadata.tsv (other names, .txt, .csv,
@@ -244,38 +251,6 @@ def combine_versions(sheets, dataset, template_keys):
     return pd.concat(parts, ignore_index=True, sort=False)
 
 
-def list_cache_files(where, page_size=1000, max_retries=5):
-    """Files of the dataset cache matching an SQL condition on filepath (all pages)."""
-    params = {"_where": where, "_shape": "objects", "_size": page_size,
-              "_col": ["filepath", "dataset", "create_time", "size"]}
-    rows = []
-    next_token = None
-    page = 0
-    while True:
-        page += 1
-        if next_token:
-            params["_next"] = next_token
-        payload = None
-        for attempt in range(1, max_retries + 1):
-            try:
-                r = requests.get(CACHE_FILENAME_URL, params=params, timeout=300)
-                if r.status_code == 200:
-                    payload = r.json()
-                    break
-                print(f"[page {page}] Attempt {attempt} bad status {r.status_code}", file=sys.stderr)
-            except Exception as e:
-                print(f"[page {page}] Attempt {attempt} failed: {e}", file=sys.stderr)
-            time.sleep(2 ** attempt)
-        if payload is None:
-            raise RuntimeError(f"[page {page}] All {max_retries} attempts failed")
-        rows.extend(payload.get("rows", []))
-        next_token = payload.get("next")
-        if not next_token or not payload.get("rows"):
-            break
-        time.sleep(0.2)
-    return pd.DataFrame.from_records(rows, columns=["dataset", "filepath", "create_time", "size"])
-
-
 # Proteomics datasets are not taken in through other-named sheets. Same signals and
 # order as the survey's dataset classification, from the PROXI record and the cache.
 _METABOLOMICS_TERMS = re.compile(r'(?i)metabolom|metabolite|lipidom|\blipid|natural product|small[- ]molecule|exposom|molecular network|\bFBMN\b|feature[- ]based|mzmine|spectral librar|secondary metabol|untargeted|\bLC-?MS/?MS\b.*extract|\bmetabolic profil|volatil|\bDOM\b|dissolved organic|xenobiotic|drug metabol|bile acid|glycan|oligosacchar|polyketide|alkaloid|terpen|flavon|phenolic|peptidic natural|siderophore|lipopeptide|\bMASST\b|chemical standard|reference standard|food|\bdiet\b|plant extract|fecal|stool')
@@ -359,6 +334,30 @@ def _dataset_path(dataset, filepath):
     return dataset + "/" + filepath
 
 
+def _update_date(link):
+    """Date of the MassIVE update a file <dataset>/<path> came with (updates/<YYYY-MM-DD>_<user>_<id>/),
+    or '' for a file of the original submission, which is older than every update."""
+    match = re.match(r'updates/(\d{4}-\d{2}-\d{2})_', link.partition('/')[2])
+    return match.group(1) if match else ''
+
+
+def order_versions(links, modify_time):
+    """Metadata files <dataset>/<path> of one dataset, given in dataset cache create_time order
+    (newest first), ordered newest first by when they were put on MassIVE. create_time is when
+    the cache first saw a file: re-indexing in 2024 gave old files new times, which put an older
+    version first (e.g. MSV000090940: its 2023-01-11 update before the 2023-06-09 one). The date
+    of the update a file came with decides; files of the same date (or all of the original
+    submission) are ordered by their modification time on MassIVE (modify_time(link), asked only
+    for them), and keep the create_time order if that is not known for all of them."""
+    dates = [_update_date(link) for link in links]
+    tied = [link for link, date in zip(links, dates) if dates.count(date) > 1]
+    times = {link: modify_time(link) for link in tied}
+    if not all(times.values()):
+        times = {}
+    # (sorted keeps the given order of equal keys, also with reverse=True)
+    return sorted(links, key=lambda link: (_update_date(link), times.get(link) or ''), reverse=True)
+
+
 def _download_metadata_file(session, url, max_retries=5, timeout=120):
     """Downloads one file from MassIVE, retrying on throttling/server errors.
 
@@ -394,6 +393,9 @@ class MassiveFTPS:
         self.timeout = timeout
         self.ftp = None
         self.index = None
+        self.index_complete = False
+        # set by download(): MassIVE does not have the file (see there)
+        self.missing = False
 
     def _connect(self):
         ftp = FTP_TLS(self.host, timeout=self.timeout)
@@ -404,37 +406,70 @@ class MassiveFTPS:
 
     def _build_index(self):
         index = collections.defaultdict(list)
+        complete = True
         for root in sorted(self.ftp.nlst()):
             try:
                 for entry in self.ftp.nlst(root):
                     index[entry.split('/')[-1]].append(root)
             except ftp_errors as e:
                 print(f"Could not list FTPS root {root}: {e}")
+                complete = False
         self.index = index
+        self.index_complete = complete
         print(f"FTPS index built for {len(index)} accessions")
 
+    def _ready(self):
+        if self.ftp is None:
+            self._connect()
+        if self.index is None:
+            self._build_index()
+
     def download(self, dataset_path, retries=3):
-        """Returns the content of <dataset>/<path>, or None if it could not be fetched."""
+        """Returns the content of <dataset>/<path>, or None if it could not be fetched.
+        Afterwards self.missing is True if MassIVE does not have the file: every FTPS version
+        root of the dataset answered that it does not exist there (550). Such a file is only
+        listed by the dataset cache (e.g. MSV000086415/updates/2021-04-01_jzemlin_2ca71553/,
+        whose dataset holds only ccms_peak/ on MassIVE), so asking again elsewhere is futile."""
+        self.missing = False
         dataset, _, file_path = dataset_path.partition('/')
         for attempt in range(1, retries + 1):
             try:
-                if self.ftp is None:
-                    self._connect()
-                if self.index is None:
-                    self._build_index()
+                self._ready()
                 self.ftp.voidcmd("TYPE I")
-                for root in self.index.get(dataset, []):
+                roots = self.index.get(dataset, [])
+                for root in roots:
                     remote = f"{root}/{dataset}/{file_path}"
                     try:
                         self.ftp.size(remote)
-                    except ftp_errors:
-                        continue
+                    except error_perm:
+                        continue  # not in this root
                     buffer = io.BytesIO()
                     self.ftp.retrbinary(f"RETR {remote}", buffer.write, blocksize=1 << 20)
                     return buffer.getvalue()
+                self.missing = bool(roots) and self.index_complete
                 return None
             except (OSError, EOFError) + ftp_errors as e:
                 print(f"FTPS attempt {attempt} failed for {dataset_path}: {e}")
+                self.close()
+                time.sleep(min(2 ** attempt, 30))
+        return None
+
+    def modify_time(self, dataset_path, retries=3):
+        """Modification time of <dataset>/<path> on MassIVE (MDTM, 'YYYYMMDDHHMMSS' UTC), or None."""
+        dataset, _, file_path = dataset_path.partition('/')
+        for attempt in range(1, retries + 1):
+            try:
+                self._ready()
+                for root in self.index.get(dataset, []):
+                    try:
+                        reply = self.ftp.sendcmd(f"MDTM {root}/{dataset}/{file_path}")
+                    except error_perm:
+                        continue  # not in this root
+                    value = reply[4:].strip() if reply.startswith('213') else ''
+                    return value if re.fullmatch(r'\d{14}(\.\d+)?', value) else None
+                return None
+            except (OSError, EOFError) + ftp_errors as e:
+                print(f"FTPS attempt {attempt} (MDTM) failed for {dataset_path}: {e}")
                 self.close()
                 time.sleep(min(2 ** attempt, 30))
         return None
@@ -464,12 +499,16 @@ def main():
     print("echo Importing Done!")
 
 
-    # If the dataset cache is unavailable, continue with the GitHub metadata only; the
-    # MassIVE rows of earlier runs are carried forward by saveOlderData
+    # If the MassIVE metadata files cannot be listed completely, none are read (an incomplete
+    # listing would silently drop datasets) and the script exits with an error after the
+    # GitHub metadata is passed on; the MassIVE rows of earlier runs are carried forward by
+    # saveOlderData
+    listing_errors = []
     try:
         gnps_df = download_gnps_metadata()
     except Exception as e:
-        print(f"WARNING: could not list MassIVE metadata files ({e}); continuing with GitHub metadata only")
+        listing_errors.append(f"could not list the MassIVE *gnps_metadata.tsv files ({type(e).__name__}: {e})")
+        print(f"ERROR: {listing_errors[-1]}; no MassIVE metadata is read this run, only the GitHub metadata", file=sys.stderr)
         gnps_df = pd.DataFrame(columns=['dataset', 'filepath', 'create_time'])
 
     # Print message to indicate that the CSV file has been read
@@ -479,9 +518,10 @@ def main():
     gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'], errors='coerce')
 
 
-    # All *gnps_metadata.tsv files of a dataset, newest first (by create time; missing
-    # times count as oldest): the newest version is read in full, older versions only
-    # add files the newer ones do not describe
+    # All *gnps_metadata.tsv files of a dataset, by create time (missing times count as
+    # oldest); ordered newest first by order_versions() before they are downloaded: the
+    # newest version is read in full, older versions only add files the newer ones do not
+    # describe
     versions = collections.OrderedDict()
     for name, group in gnps_df.groupby('dataset'):
         group = group.sort_values(['create_time', 'filepath'], na_position='first')
@@ -509,17 +549,24 @@ def main():
     # Create a defaultdict to store file paths
     file_paths = collections.defaultdict(list)
     failed_downloads = []
+    missing_on_massive = []
     session = requests.Session()
 
     def fetch(link):
         content = ftps.download(link)
         if content is not None:
             downloaded_via["FTPS"] += 1
+            return content
+        if ftps.missing:
+            # the dataset cache lists a file MassIVE does not have (any more); the HTTP
+            # endpoint serves the same files, so it is not asked
+            print(f"Not on MassIVE (no FTPS version root of the dataset has it; listed only by the dataset cache): {link}")
+            missing_on_massive.append(link)
+            return None
+        content = _download_metadata_file(session, download_link + link)
+        if content is not None:
+            downloaded_via["HTTP"] += 1
         else:
-            content = _download_metadata_file(session, download_link + link)
-            if content is not None:
-                downloaded_via["HTTP"] += 1
-        if content is None:
             failed_downloads.append(link)
         return content
 
@@ -540,8 +587,15 @@ def main():
             print(f"File {msv_id} already present in the folder from github!")
             continue
 
+        if len(links) > 1:
+            links = order_versions(links, ftps.modify_time)
         print(f"Downloading {links[0]}")
         content = fetch(links[0])
+        # a newest file MassIVE does not have is no version: the next one is the newest
+        while content is None and ftps.missing and len(links) > 1:
+            links = links[1:]
+            print(f"Downloading {links[0]}")
+            content = fetch(links[0])
         if content is None:
             continue
         if len(links) == 1:
@@ -571,12 +625,16 @@ def main():
 
     # ReDU-format sheets with other names, in datasets that have no *gnps_metadata.tsv
     # and no GitHub file
-    if not args.no_other_sheets:
+    if not args.no_other_sheets and not listing_errors:
         try:
             other = list_cache_files(OTHER_SHEETS_WHERE)
         except Exception as e:
-            print(f"WARNING: could not list other metadata sheets ({e}); continuing without them")
+            listing_errors.append(f"could not list the other metadata sheets ({type(e).__name__}: {e})")
+            print(f"ERROR: {listing_errors[-1]}; continuing without them", file=sys.stderr)
             other = pd.DataFrame(columns=["dataset", "filepath", "create_time", "size"])
+        # MassIVE datasets only: the cache also lists Workbench (ST...) and MetaboLights
+        # (MTBLS...) files, which MassIVE does not serve (each would only cost futile requests)
+        other = other[other['dataset'].astype(str).str.match(r'^R?MSV\d+$')]
         other = other[~other['dataset'].isin(set(versions) | set(existing_files))]
         extensions = TEMPLATE_SHEET_EXTENSIONS
         for extension, module in (('.xlsx', 'openpyxl'), ('.xls', 'xlrd')):
@@ -606,6 +664,9 @@ def main():
                     sheets.append((df, link))
             if not sheets:
                 continue
+            if len(sheets) > 1:
+                by_link = {link: (df, link) for df, link in sheets}
+                sheets = [by_link[link] for link in order_versions([link for _, link in sheets], ftps.modify_time)]
             try:
                 proxi = fetch_proxi(session, msv_id)
                 n_proteomics_files, sample_types = cache_dataset_signals(msv_id)
@@ -628,6 +689,10 @@ def main():
 
     ftps.close()
     print(f"Downloaded metadata files: {dict(downloaded_via)}")
+    if missing_on_massive:
+        print(f"{len(missing_on_massive)} metadata files listed by the dataset cache are not on MassIVE:")
+        for link in missing_on_massive:
+            print(f"  {link}")
     if failed_downloads:
         print(f"WARNING: failed to download {len(failed_downloads)} of {len(failed_downloads) + sum(downloaded_via.values())} metadata files:")
         for link in failed_downloads:
@@ -652,6 +717,11 @@ def main():
     # Print message to indicate that the TSV file for file paths has been created
     print("echo Tsv file created for path names!!")
     
+    if listing_errors:
+        for error in listing_errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(2)
+
     # Print message to indicate that the execution of the code is complete
     print("echo EXECUTION COMPLETE ! HAVE A GOOD DAY ")
 
