@@ -50,6 +50,7 @@ process fetchReferenceData {
     path 'names.dmp', emit: names
     path 'nodes.dmp', emit: nodes
     path 'division.dmp', emit: division
+    path 'merged.dmp', emit: merged
     path 'hp.obo', emit: hp
     path 'ecto.obo', emit: ecto
     path 'peco.obo', emit: peco
@@ -615,13 +616,18 @@ process saveOlderData {
 
 
 
+// Lineage columns (NCBISuperkingdom ... NCBISpecies) from the pinned NCBI taxonomy
+// (nodes/names/merged.dmp of reference_data.json), the release all other steps use
 process enrich_ncbi_information {
     publishDir "./nf_output", mode: 'copy'
 
-    conda "$TOOL_FOLDER/conda_env_ete3.yml"
+    conda "$TOOL_FOLDER/conda_env.yml"
 
     input:
     path merged_ch
+    path nodes_dmp
+    path names_dmp
+    path merged_dmp
 
     output:
     path 'merged_with_ncbi.tsv'
@@ -637,7 +643,9 @@ process enrich_ncbi_information {
     python $TOOL_FOLDER/ncbi_database.py \
     ${merged_ch}  \
     merged_with_ncbi.tsv \
-    || { echo "WARNING: NCBI lineage annotation failed; passing rows through without it" >&2; cp ${merged_ch} merged_with_ncbi.tsv; }
+    --path_to_ncbi_nodes_dmp ${nodes_dmp} \
+    --path_to_ncbi_names_dmp ${names_dmp} \
+    --path_to_ncbi_merged_dmp ${merged_dmp}
     """
 }
 
@@ -693,7 +701,7 @@ workflow {
     merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch).merged
 
     // Enrich NCBI information
-    merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch)
+    merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch, ref.nodes, ref.names, ref.merged)
 
     // Add Cache columns
     cache_enriched_metadata = add_cache_columns(merged_with_ncbi_ch)

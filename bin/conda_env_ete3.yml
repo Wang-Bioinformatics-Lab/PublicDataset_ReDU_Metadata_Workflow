@@ -1,9 +1,0 @@
-name: redu_workflow_env
-channels:
-  - conda-forge
-  - bioconda
-dependencies:
-  - python=3.10
-  - pandas=2.3.3
-  - ete3
-  - tqdm
