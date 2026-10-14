@@ -2,6 +2,12 @@ import argparse
 import pandas as pd
 import re
 
+def _usi_noext(usi):
+    """USI without known MS file / compression extensions (x.raw and x.mzML are one file)."""
+    return usi.str.replace(r"(\.(mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|d|gz|zip|lzma|bz2|7z|xz|rar))+$", "",
+                           regex=True, case=False)
+
+
 #    python $TOOL_FOLDER/save_older_data.py ${merged_ch} ${older_redu_data} merged_with_old.tsv
 if __name__ == "__main__":
 
@@ -30,6 +36,24 @@ if __name__ == "__main__":
         #strip ?VersionId... from USI values if DataSource is NORMAN
         is_norman = df_older['DataSource'] == 'NORMAN'
         df_older.loc[is_norman, 'USI'] = df_older.loc[is_norman, 'USI'].str.replace(r'\?VersionId.*', '', regex=True)
+
+    # A source that delivered no rows of its own this run (e.g. MetaboLights while its API is
+    # down) keeps its rows from earlier runs: MASST rows of its files must not replace them.
+    # Sources are told apart by the USI prefix; '_masst_only' comes from merge_metadata.py.
+    masst_only = (df_current.pop('_masst_only').fillna('') == 'yes') if '_masst_only' in df_current.columns \
+        else pd.Series(False, index=df_current.index)
+    if len(df_older) and 'USI' in df_older.columns:
+        prefixes = {'Workbench': 'mzspec:ST', 'MetaboLights': 'mzspec:MTBLS', 'GNPS': 'mzspec:MSV', 'NORMAN': 'mzspec:NORMAN'}
+        older_usis = set(_usi_noext(df_older['USI'].dropna()))
+        for source, prefix in prefixes.items():
+            of_source = df_current['USI'].str.startswith(prefix, na=False)
+            if (of_source & ~masst_only).any():
+                continue
+            replaced = of_source & masst_only & _usi_noext(df_current['USI']).isin(older_usis)
+            if replaced.any():
+                print(f"{source}: no rows of its own this run; keeping {int(replaced.sum())} rows from earlier runs "
+                      f"instead of this run's MASST rows for the same files")
+                df_current, masst_only = df_current[~replaced], masst_only[~replaced]
 
     df_merged = pd.concat([df_current.assign(_origin='this_run'), df_older.assign(_origin='earlier_runs')],
                           ignore_index=True)
@@ -77,8 +101,7 @@ if __name__ == "__main__":
     #unique by USI column, ignoring the file extension (e.g. x.raw vs x.mzML). Only known
     #MS file extensions are stripped: dots elsewhere in folder or file names (e.g.
     #'S.epidermidis/A.mzML', 'QC_1.5uL.mzML') belong to the identity of the file.
-    df_merged["USI_noext"] = df_merged["USI"].str.replace(
-        r"(\.(mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|d|gz|zip|lzma|bz2|7z|xz|rar))+$", "", regex=True, case=False)
+    df_merged["USI_noext"] = _usi_noext(df_merged["USI"])
     df_merged = df_merged.drop_duplicates(subset=["USI_noext"]).drop(columns=["USI_noext"])
 
 

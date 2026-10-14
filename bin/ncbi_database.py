@@ -280,6 +280,13 @@ def write_tsv_atomic(df, path):
     print(f"Wrote {path}: {n_rows} rows, {len(header)} columns", flush=True)
 
 
+def _keep_previous_ott(df, previous_ott):
+    """Without a Wikidata table this run, keeps the OTT ids the rows had (row order is unchanged)."""
+    if previous_ott is not None and len(previous_ott) == len(df):
+        df['OpenTreeOfLifeTaxonomyID'] = previous_ott.fillna('missing value').to_numpy()
+    return df
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Annotate NCBITaxonomy with its NCBI lineage, from the pinned NCBI taxonomy dump.")
     parser.add_argument("input_tsv", type=str)
@@ -289,7 +296,12 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_ncbi_merged_dmp", required=True, help="merged.dmp of the pinned NCBI taxdump")
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input_tsv, sep='\t', dtype={'NCBITaxonomy': 'string'}, low_memory=False)
+    # all columns as text: numeric parsing turns e.g. 66 into 66.0 for columns with gaps
+    df = pd.read_csv(args.input_tsv, sep='\t', dtype=str, low_memory=False)
+    # earlier runs' tables already carry the OTT column (saveOlderData keeps all old columns);
+    # merging over it would create _x/_y columns and later fail, so it is rebuilt every run
+    df = df.drop(columns=[c for c in df.columns if c.startswith('OpenTreeOfLifeTaxonomyID_')])
+    previous_ott = df.pop('OpenTreeOfLifeTaxonomyID') if 'OpenTreeOfLifeTaxonomyID' in df.columns else None
     annotated_df = annotate_taxonomy(df, args.path_to_ncbi_nodes_dmp, args.path_to_ncbi_names_dmp,
                                      args.path_to_ncbi_merged_dmp)
     annotated_df = update_sampletype(annotated_df)
@@ -318,11 +330,13 @@ if __name__ == "__main__":
 
     except FileNotFoundError:
         print("sparql_oto_ncbi.tsv not found, skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)
+        annotated_df = _keep_previous_ott(annotated_df, previous_ott)
     except (KeyError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
         # e.g. the SPARQL endpoint returned an error page instead of the TSV
         print(f"WARNING: sparql_oto_ncbi.tsv is not a valid NCBI/OTT table ({type(e).__name__}: {e}), "
               "skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)
         annotated_df = annotated_df.drop(columns=['NCBI'], errors='ignore')
+        annotated_df = _keep_previous_ott(annotated_df, previous_ott)
 
 
 

@@ -280,6 +280,10 @@ def main():
         if args.output_metadata:
             fills.to_csv(args.output_metadata + '.masst_supplement_fills.tsv', sep='\t', index=False)
 
+    # rows only MASST describes; saveOlderData uses this (and drops the column) so that a source
+    # that delivered nothing this run keeps its own earlier rows instead of MASST's
+    merged_df['_masst_only'] = merged_df['USI'].isin(masst_only).map({True: 'yes', False: ''})
+
     # write merged metadata to file
     merged_df.to_csv(args.output_metadata, sep='\t', index=False)
 
