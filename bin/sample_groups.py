@@ -14,20 +14,23 @@ value on that row, e.g. 'control diet'), and at least one of its values is held;
 on all rows (values the column cannot hold are not lost, and the groups stay comparable).
 
 Group consistency (consistent_sample_groups), per dataset, over its real samples (is_real_sample).
-A sample's label is its parts plus its values of the columns parts are moved into (LABEL_COLUMNS:
-a sample whose only factor now sits in Diet still belongs to its group, it just has nothing left
-to show; not InternalStandardsUsed, a property of the analysis, not a group):
+A sample's label is its text parts only (part identities, part_identity); values of the columns
+parts were moved into (Diet, FastingStatus, Exposure, InternalStandardsUsed) do not count. The
+groups are the texts shown: one text next to samples whose groups now sit only in Diet is a single
+label and goes (MSV000080918: an antibiotic arm of 27 files next to diet arms held in Diet).
 - blanks, QCs, standards, reference material and personal care products get 'missing value': their
   SampleType says what they are;
-- a part (or column value) that every labelled real sample has is a property of the study, not a
-  group (MTBLS2776 'Treatment: caffeine', the antibiotics of MSV000083777): removed from all rows
-  of the dataset. Repeated until no such part is left, because a sample whose only parts were
-  study-level has no label any more; but a removal that would leave fewer than 2 different labels
-  where there were more is not made, it would wipe the design (ST001714: 'Parasite Stage' on every
-  sample, 'Concentration: 10X IC50' on the treated ones only: both stay);
+- a part that every real sample of the dataset has, with or without other parts, is the same
+  across all samples: a property of the study, not a group (MTBLS2776 'Treatment: caffeine', the
+  antibiotics of MSV000083777): removed from all rows of the dataset. A part some real sample lacks
+  (also one without any text) tells samples apart and stays (MTBLS78: 'Cell culture: Hepa RG cell'
+  on the cell-culture files, none on the mouse files). But a removal that would leave fewer than 2
+  different labels where there were more is not made, it would wipe the design (ST001714:
+  'Parasite Stage' on every sample, 'Concentration: 10X IC50' on the treated ones only: both stay);
 - the texts are kept where the real samples carry at least 2 different labels and the texts on
   average at least 2 samples per text (as in the converters); otherwise every row of the dataset gets
-  'missing value'. Real samples the source gives no group for keep 'missing value'.
+  'missing value' (also a single label next to real samples without text). Real samples the source
+  gives no group for keep 'missing value'.
 """
 import collections
 import re
@@ -37,9 +40,6 @@ import pandas as pd
 MISSING = 'missing value'
 _NA_TEXT = {'', 'nan', 'none', 'missing value', 'not applicable', 'not specified'}
 _NOT_REAL_TYPES = {'pool_QC', 'reference material', 'personal care product', 'molecular_standards'}
-# columns that factors of the texts are moved into and that describe the sampled subject: part of
-# a sample's group label
-LABEL_COLUMNS = ('Diet', 'FastingStatus', 'Exposure')
 
 
 def norm(text):
@@ -108,26 +108,23 @@ def part_identity(part, masst=False):
 
 
 def study_level_parts(labels):
-    """(study, kept): the part identities (labels: one set per real sample) that every labelled
-    sample has, also those that every sample still labelled without them has; but not the parts
-    whose removal would leave fewer than 2 different labels where there were more (kept)"""
-    study = set()
-    while True:
-        labelled = [s - study for s in labels if s - study]
-        common = set.intersection(*labelled) if labelled else set()
-        if not common:
-            return study, set()
-        if len({frozenset(s - common) for s in labelled if s - common}) < 2 <= len({frozenset(s) for s in labelled}):
-            return study, common
-        study |= common
+    """(study, kept): the part identities that every real sample has (labels: one set of text part
+    identities per real sample, empty for a sample without text); kept instead of study where their
+    removal would leave fewer than 2 different labels where there were more"""
+    common = set.intersection(*labels) if labels else set()
+    if not common:
+        return set(), set()
+    if len({frozenset(s - common) for s in labels if s - common}) < 2 <= len({frozenset(s) for s in labels}):
+        return set(), common
+    return common, set()
 
 
-def consistent_sample_groups(df, column='SampleGroupFreeText', dataset_column='ATTRIBUTE_DatasetAccession',
-                             label_columns=LABEL_COLUMNS):
+def consistent_sample_groups(df, column='SampleGroupFreeText', dataset_column='ATTRIBUTE_DatasetAccession'):
     """See the module docstring. Never removes rows; a second pass changes nothing."""
     if column not in df.columns or len(df) == 0:
         return df
     stats = collections.Counter()
+    guarded = []
     text = df[column].fillna('').astype(str).str.strip()
     text = text.where(~text.str.lower().isin(_NA_TEXT), '')
     real = df['SampleType'].map(is_real_sample)
@@ -135,20 +132,17 @@ def consistent_sample_groups(df, column='SampleGroupFreeText', dataset_column='A
     stats['non_real_rows_cleared'] = int(((~real) & (text != '')).sum())
     out = text.where(real, '')
     in_scope = real & df[dataset_column].isin(df.loc[real & (text != ''), dataset_column].unique())
-    label_columns = [c for c in label_columns if c in df.columns]
-    for _, idx in text[in_scope].groupby(df.loc[in_scope, dataset_column], sort=True).groups.items():
+    for dataset, idx in text[in_scope].groupby(df.loc[in_scope, dataset_column], sort=True).groups.items():
         parts = text.loc[idx].map(lambda s: s.split('; ') if s else [])
         ids = [[part_identity(p, m) for p in ps] for ps, m in zip(parts, masst.loc[idx])]
-        # (column values as parts of the label; 'column\t...' never equals a text part)
-        values = [[f'{c}\t{v}' for c, v in zip(label_columns, vs) if not pd.isna(v) and str(v).lower() not in _NA_TEXT]
-                  for vs in zip(*[df.loc[idx, c] for c in label_columns])] if label_columns else [[]] * len(idx)
-        labels = [set(i) | set(v) for i, v in zip(ids, values)]
+        labels = [set(i) for i in ids]
         study, not_removed = study_level_parts(labels)
         kept = pd.Series(['; '.join(p for p, i in zip(ps, pi) if i not in study) for ps, pi in zip(parts, ids)],
                          index=idx) if study else text.loc[idx]
-        stats['study_level_parts_removed'] += len(study & {i for pi in ids for i in pi})
-        if not_removed & {i for pi in ids for i in pi}:
+        stats['study_level_parts_removed'] += len(study)
+        if not_removed:
             stats['datasets_study_level_parts_kept (else fewer than 2 groups)'] += 1
+            guarded.append(dataset)
         n_groups = len({frozenset(s - study) for s in labels if s - study})
         texts = kept[kept != '']
         if n_groups < 2 or texts.nunique() > len(texts) / 2:
@@ -159,7 +153,7 @@ def consistent_sample_groups(df, column='SampleGroupFreeText', dataset_column='A
             stats['datasets_kept'] += 1
             stats['real_rows_without_group_text_kept'] += int((kept == '').sum())
             out.loc[idx] = kept
-    print(f"[SampleGroupFreeText] group consistency: {dict(sorted(stats.items()))}")
+    print(f"[SampleGroupFreeText] group consistency: {dict(sorted(stats.items()))}; study-level parts kept in: {guarded}")
     df = df.copy()
     df[column] = out.where(out != '', MISSING)
     return df

@@ -9,6 +9,7 @@ from urllib.parse import urlparse, parse_qs
 import json
 from tqdm import tqdm
 from collections import Counter
+from blank_qc_names import blank_qc_type_from_filename, name_tokens
 import traceback
 import time
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
@@ -3578,10 +3579,151 @@ def _name_stem(name):
     return os.path.basename(str(name).replace('\\', '/')).lower().rsplit('.', 1)[0]
 
 
-def per_sample_files_of_shared_names(df, raw_file_name_df):
+def _own_file_key(name):
+    """A listed file name or a raw file name for matching own files: stem, lower case, '-' = '_'."""
+    return _name_stem(name).replace('-', '_')
+
+
+def _own_id_key(sample_id):
+    """A Sample ID for matching own files: lower case, '-' = '_' (no extension removed)."""
+    return str(sample_id).strip().lower().replace('-', '_')
+
+
+# Sample ID tokens of standards (blanks and QCs: blank_qc_names)
+_STANDARD_TOKEN_RE = re.compile(r'(?i)^(?:std|stds|standards?|istds?|calibrants?|calibration|calibrators?|nist|srm)\d*$')
+# own files found by the Sample ID alone need an ID at least this long, with a letter: '1', 'A1',
+# '0012' name unrelated files too easily
+_OWN_ID_MIN_LEN = 5
+
+OWN_FILE_REASONS = ('shared name not a listed file', 'blank / QC / standard', 'Sample ID and file name differ in case',
+                    'Sample ID only: several MS analyses',
+                    'Sample ID only: short ID or no letter', 'Sample ID only: sample names several shared files',
+                    'several files fit', 'file named by a sample', 'other polarity / chromatography',
+                    'file wanted by several samples')
+
+
+def not_a_study_sample(sample_id, values=()):
+    """Blank, QC or standard: by a token of the Sample ID (blank_qc_names; 'STD', 'NIST') or by a
+    QC / blank / reference-material value of the sample (qc_sample_type)."""
+    if blank_qc_type_from_filename(sample_id):
+        return True
+    if any(_STANDARD_TOKEN_RE.match(t) for t in name_tokens(sample_id)):
+        return True
+    return any(qc_sample_type(k, v) for k, v in values)
+
+
+def own_file_matches(pairs, listing, hints=None, is_not_study_sample=None):
+    """The own file of each sample that names a raw file several samples of the analysis name
+    (a multi-sample SCIEX .wiff, or one file named for several samples).
+
+    pairs: (raw file name, Sample ID) of every sample of the analysis; listing: (filename_base,
+    path) of the files kept for the analysis (one per stem and acquisition context).
+    Returns ({(raw name lower case, Sample ID): (filename_base, form)}, [candidate details]).
+
+    Forms, first that fits:
+      '<file>-<Sample ID>'    '<file stem>-<Sample ID>' or '_' (case-insensitive; the 6f46b12
+                              rule, unchanged and without the guards below)
+      'normalised'            '<file stem>_<Sample ID>' with '-' and '_' alike
+      '<Sample ID> tied'      the Sample ID itself ('-' = '_'), where it starts with the file stem
+                              ('<file stem>_x')
+      '<Sample ID>'           the Sample ID itself, not tied to the shared file's name
+    In these three forms the Sample ID part of the file name must have the Sample ID's case
+    (the shared file's stem may differ in case). A candidate of them is left out (details give
+    the first reason and every guard it fails) when the shared name is not a listed file
+    (placeholders like '-', '.mzML'); for blanks, QCs and standards; when the Sample ID differs
+    in case; for the untied form, in studies with several MS analyses (the file may be another
+    analysis' acquisition), for Sample IDs shorter than 5 characters or without a letter, and
+    for samples naming several shared files; when several listed files fit; when a sample of the
+    analysis names the file (or another file of its stem, e.g. x.raw for x.mzML) as its raw
+    file; when its path states another polarity / chromatography than the analysis or the
+    shared file; and when the file would be the own file of several samples (or shared files of
+    different stems)."""
+    hints = hints or {}
+    pairs = sorted({(str(r).lower(), str(s)) for r, s in pairs})
+    naming = {}
+    for r, s in pairs:
+        naming.setdefault(r, set()).add(s)
+    shared = {r for r, ss in naming.items() if len(ss) > 1} - {'na', 'nan', ''}
+    matches, details = {}, []
+    if not shared:
+        return matches, details
+    listing = sorted({(str(b), str(p)) for b, p in listing})
+    by_stem, by_key, paths_of_stem = {}, {}, {}
+    for b, p in listing:
+        by_stem.setdefault(_name_stem(b), b)
+        by_key.setdefault(_own_file_key(b), []).append((b, p))
+        paths_of_stem.setdefault(_name_stem(b), []).append(p)
+    named = {}
+    for r, s in pairs:
+        named.setdefault(_own_file_key(r), set()).add(s)
+    shared_of = {}   # listed shared files (stems) a sample names
+    for r, s in pairs:
+        if r in shared and _name_stem(r) in paths_of_stem:
+            shared_of.setdefault(s, set()).add(_name_stem(r))
+    proposals = {}
+    for r, s in pairs:
+        if r not in shared:
+            continue
+        stem = _name_stem(r)
+        hit = next((by_stem[k] for k in (f'{stem}-{s.lower()}', f'{stem}_{s.lower()}') if k in by_stem), None)
+        if hit is not None:
+            matches[(r, s)] = (hit, '<file>-<Sample ID>')
+            continue
+        bkey, skey = _own_file_key(r), _own_id_key(s)
+        if not skey or skey == bkey:
+            continue
+        if f'{bkey}_{skey}' in by_key:
+            form, hits = 'normalised', by_key[f'{bkey}_{skey}']
+        elif skey in by_key:
+            tied = skey.startswith(bkey.rstrip('_') + '_')
+            form, hits = '<Sample ID> tied' if tied else '<Sample ID>', by_key[skey]
+        else:
+            continue
+        batch_paths = paths_of_stem.get(stem, [])
+        untied = form == '<Sample ID>'
+        # the Sample ID's part of the file name in the Sample ID's case ('-' = '_'): no own file
+        # of the Workbench needed a case-insensitive match
+        _id = str(s).strip().replace('-', '_')
+        exact = [(b, p) for b, p in hits if os.path.basename(b.replace('\\', '/')).rsplit('.', 1)[0].replace('-', '_').endswith(_id)]
+        hits = exact or hits
+        ctx = _path_indicates(hits[0][1])
+        batch_ctx = {_path_indicates(p) for p in batch_paths}
+        # every guard the candidate fails (the first is the reason given)
+        fails = [why for why, bad in (
+            ('shared name not a listed file', not batch_paths),
+            ('blank / QC / standard', (is_not_study_sample or not_a_study_sample)(s)),
+            ('Sample ID and file name differ in case', not exact),
+            ('Sample ID only: several MS analyses', untied and hints.get('multi')),
+            ('Sample ID only: short ID or no letter', untied and (len(s.strip()) < _OWN_ID_MIN_LEN or not re.search(r'[a-z]', s, re.I))),
+            ('Sample ID only: sample names several shared files', untied and len(shared_of.get(s, ())) > 1),
+            ('several files fit', len(hits) > 1),
+            ('file named by a sample', any(named.get(_own_file_key(b)) for b, _ in hits)),
+            ('other polarity / chromatography', _context_contradicts(ctx, hints) or (len(batch_ctx) == 1 and _context_contradicts(
+                ctx, dict(zip(('polarity', 'chrom'), next(iter(batch_ctx))))))),
+        ) if bad]
+        reason = fails[0] if fails else None
+        details.append([r, s, form, hits[0][0] if len(hits) == 1 else ';'.join(b for b, _ in hits), reason, fails])
+        if reason is None:
+            proposals[(r, s)] = (hits[0][0], form, len(details) - 1)
+    # one file per sample and shared file: a sample naming the shared file twice ('x.wiff' and
+    # 'x.wiff - - -', one stem) wants the file once
+    wanted = {}
+    for (r, s), v in list(matches.items()) + list(proposals.items()):
+        wanted.setdefault(v[0], set()).add((_name_stem(r), s))
+    for k, (b, form, d) in proposals.items():
+        if len(wanted[b]) > 1:
+            details[d][4] = 'file wanted by several samples'
+            details[d][5] = ['file wanted by several samples']
+        else:
+            matches[k] = (b, form)
+    return matches, details
+
+
+def per_sample_files_of_shared_names(df, raw_file_name_df, hints=None, sample_values=None):
     """filename_raw per df row, where several samples name one raw file (a multi-sample
-    SCIEX .wiff) whose per-sample conversions are uploaded as '<file stem>-<Sample ID>.mzML'
-    (or '_'): the sample's own file name instead of the shared one. Other rows unchanged."""
+    SCIEX .wiff) whose per-sample files are listed too: the sample's own file name instead of
+    the shared one (own_file_matches). Other rows unchanged. sample_values: function giving the
+    (Sample ID, key, value) rows of the samples, to leave out blanks / QCs / standards."""
     raw = df['filename_raw'].astype(str)
     sid = df['_sample_id'].astype(str) if '_sample_id' in df.columns else df['filename'].astype(str)
     pairs = pd.DataFrame({'raw': raw.str.lower(), 'sid': sid}).drop_duplicates()
@@ -3589,23 +3731,31 @@ def per_sample_files_of_shared_names(df, raw_file_name_df):
     shared = set(n_samples.index[n_samples > 1]) - {'na', 'nan', ''}
     if not shared:
         return df['filename_raw']
-    by_stem = {}
-    for base in sorted(set(raw_file_name_df['filename_base'].astype(str))):
-        by_stem.setdefault(_name_stem(base), base)
+    _values = {}
+
+    def _not_study_sample(s):
+        if sample_values is not None and not _values:
+            _values[None] = []   # built once, at the first candidate
+            for v_sid, k, v in sample_values():
+                _values.setdefault(str(v_sid), []).append((k, v))
+        return not_a_study_sample(s, _values.get(s, ()))
+
+    matches, details = own_file_matches(zip(raw, sid), zip(raw_file_name_df['filename_base'], raw_file_name_df['filename_raw_path']),
+                                        hints=hints, is_not_study_sample=_not_study_sample)
     out = df['filename_raw'].copy()
     n = 0
     for i, (r, s) in enumerate(zip(raw, sid)):
-        if r.lower() not in shared:
-            continue
-        stem = _name_stem(r)
-        for sep in ('-', '_'):
-            hit = by_stem.get(f'{stem}{sep}{s.lower()}')
-            if hit is not None:
-                out.iat[i] = hit
-                n += 1
-                break
+        m = matches.get((r.lower(), s))
+        if m is not None:
+            out.iat[i] = m[0]
+            n += 1
     if n:
-        print(f"[rawfile] {n} rows: a raw file named by several samples replaced by the sample's own file '<file>-<Sample ID>'")
+        forms = Counter(f for _, f in matches.values())
+        print(f"[rawfile] {n} rows ({len(matches)} samples x shared files): a raw file named by several samples replaced by the "
+              f"sample's own file (" + ', '.join(f"{f}: {c}" for f, c in sorted(forms.items())) + ")")
+    left = Counter(d[4] for d in details if d[4])
+    if left:
+        print("[rawfile] own-file candidates left out: " + ', '.join(f"{r}: {left[r]}" for r in OWN_FILE_REASONS if left[r]))
     return out
 
 
@@ -4017,7 +4167,11 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         df.reset_index(drop=True, inplace=True)
 
         # a raw file several samples name, uploaded also as one file per sample
-        df['filename_raw'] = per_sample_files_of_shared_names(df, raw_file_name_df)
+        df['filename_raw'] = per_sample_files_of_shared_names(
+            df, raw_file_name_df, hints=hints,
+            sample_values=lambda: zip(pd.concat([df['_sample_id'], df_additional['filename']], ignore_index=True),
+                                      pd.concat([df['Key'], df_additional['Key']], ignore_index=True),
+                                      pd.concat([df['Value'], df_additional['Value']], ignore_index=True)))
 
 
         # --- Prefer mzML > mzXML > others BEFORE matching/merging ---

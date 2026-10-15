@@ -2,9 +2,11 @@
 before the text columns (final_text_columns.py), so also to the rows saveOlderData keeps from earlier runs:
 - personal_care_products: personal care products are SampleType 'personal care product' with the most
   specific product category
+- life_stage_humans_only: LifeStage (human age brackets) only on rows of humans
 - sex_from_body_part: BiologicalSex of mammal samples with no recorded sex from a body part only one
   sex has (UBERON_sex_specific_parts.csv of prepare_ontologies.py)
-Values are only filled or renamed, never removed; a second pass changes nothing.
+Values are only filled or renamed, never removed (but LifeStage on rows not of humans); a second pass
+changes nothing.
 
     python final_table_rules.py merged_with_ncbi.tsv merged_with_rules.tsv \\
         --path_to_sex_specific_parts UBERON_sex_specific_parts.csv
@@ -24,6 +26,8 @@ PERSONAL_CARE_SUB1 = 'reference material_personalcareproduct'
 # LifeStage (humans only) of a subject that does not lactate: the row of a milk sample then
 # describes the infant who drank it
 CHILD_LIFE_STAGES = {'Infancy (<2 yrs)', 'Early Childhood (2 yrs < x <=8 yrs)'}
+# NCBI taxon of Homo sapiens (NCBITaxonomy is '<taxon id>|<name>')
+HUMAN_TAXON_ID = '9606'
 
 
 def _missing(series):
@@ -47,6 +51,30 @@ def personal_care_products(df):
         df.loc[is_path, 'ProductCategory'] = path[is_path].map(
             lambda p: ([x.strip() for x in p.split('>') if x.strip()] or [MISSING])[-1])
         stats['ProductCategory_path_to_last_category'] = int(is_path.sum())
+    return df, stats
+
+
+def life_stage_humans_only(df):
+    """LifeStage holds human age brackets ('Infancy (<2 yrs)', ...): 'missing value' on every row
+    whose organism is not Homo sapiens, i.e. NCBITaxonomy not taxon 9606 ('9606|Homo sapiens') and
+    NCBISpecies (the lineage of ncbi_database.py) not Homo sapiens (its subspecies, e.g.
+    '63221|Homo sapiens neanderthalensis'); a row without an organism is not taken for human. GNPS
+    sheets give the submitter's LifeStage for any organism (mice, cats, fish, bacteria, offices),
+    Workbench a stated one ('newborn', 'adolescent') for any organism. Run before
+    sex_from_body_part, which reads LifeStage (a second pass then changes nothing). Returns the
+    frame and a Counter."""
+    stats = collections.Counter()
+    if 'LifeStage' not in df.columns or 'NCBITaxonomy' not in df.columns:
+        return df, stats
+    human = df['NCBITaxonomy'].fillna('').astype(str).str.split('|', n=1).str[0].str.strip() == HUMAN_TAXON_ID
+    if 'NCBISpecies' in df.columns:
+        human |= df['NCBISpecies'] == 'Homo sapiens'
+    clear = ~human & (df['LifeStage'] != MISSING)
+    source = df['DataSource'] if 'DataSource' in df.columns else pd.Series('', index=df.index)
+    for s, n in source[clear].value_counts().sort_index().items():
+        stats[f'LifeStage_not_human_cleared {s}'] = int(n)
+    stats['LifeStage_not_human_cleared'] = int(clear.sum())
+    df.loc[clear, 'LifeStage'] = MISSING
     return df, stats
 
 
@@ -119,6 +147,8 @@ if __name__ == '__main__':
     # all cells as the previous step wrote them (no NA parsing: e.g. 'NA' stays 'NA')
     df = pd.read_csv(args.input_tsv, sep='\t', dtype=str, keep_default_na=False, na_filter=False, low_memory=False)
     df, stats = personal_care_products(df)
+    df, life_stage_stats = life_stage_humans_only(df)
+    stats.update(life_stage_stats)
     if args.path_to_sex_specific_parts:
         parts = pd.read_csv(args.path_to_sex_specific_parts, dtype=str, keep_default_na=False)
         df, sex_stats = sex_from_body_part(df, parts)
