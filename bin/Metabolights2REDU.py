@@ -64,6 +64,25 @@ def prefer_extension(group):
     return group
 
 
+def _prefer_extension_rows(df):
+    """Same as df.groupby('row_id').apply(prefer_extension): a 'keep' column per row, rows
+    sorted by row_id (stable), row_id prepended to the index."""
+    rid = df['row_id'].to_numpy()
+    cand = ~df['compressed'].to_numpy(dtype=bool)
+    # a row without any uncompressed file: all its files are candidates
+    has_cand = pd.Series(cand).groupby(rid).transform('any').to_numpy(dtype=bool)
+    cand = cand | ~has_cand
+    pref = cand & df['extension'].isin(['mzml', 'mzxml']).to_numpy(dtype=bool)
+    has_pref = pd.Series(pref).groupby(rid).transform('any').to_numpy(dtype=bool)
+    first = cand & (pd.Series(cand.astype(np.int64)).groupby(rid).cumsum().to_numpy() == 1)
+    out = df.copy()
+    out['keep'] = np.where(has_pref, pref, first)
+    order = np.argsort(rid, kind='mergesort')
+    out = out.iloc[order]
+    out.index = pd.MultiIndex.from_arrays([rid[order], df.index[order]], names=['row_id', df.index.name])
+    return out
+
+
 def get_enviromental_water(x):
     x = x.lower()
 
@@ -1091,6 +1110,32 @@ class _DoidIndex:
 
 
 _mammal_taxids_cache = {}
+
+_uberon_cache = {}
+
+
+def _uberon_lookups(ontology_table, allowedTerm_dict):
+    """Sets and maps derived from the UBERON/CL/PO table and the allowed terms; both are the
+    same objects for every study, so they are built once. The two match caches hold the
+    (read-only) rows of the table matching an organism part."""
+    key = (id(ontology_table), id(allowedTerm_dict))
+    if key not in _uberon_cache:
+        _uberon_cache.clear()
+        t = ontology_table
+        _uberon_cache[key] = {
+            'pinned': (ontology_table, allowedTerm_dict),  # keeps the ids valid while cached
+            'synonyms': set(t['Synonym']),
+            'allowed_bodyparts': set(allowedTerm_dict['UBERONBodyPartName']['allowed_values']),
+            'allowed_ids': set(allowedTerm_dict['UBERONOntologyIndex']['allowed_values']),
+            'label_by_id': dict(zip(t['UBERONOntologyIndex'].astype(str).str.replace('_', ':', regex=False), t['Label'])),
+            'synonyms_lower': t['Synonym'].astype(str).str.strip().str.lower(),
+            'labels_lower': t['Label'].astype(str).str.strip().str.lower(),
+            'ci_matches': {},
+            'synonym_matches': {},
+            'unique': t.drop_duplicates(subset=['Label', 'UBERONOntologyIndex']).drop(columns=['Synonym']),
+            'anatomy': set(t['Label'].astype(str).str.strip().str.lower()) | set(t['Synonym'].astype(str).str.strip().str.lower()),
+        }
+    return _uberon_cache[key]
 
 
 def _mammal_taxids(NCBIRankDivision_table):
@@ -2277,7 +2322,7 @@ def Metabolights2REDU(study_id, **kwargs):
         df_study['extension'] = _ms_match.loc[df_study.index, 0]
         df_study['compressed'] = _ms_match.loc[df_study.index, 1].notna()
 
-        df_study = df_study.groupby('row_id').apply(prefer_extension)
+        df_study = _prefer_extension_rows(df_study)
         df_study = df_study[df_study['keep']]
 
         if len(df_study) > 0:
@@ -2319,7 +2364,10 @@ def Metabolights2REDU(study_id, **kwargs):
                             _tax_accession.loc[_blank] = _accession_ids(df_study.loc[_blank, _alias_acc], 'NCBITaxon')
 
             if 'Samples_Organism' in df_study.columns:
-                processed_organisms = {org: str(get_taxonomy_id_from_name__allowedTerms(org, allowedTerm_dict = allowedTerm_dict)) for org in df_study['Samples_Organism'].unique()}
+                # same lookup as get_taxonomy_id_from_name__allowedTerms(org) (first allowed 'id|name' with that
+                # name, case-insensitive), from the dict built once instead of a scan of ~3M terms
+                _by_name = _ncbi_term_by_name(allowedTerm_dict)
+                processed_organisms = {org: str(_by_name.get(str(org).lower())) for org in df_study['Samples_Organism'].unique()}
                 # Organism names that NCBI lists as synonym or common name of exactly one taxon
                 # ('Clostridium bolteae', 'House Mouse'): MetaboLights alias sheet built from names.dmp
                 _org_alias = kwargs.get('organism_aliases') or {}
@@ -2336,7 +2384,9 @@ def Metabolights2REDU(study_id, **kwargs):
                 # free-text organism name, so it is used whenever it is a valid taxon
                 if (_tax_accession != '').any():
                     _by_id = _ncbi_term_by_id(allowedTerm_dict)
-                    _from_acc = _tax_accession.str.replace('NCBITaxon:', '', regex=False).map(_by_id)
+                    # dict.get per value: Series.map(dict) turns the ~3M entry dict into a Series on every call
+                    _from_acc = pd.Series([_by_id.get(k, np.nan) for k in _tax_accession.str.replace('NCBITaxon:', '', regex=False)],
+                                          index=_tax_accession.index, dtype=object)
                     _use = _from_acc.notna()
                     df_study.loc[_use, 'NCBITaxonomy'] = _from_acc[_use]
                 
@@ -2354,19 +2404,17 @@ def Metabolights2REDU(study_id, **kwargs):
                 df_study.loc[:,'SampleTypeSub1'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[1]
                                                                         if '|' in x else pd.NA)
 
-                df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(
-                    lambda row: get_blanks(row.Samples_Organism) 
-                    if (pd.isna(row.SampleType) or row.SampleType == 'missing value') 
-                    else [row.SampleType, row.SampleTypeSub1], 
-                    axis=1
-                ).apply(pd.Series)
+                # the row-wise rule on the three columns it reads (a row-wise apply builds a
+                # Series of all ~300 columns per row), expanded into two columns as .apply(pd.Series) did
+                _st = [get_blanks(_o) if (pd.isna(_t) or _t == 'missing value') else [_t, _t1]
+                       for _o, _t, _t1 in zip(df_study['Samples_Organism'], df_study['SampleType'], df_study['SampleTypeSub1'])]
+                df_study[['SampleType', 'SampleTypeSub1']] = pd.DataFrame(_st, index=df_study.index)
 
-                df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(
-                    lambda row: get_enviromental_water(row.Samples_Organism) 
-                    if (pd.isna(row.SampleType) or row.SampleType == 'missing value') 
-                    else [row.SampleType, row.SampleTypeSub1], 
-                    axis=1
-                ).apply(pd.Series)
+                # the row-wise rule on the three columns it reads (a row-wise apply builds a
+                # Series of all ~300 columns per row), expanded into two columns as .apply(pd.Series) did
+                _st = [get_enviromental_water(_o) if (pd.isna(_t) or _t == 'missing value') else [_t, _t1]
+                       for _o, _t, _t1 in zip(df_study['Samples_Organism'], df_study['SampleType'], df_study['SampleTypeSub1'])]
+                df_study[['SampleType', 'SampleTypeSub1']] = pd.DataFrame(_st, index=df_study.index)
 
                 # Pooled QCs, blanks and standards are labelled in the 'Sample type'
                 # characteristic (MetaboLights vocabulary), while their organism is often that
@@ -2489,18 +2537,17 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 df_study['UBERONBodyPartName'] = 'missing value'
 
-                labels_in_ontology_table = set(ontology_table['Label'])
-                synonyms_in_ontology_table = set(ontology_table['Synonym'])
-                allowed_bodyparts = set(allowedTerm_dict['UBERONBodyPartName']['allowed_values'])
-                allowed_bodypart_ids = set(allowedTerm_dict['UBERONOntologyIndex']['allowed_values'])
-                _label_by_id = dict(zip(ontology_table['UBERONOntologyIndex'].astype(str).str.replace('_', ':', regex=False),
-                                        ontology_table['Label']))
-                _synonyms_lower = ontology_table['Synonym'].astype(str).str.strip().str.lower()
-                _labels_lower = ontology_table['Label'].astype(str).str.strip().str.lower()
-                _case_insensitive_matches = {}
+                _ul = _uberon_lookups(ontology_table, allowedTerm_dict)
+                synonyms_in_ontology_table = _ul['synonyms']
+                allowed_bodyparts = _ul['allowed_bodyparts']
+                allowed_bodypart_ids = _ul['allowed_ids']
+                _label_by_id = _ul['label_by_id']
+                _synonyms_lower = _ul['synonyms_lower']
+                _labels_lower = _ul['labels_lower']
+                _case_insensitive_matches = _ul['ci_matches']
+                _synonym_matches = _ul['synonym_matches']
 
-                for index, row in df_study.iterrows():
-                    organism_part = row['Samples_Organism part']
+                for index, organism_part, _row_sample_type in zip(df_study.index, df_study['Samples_Organism part'], df_study['SampleType']):
 
                     _acc_id = _bp_accession.get(index, '')
                     if _acc_id and _acc_id in allowed_bodypart_ids and _label_by_id.get(_acc_id) in allowed_bodyparts:
@@ -2513,7 +2560,12 @@ def Metabolights2REDU(study_id, **kwargs):
 
                     matching_rows = ontology_table.iloc[0:0]
                     if organism_part in synonyms_in_ontology_table:
-                        matching_rows = ontology_table[ontology_table['Synonym'] == organism_part]
+                        if isinstance(organism_part, str):
+                            if organism_part not in _synonym_matches:
+                                _synonym_matches[organism_part] = ontology_table[ontology_table['Synonym'] == organism_part]
+                            matching_rows = _synonym_matches[organism_part]
+                        else:
+                            matching_rows = ontology_table[ontology_table['Synonym'] == organism_part]
                     elif isinstance(organism_part, str) and organism_part.strip():
                         # same label/exact synonym, written with different capitalisation
                         _key = organism_part.strip().lower()
@@ -2523,7 +2575,7 @@ def Metabolights2REDU(study_id, **kwargs):
 
                     if len(matching_rows) > 0:
 
-                        plant = True if row['SampleType'] == 'plant' else False
+                        plant = True if _row_sample_type == 'plant' else False
 
                         if len(matching_rows) > 1 and plant == True:
                             matching_rows = matching_rows[matching_rows['UBERONOntologyIndex'].str.startswith('PO', na=False)]
@@ -2544,7 +2596,7 @@ def Metabolights2REDU(study_id, **kwargs):
                 _use = (df_study['UBERONBodyPartName'] == 'missing value') & _alias.notna() & (df_study['SampleType'] == 'animal')
                 df_study.loc[_use, 'UBERONBodyPartName'] = _alias[_use]
 
-                ontology_table_unique = ontology_table.drop_duplicates(subset=['Label', 'UBERONOntologyIndex']).drop(columns=['Synonym'])
+                ontology_table_unique = _ul['unique']
 
                 df_study = pd.merge(df_study, ontology_table_unique, left_on='UBERONBodyPartName', right_on='Label', how='left')
                 df_study.drop('Label', axis=1, inplace=True)
@@ -2866,7 +2918,7 @@ def Metabolights2REDU(study_id, **kwargs):
             # where the organism is not a taxon; names that are also anatomy (UBERON label or
             # synonym, e.g. 'plasma', which ENVO has as a state of matter) are never used.
             if _envm_vocab and 'Samples_Organism part' in df_study.columns and 'NCBITaxonomy' in df_study.columns:
-                _anatomy = set(ontology_table['Label'].astype(str).str.strip().str.lower()) | set(ontology_table['Synonym'].astype(str).str.strip().str.lower())
+                _anatomy = _uberon_lookups(ontology_table, allowedTerm_dict)['anatomy']
                 _part = df_study['Samples_Organism part'].astype(str).str.strip().str.lower()
                 _m = _part.map(lambda v: None if v in _anatomy or v in ('plasma', 'cell culture') else _envm_vocab.get(v))
                 _ok = (_is_missing(df_study['NCBITaxonomy']) | df_study['NCBITaxonomy'].astype(str).str.startswith('2582415|')) & df_study['_qc_label'].isna()
