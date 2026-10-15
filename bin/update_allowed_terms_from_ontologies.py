@@ -5,6 +5,34 @@ from REDU_conversion_functions import get_uberon_table
 from REDU_conversion_functions import get_ontology_table
 from obo_tables import hpo_table, exposure_table
 
+def exact_synonym_labels(table):
+    """{exact synonym (lower case): label} for the synonyms of a Label/Synonym table that
+    belong to exactly one label and are not (in any case) the label of another class, and
+    {label (lower case): label} for labels no other label equals in lower case.
+    Synonyms of 3 characters or less are left out: they are abbreviations ('NA' = nasal
+    artery) that collide with placeholders. Sorted by synonym, so the json does not depend
+    on the order of the ontology files."""
+    labels_of = {}
+    lower_labels = {}
+    for label in table['Label'].dropna().astype(str).unique():
+        lower_labels.setdefault(label.strip().lower(), set()).add(label)
+    for label, synonym in zip(table['Label'], table['Synonym']):
+        if not isinstance(label, str) or not isinstance(synonym, str):
+            continue
+        key = synonym.strip().lower()
+        if len(key) <= 3 or key == label.strip().lower():
+            continue
+        labels_of.setdefault(key, set()).add(label)
+    out = {key: next(iter(labels)) for key, labels in labels_of.items()
+           if len(labels) == 1 and lower_labels.get(key, labels) == labels}
+    # the label in other case ('islet of langerhans' -> 'islet of Langerhans'), when only
+    # one label is written so
+    for key, labels in lower_labels.items():
+        if len(labels) == 1:
+            out[key] = next(iter(labels))
+    return dict(sorted(out.items()))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='update allowed terms json')
     parser.add_argument('path_to_allowed_terms_json')
@@ -109,6 +137,11 @@ if __name__ == "__main__":
 
         allowedTerm_dict['UBERONBodyPartName']['allowed_values'] = unique_labels
         allowedTerm_dict['UBERONOntologyIndex']['allowed_values'] = unique_ontology_indexes
+        # exact synonyms -> label, so a value that is an exact synonym of one class is kept
+        # under its current label (e.g. 'mononuclear cell', the former label of CL:0000842,
+        # now its exact synonym under the label 'mononuclear leukocyte')
+        allowedTerm_dict['UBERONBodyPartName']['synonyms'] = exact_synonym_labels(combined_df)
+        print(f"UBERONBodyPartName: {len(allowedTerm_dict['UBERONBodyPartName']['synonyms'])} exact synonyms of one class")
 
 
     #environment ontology

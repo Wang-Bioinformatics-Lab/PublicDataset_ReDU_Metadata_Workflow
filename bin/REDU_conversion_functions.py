@@ -188,6 +188,94 @@ def use_pinned_ncbi_taxonomy(nodes_dmp, names_dmp, merged_dmp):
     return _PINNED_LINEAGE
 
 
+# ---- NCBI synonyms and merged IDs (pinned taxonomy only) ------------------------------
+# Opt-in helpers for converters that have called use_pinned_ncbi_taxonomy(): a species name
+# that is no allowed scientific name may be a synonym in names.dmp (renamed taxa:
+# 'Blautia coccoides' -> 33035 Blautia producta), and a taxon ID may have been merged into
+# another (merged.dmp). get_taxonomy_id_from_name__allowedTerms is unchanged.
+_NCBI_SYNONYMS = None          # lower-cased synonym -> {taxon IDs}
+_NCBI_SYNONYM_STEMS = None     # (genus, epithet stem) of binomial synonyms -> {taxon IDs}
+_NCBI_SYNONYM_CLASSES = ('synonym', 'equivalent name')
+
+
+def _epithet_stem(epithet):
+    # Latin gender endings change when a species moves to another genus
+    # ('Lingulodinium polyedrum' / 'polyedra')
+    return re.sub(r'(?:us|um|a|is|e)$', '', epithet)
+
+
+def _binomial_key(name):
+    m = re.fullmatch(r'([a-z]+) ([a-z][a-z-]+)', name)
+    return (m.group(1), _epithet_stem(m.group(2))) if m else None
+
+
+def _load_ncbi_synonyms():
+    global _NCBI_SYNONYMS, _NCBI_SYNONYM_STEMS
+    if _NCBI_SYNONYMS is None:
+        synonyms, stems = {}, {}
+        with open(_PINNED_LINEAGE.taxonomy.names_dmp, encoding='utf-8') as handle:
+            for line in handle:
+                if 'synonym' not in line and 'equivalent name' not in line:
+                    continue
+                fields = line.split('\t|\t')
+                if len(fields) < 4 or fields[3].rstrip('|\t\r\n').strip() not in _NCBI_SYNONYM_CLASSES:
+                    continue
+                name = ' '.join(fields[1].lower().split())
+                taxid = int(fields[0])
+                synonyms.setdefault(name, set()).add(taxid)
+                key = _binomial_key(name)
+                if key is not None:
+                    stems.setdefault(key, set()).add(taxid)
+        _NCBI_SYNONYMS, _NCBI_SYNONYM_STEMS = synonyms, stems
+    return _NCBI_SYNONYMS, _NCBI_SYNONYM_STEMS
+
+
+# placeholder taxa whose synonyms are words such as 'none', 'other', 'not specified'
+# (32644 unidentified, 12908 unclassified sequences, 28384 other sequences, ...)
+_NCBI_PLACEHOLDER_TAXA = {1, 131567, 32644, 12908, 28384, 2787823, 2787854, 48479}
+
+
+def _allowed_term_of_ids(ids, allowedTerm_dict):
+    resolved = {_PINNED_LINEAGE.taxonomy.resolve(i) for i in ids} - {None}
+    if len(resolved) != 1 or resolved & _NCBI_PLACEHOLDER_TAXA:
+        return None
+    by_id, _ = _taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
+    return by_id.get(str(resolved.pop()))
+
+
+def pinned_ncbi_synonym_term(organism_name, allowedTerm_dict):
+    """Allowed 'ID|Name' term of the one taxon a names.dmp synonym / equivalent name
+    `organism_name` belongs to (also with another Latin gender ending of the epithet,
+    'Lingulodinium polyedra' for the synonym 'Lingulodinium polyedrum'), merged IDs
+    followed; None without the pinned taxonomy or when the name is ambiguous."""
+    if _PINNED_LINEAGE is None or not isinstance(organism_name, str):
+        return None
+    name = ' '.join(organism_name.lower().split())
+    if not name:
+        return None
+    synonyms, stems = _load_ncbi_synonyms()
+    ids = synonyms.get(name)
+    if ids:
+        return _allowed_term_of_ids(ids, allowedTerm_dict)
+    key = _binomial_key(name)
+    if key is not None and key in stems:
+        return _allowed_term_of_ids(stems[key], allowedTerm_dict)
+    return None
+
+
+def pinned_ncbi_current_term(ncbi_id, allowedTerm_dict):
+    """Allowed 'ID|Name' term of a taxon ID merged into another one (merged.dmp), else None."""
+    if _PINNED_LINEAGE is None:
+        return None
+    try:
+        taxid = int(str(ncbi_id).strip())
+    except ValueError:
+        return None
+    if taxid not in _PINNED_LINEAGE.taxonomy.merged:
+        return None
+    return _allowed_term_of_ids({taxid}, allowedTerm_dict)
+
+
 # NCBI allows 3 requests/s without an API key; going faster returns HTTP 429
 _NCBI_MIN_INTERVAL = 0.4
 _ncbi_last_request = [0.0]
@@ -473,9 +561,10 @@ def _taxonomy_term_index(taxonomy_data):
         parts = entry.split('|')
         if len(parts) == 2:
             ncbi_id, name = parts
-            term = ncbi_id + '|' + str(name)
-            by_id.setdefault(str(ncbi_id), term)
-            by_name.setdefault(name.lower(), term)
+            # the entry itself is 'ID|Name' (the same text as ncbi_id + '|' + name); keeping it
+            # instead of a new string saves one string per allowed term (~3M, ~0.2 GB)
+            by_id.setdefault(ncbi_id, entry)
+            by_name.setdefault(name.lower(), entry)
     _TAXONOMY_TERM_INDEX[:] = [(taxonomy_data, len(taxonomy_data), by_id, by_name)]
     return by_id, by_name
 

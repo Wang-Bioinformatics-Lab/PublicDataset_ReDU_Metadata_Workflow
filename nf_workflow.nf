@@ -569,9 +569,11 @@ process MASST_to_REDU {
     path microbiome_masst_table
     path nodes_dmp
     path names_dmp
+    path merged_dmp
     path uberon_cl_po_csv
     path doid_csv
     path exposure_csv
+    path files_table
 
     output:
     path 'adjusted_metadata_folder', emit: folder
@@ -594,9 +596,11 @@ process MASST_to_REDU {
     --AllowedTermJson_path ${allowed_terms} \
     --path_ncbi_nodes ${nodes_dmp} \
     --path_ncbi_names ${names_dmp} \
+    --path_ncbi_merged ${merged_dmp} \
     --path_to_uberon_cl_po_csv ${uberon_cl_po_csv} \
     --path_to_doid_csv ${doid_csv} \
     --path_to_exposure_csv ${exposure_csv} \
+    --files_table ${files_table} \
     --supplement_output masst_supplement.tsv \
     || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_supplement.tsv; }
     """
@@ -659,10 +663,12 @@ process saveOlderData {
     path merged_ch
     path old_redu
     path ml_files
+    path files_table
 
     output:
     path 'merged_with_old.tsv', emit: merged
     path 'source_summary.tsv'
+    path 'saveolder_dropped.tsv'
 
     """
     python $TOOL_FOLDER/save_older_data.py \
@@ -670,7 +676,9 @@ process saveOlderData {
     ${old_redu} \
     merged_with_old.tsv \
     --metabolights_files ${ml_files} \
-    --summary_output source_summary.tsv
+    --files_table ${files_table} \
+    --summary_output source_summary.tsv \
+    --dropped_output saveolder_dropped.tsv
     """
 }
 
@@ -738,7 +746,7 @@ workflow {
     // MASST tables: microbeMASST, plantMASST, foodMASST, personalCareProductMASST, microbiomeMASST
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
         ref.microbe_masst, ref.plant_masst, ref.food_masst, ref.food_masst_full, ref.personal_care_masst,
-        ref.microbiome_masst, ref.nodes, ref.names, uberon_cl_co_onto, doid_onto, exposure_onto)
+        ref.microbiome_masst, ref.nodes, ref.names, ref.merged, uberon_cl_co_onto, doid_onto, exposure_onto, dataset_cache.table)
     masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch.folder, allowed_terms, dataset_cache.table)
 
     // Metabolomics Workbench
@@ -764,7 +772,7 @@ workflow {
 
     // Make sure we dont loose older data
     old_redu_path_ch = Channel.fromPath(params.old_redu)
-    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch).merged
+    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch, dataset_cache.table).merged
 
     // Enrich NCBI information
     merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch, ref.nodes, ref.names, ref.merged)

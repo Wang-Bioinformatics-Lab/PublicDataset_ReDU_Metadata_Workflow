@@ -15,8 +15,12 @@ tissueMASST and plant_masst_table_full are ReDU exports and are not read.
 Precedence for a file listed in several tables (the more specific table wins):
   food > personal care > microbe > microbiome > plant
 e.g. the Global FoodOmics files (MSV000084900) that plantMASST also lists are food. Files
-described by GNPS/ReDU metadata files are left out here, and GNPS rows win the merge
-(merge_metadata.py) for the same USI.
+described by GNPS/ReDU metadata files are left out here (also when the metadata describes
+another copy of the file, e.g. ccms_peak/A/x.mzML for MASST's peak/A/x.mzXML: same_file_keys
+in merge_metadata.py); their MASST rows only fill missing fields (--supplement_output), and
+GNPS rows win the merge (merge_metadata.py) for the same file.
+NCBI taxids that NCBI has merged into another taxon (merged.dmp, --path_ncbi_merged) give the
+sample type by the current taxid, and replace the taxid where the name alone does not resolve.
 """
 import argparse
 import collections
@@ -27,6 +31,7 @@ import pandas as pd
 
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table, build_ncbi_name_resolver
 from masst_tables import (read_table, food_rows, personal_care_rows, microbiome_rows, Vocab, load_gfop)
+from merge_metadata import link_same_files, NameCopies, name_copy_datasets
 
 # NCBI taxids used to tell microbes apart (Bacteria division also holds archaea,
 # 'Plants and Fungi' holds both)
@@ -45,6 +50,63 @@ def load_ncbi_parents(path_to_nodes_dmp):
             taxid, parent = line.split('\t|\t', 2)[:2]
             parents[taxid] = parent
     return parents
+
+
+def load_ncbi_merged(path_to_merged_dmp):
+    """old taxid -> current taxid from NCBI merged.dmp ({} without the file)"""
+    merged = {}
+    if not path_to_merged_dmp or path_to_merged_dmp == 'none' or not os.path.exists(path_to_merged_dmp):
+        return merged
+    with open(path_to_merged_dmp) as f:
+        for line in f:
+            parts = line.split('\t|\t')
+            if len(parts) >= 2:
+                merged[parts[0].strip()] = parts[1].strip().rstrip('\t|').strip()
+    return merged
+
+
+def current_taxid(taxid, merged):
+    """the current NCBI taxid of a taxid NCBI merged into another taxon (merged.dmp), else the taxid"""
+    t = str(taxid).strip()
+    return merged.get(t, t) if merged else t
+
+
+def follow_merged_taxa(values, merged, name_resolves, stats=None):
+    """'old|name' -> 'current|name' for NCBI taxids that NCBI merged into another taxon, where the
+    name does not identify an allowed taxon on its own (the validator then finds the allowed term by
+    the current id; a value whose name resolves is left to the validator as before)"""
+    if not merged:
+        return values
+    def one(value):
+        text = '' if value is None or (isinstance(value, float) and value != value) else str(value)
+        tid, sep, name = text.partition('|')
+        current = merged.get(tid.strip())
+        if not current or not sep:
+            return value
+        if name_resolves(name):
+            if stats is not None:
+                stats['ncbi_merged_taxid_name_resolves_(left_as_is)'] += 1
+            return value
+        if stats is not None:
+            stats['ncbi_merged_taxid_followed'] += 1
+        return current + sep + name
+    return [one(v) for v in values]
+
+
+def ncbi_name_resolves(allowed_ncbi_terms, ncbi_name_resolver):
+    """Whether the validator resolves a taxon name without its id (an allowed scientific name of one
+    taxon, 'Genus sp.' of an allowed genus, or a names.dmp synonym / strain of an allowed taxon)."""
+    by_name = collections.Counter(t.split('|', 1)[1].strip().lower() for t in allowed_ncbi_terms if '|' in t)
+    def resolves(name):
+        name = str(name).strip()
+        key = name.lower()
+        words = key.split()
+        if len(words) == 2 and words[1] in ('sp.', 'spp.', 'sp', 'spp') and by_name.get(words[0]) == 1:
+            return True
+        if by_name.get(key) == 1:
+            return True
+        return bool(ncbi_name_resolver is not None and ncbi_name_resolver(name))
+    return resolves
 
 
 def has_ancestor(taxid, ancestor, parents):
@@ -123,6 +185,12 @@ def main():
     parser.add_argument('--path_ncbiRanksDivisions')
     parser.add_argument('--path_ncbi_nodes', default=None, help='NCBI nodes.dmp, to tell bacteria/archaea and fungi/plants apart')
     parser.add_argument('--path_ncbi_names', default=None, help='NCBI names.dmp: common names of food animals, synonyms')
+    parser.add_argument('--path_ncbi_merged', default=None,
+                        help='NCBI merged.dmp: taxids NCBI merged into another taxon are replaced by the current one')
+    parser.add_argument('--files_table', default=None,
+                        help='dataset cache file table (uniquemri.csv): recognises copies of a GNPS-described file in '
+                             'another folder layout (merge_metadata.NameCopies); without it only the same path or a copy '
+                             'in another top folder counts')
     parser.add_argument('--path_to_uberon_cl_po_csv', default=None)
     parser.add_argument('--path_to_doid_csv', default=None)
     parser.add_argument('--path_to_exposure_csv', default=None)
@@ -137,16 +205,17 @@ def main():
     df_redu = pd.read_csv(args.path_REDUtable, sep='\t', dtype=str)
     df_redu['filename'] = df_redu['filename'].str.slice(2)
     # Files already described by GNPS metadata, identified by dataset + path (the same
-    # relative path, e.g. ccms_peak/Blank.mzML, exists in many datasets); tables that only
-    # give the file name are compared by dataset + name
-    redu_files = set(zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename']))
+    # relative path, e.g. ccms_peak/Blank.mzML, exists in many datasets) or as another copy
+    # of the same file (same_file_keys); tables that only give the file name are compared by
+    # dataset + name
     redu_stems = set(zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename'].map(_stem)))
+    redu_usis = ('mzspec:' + df_redu['ATTRIBUTE_DatasetAccession'].fillna('') + ':' + df_redu['filename'].fillna(''))
     # USI of each GNPS-described file, for the supplement rows (a name that fits several
     # files of the dataset, e.g. pos/ and neg/ copies, is not used)
-    usi_by_path, usis_by_stem = {}, collections.defaultdict(set)
+    usi_by_redu_usi, usis_by_stem = {}, collections.defaultdict(set)
     if 'USI' in df_redu.columns:
-        for m, f, u in zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename'], df_redu['USI']):
-            usi_by_path[(m, f)] = u
+        for m, f, u, ru in zip(df_redu['ATTRIBUTE_DatasetAccession'], df_redu['filename'], df_redu['USI'], redu_usis):
+            usi_by_redu_usi[ru] = u
             usis_by_stem[(m, _stem(f))].add(u)
 
     with open(args.AllowedTermJson_path, 'r') as json_file:
@@ -156,6 +225,7 @@ def main():
     NCBIRankDivision_table = NCBIRankDivision_table.drop_duplicates(subset=['TaxonID'])
     division_by_taxid = dict(zip(NCBIRankDivision_table['TaxonID'].astype(str), NCBIRankDivision_table['NCBIDivision']))
     parents = load_ncbi_parents(args.path_ncbi_nodes) if args.path_ncbi_nodes else None
+    merged_taxa = load_ncbi_merged(args.path_ncbi_merged)
 
     def _csv(path):
         return pd.read_csv(path) if path and path != 'none' and os.path.exists(path) else None
@@ -173,7 +243,8 @@ def main():
         df_mm['filename'] = df_mm['Filepath'].apply(lambda x: '/'.join(x.split('/')[1:]))
         df_mm['NCBITaxonomy'] = df_mm['Taxa_NCBI'] + '|' + df_mm['Taxaname_file']
         df_mm = df_mm.rename(columns={'MassIVE': 'MassiveID'})
-        types = [microbe_sample_type(str(t).strip(), division_by_taxid, parents) for t in df_mm['Taxa_NCBI']]
+        # a taxid NCBI merged into another taxon is looked up by its current taxid
+        types = [microbe_sample_type(current_taxid(t, merged_taxa), division_by_taxid, parents) for t in df_mm['Taxa_NCBI']]
         df_mm['SampleType'] = [t[0] for t in types]
         df_mm['SampleTypeSub1'] = [t[1] for t in types]
         df_mm = apply_blank_qc_flags(df_mm)
@@ -201,7 +272,7 @@ def main():
     # microbiomeMASST
     tables['microbiome'] = microbiome_rows(
         read_table(args.path_microbiomeMASST, '\t'), vocab, division_by_taxid,
-        microbe_sample_type=lambda t: microbe_sample_type(t, division_by_taxid, parents), stats=stats)
+        microbe_sample_type=lambda t: microbe_sample_type(current_taxid(t, merged_taxa), division_by_taxid, parents), stats=stats)
 
     # foodMASST names the plant of a food by its botanical name; where that name is not an
     # NCBI name (typos such as 'rosmarinus'), the plantMASST taxon of the same file is used
@@ -219,6 +290,13 @@ def main():
     # files of GNPS/ReDU metadata are left out; a file in several tables is taken from the
     # most specific one
     basename_only = {'food', 'personal_care'}
+    name_copies = None
+    if args.files_table:
+        masst_usis = pd.Series(['mzspec:' + str(m) + ':' + str(f) for name in TABLE_PRECEDENCE if name not in basename_only
+                                and tables.get(name) is not None and len(tables[name])
+                                for m, f in zip(tables[name]['MassiveID'], tables[name]['filename'])], dtype=object)
+        datasets = name_copy_datasets(masst_usis, redu_usis, link_same_files(masst_usis, redu_usis))
+        name_copies = NameCopies(args.files_table, list(redu_usis) + list(masst_usis), datasets)
     taken_paths, taken_stems = set(), set()
     df_list = []
     for name in TABLE_PRECEDENCE:
@@ -233,7 +311,13 @@ def main():
             in_redu = [s in redu_stems for s in stems]
             shadowed = [s in taken_stems for s in stems]
         else:
-            in_redu = [p in redu_files for p in paths]
+            # the GNPS-described copies of each file (the same path, the same path with another
+            # extension, or a copy in another top folder)
+            query = pd.Series(['mzspec:' + str(m) + ':' + str(f) for m, f in paths])
+            same_files = link_same_files(query, redu_usis)
+            if name_copies is not None:
+                same_files = name_copies.link(query, redu_usis, same_files)
+            in_redu = [bool(t) for t in same_files]
             shadowed = [p in taken_paths or s in taken_stems for p, s in zip(paths, stems)]
         keep = [not a and not b for a, b in zip(in_redu, shadowed)]
         # GNPS-described files of the most specific table listing them: supplement rows
@@ -241,7 +325,9 @@ def main():
             target = [next(iter(usis_by_stem[s])) if a and not b and len(usis_by_stem.get(s, ())) == 1 else ''
                       for s, a, b in zip(stems, in_redu, shadowed)]
         else:
-            target = [usi_by_path.get(p, '') if a and not b else '' for p, a, b in zip(paths, in_redu, shadowed)]
+            # only a file with one described copy fills that copy's missing fields
+            target = [usi_by_redu_usi.get(t[0], '') if a and not b and len(t) == 1 else ''
+                      for t, a, b in zip(same_files, in_redu, shadowed)]
         supplement = [bool(t) for t in target]
         print(f"{name}MASST: {len(df)} files, {sum(in_redu)} described by GNPS metadata "
               f"({sum(supplement)} as supplement rows), "
@@ -273,6 +359,13 @@ def main():
         names = {str(v).split('|', 1)[-1].strip() for v in df_massts['NCBITaxonomy'].unique() if str(v).strip()}
         ncbi_name_resolver = build_ncbi_name_resolver(args.path_ncbi_names, names,
                                                       allowed_terms['NCBITaxonomy']['allowed_values'], NCBIRankDivision_table)
+    # taxids NCBI merged into another taxon (e.g. 137779 -> 184924): the current taxid, where the
+    # name alone does not give an allowed taxon (otherwise the row lost its taxonomy or was dropped)
+    if merged_taxa:
+        resolves = ncbi_name_resolves(allowed_terms['NCBITaxonomy']['allowed_values'], ncbi_name_resolver)
+        df_massts['NCBITaxonomy'] = follow_merged_taxa(df_massts['NCBITaxonomy'], merged_taxa, resolves, stats)
+        print(f"NCBI taxids merged into another taxon: {stats.get('ncbi_merged_taxid_followed', 0)} rows take the current "
+              f"taxid, {stats.get('ncbi_merged_taxid_name_resolves_(left_as_is)', 0)} rows keep it (their name resolves)")
     kwargs = {}
     if uberon_table is not None:
         kwargs['UBERONOntologyIndex_table'] = uberon_table

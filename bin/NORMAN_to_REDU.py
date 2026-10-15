@@ -46,6 +46,36 @@ def get_metadata_sheet(url):
         return pd.DataFrame()  
 
 
+NORMAN_DATA_URL = "https://dsfp.norman-data.eu/data/{internal_id}/"
+
+
+def record_from_files_csv(internal_id):
+    """Stand-in for a dataset record that cannot be fetched (e.g. HTTP 404 for IN2AQUAS while
+    its sheets are still served): the Files CSV at /data/<internal_id>/files.csv, the Samples
+    CSVs it names in 'samples_file' (only those under the same /data/<internal_id>/) and the
+    instrument sheets at their usual URLs. Returns (record, Files CSV table), or (None, None)
+    when the Files CSV is not served either."""
+    base = NORMAN_DATA_URL.format(internal_id=internal_id)
+    files_url = base + 'files.csv'
+    files = get_metadata_sheet(files_url)
+    if files.empty or 'sample_id' not in files.columns:
+        return None, None
+    distribution = [{'title': 'Files CSV', 'downloadURL': files_url}]
+    if 'samples_file' in files.columns:
+        matrix = files['matrix'] if 'matrix' in files.columns else pd.Series(np.nan, index=files.index)
+        seen = set()
+        for url, m in zip(files['samples_file'], matrix):
+            if not isinstance(url, str) or not url.startswith(base) or url in seen:
+                continue
+            seen.add(url)
+            # titled like the sheets of a dataset record ('Surface water - Samples CSV')
+            title = (m if isinstance(m, str) and m.strip() else url.rsplit('/', 1)[-1]) + ' - Samples CSV'
+            distribution.append({'title': title, 'downloadURL': url})
+    distribution += [{'title': 'Instruments CSV', 'downloadURL': base + 'instruments.csv'},
+                     {'title': 'Instrument setups CSV', 'downloadURL': base + 'instrument-setups.csv'}]
+    return {'distribution': distribution}, files
+
+
 def str_contains(series, pattern):
     """Case-insensitive regex search that never crashes on NaNs or numerics."""
     return (
@@ -91,6 +121,15 @@ def clean(series):
 NORMAN_DATE_FORMAT = '%a, %m/%d/%Y - %H:%M'
 
 
+def plain_coordinate(value):
+    """A coordinate as written, without padding zeros after the decimal point
+    ('59.836110' -> '59.83611', '46.0' -> '46'); other text unchanged (NaN -> 'nan')."""
+    text = str(value).strip()
+    if re.fullmatch(r'-?\d+\.\d+', text):
+        text = text.rstrip('0').rstrip('.')
+    return text
+
+
 def parse_norman_date(value):
     """Parsed date, or None if not in NORMAN format or implausible (typos like year 0003)."""
     try:
@@ -103,16 +142,20 @@ def parse_norman_date(value):
 
 
 def norman_collection_date(value):
-    """Sampling date as an ISO date. The time is dropped (the stored hours are UTC
-    shifts such as 22:00/03:00, not sampling times), and 01/01/YYYY, which submitters
-    use as a placeholder for 'some time in YYYY', keeps only the year. Values in other
-    formats pass through for the shared datetime validation."""
+    """Sampling date as an ISO date. A time on the full hour is dropped (date-only entries
+    are stored with a fixed hour, UTC shifts such as 22:00/03:00/13:00, not sampling
+    times); a time with minutes (14:20, 09:47) is a recorded sampling time and is kept
+    ('2021-06-01T14:20'). 01/01/YYYY without such a time, which submitters use as a
+    placeholder for 'some time in YYYY', keeps only the year. Values in other formats pass
+    through for the shared datetime validation."""
     if pd.isna(value):
         return value
     parsed = parse_norman_date(value)
     if parsed is None:
         # implausible NORMAN-format dates are dropped; other formats go to the validation
         return np.nan if re.match(r'^[A-Za-z]{3}, \d', str(value).strip()) else str(value)
+    if parsed.minute != 0:
+        return parsed.strftime('%Y-%m-%dT%H:%M')
     if parsed.month == 1 and parsed.day == 1:
         return parsed.strftime('%Y')
     return parsed.strftime('%Y-%m-%d')
@@ -128,6 +171,13 @@ def norman_year(value):
 
 # Sheets use both 'Real Sample'/'Blank Sample' and the short 'Sample'/'Blank'/'QC'
 SAMPLE_TYPE_NAMES = {'Sample': 'Real Sample', 'Blank': 'Blank Sample', 'QC': 'QC Sample'}
+
+# Files CSV sample_type of the samples that are not real samples -> SampleType (and
+# SampleTypeSub1). 'QC Sample' (internal-standard, standard and calibration injections) is a
+# quality-control sample: pool_QC, as the GNPS sheets' 'QC'. 'Artificial Sample' is not mapped:
+# it covers spiked matrices but also lab-made experimental samples (e.g. the plastic leachates
+# of 'Microplastics, leaching of additives ...'), which are no QC samples.
+NON_REAL_SAMPLE_TYPES = {'Blank Sample': 'blank_extraction', 'QC Sample': 'pool_QC'}
 
 # Files CSV matrix -> SampleTypeSub1 (water types only; sediment, air, biota have no
 # matching SampleTypeSub1 and are described by ENVOEnvironmentMaterial / SampleType)
@@ -167,7 +217,8 @@ HUMAN_MATRIX_TO_SAMPLETYPESUB1 = {'Blood': 'biofluid', 'Urine': 'biofluid', 'Pla
 NORMAN_INSTRUMENT_NAMES = {'exploris 120': 'Orbitrap Exploris 120',
                            'orbitrap velos': 'LTQ Orbitrap Velos',
                            'maxis hd': 'Bruker Daltonics maXis series',
-                           'uhplc-orbitrap-id-x-tribrid': 'Orbitrap ID-X'}
+                           'uhplc-orbitrap-id-x-tribrid': 'Orbitrap ID-X',
+                           'agilent 7200 qtof': '7200 Q-TOF GC/MS', '7200 qtof': '7200 Q-TOF GC/MS'}
 
 # GC columns with a 5%-phenyl methylpolysiloxane phase (DB-5 equivalents)
 GC_DB5_COLUMN = r'(?<![a-z0-9])(?:db|hp|tg|rxi|rtx|zb|vf|bpx|inertcap|intercap)[- ]?5(?![0-9])'
@@ -194,6 +245,21 @@ SEDIMENT_TYPE_TO_MATERIAL = {'marine sediment': 'marine sediment', 'sediment-lak
 
 # Country names that are also common names of rivers, lakes or regions elsewhere
 AMBIGUOUS_COUNTRY_NAMES = {'Georgia', 'Jordan', 'Chad', 'Niger'}
+
+
+def country_name(values):
+    """Country column -> vocabulary spelling ('UK' -> 'United Kingdom'), '' when empty."""
+    text = values.astype('string').fillna('').str.strip()
+    return text.replace(COUNTRY_NAMES).astype(object)
+
+
+def file_names_country(file_names, country):
+    """True where a file name gives `country` as a word ('..._Peterborough_UK_01.01.2017_...',
+    'riga_latvia'); also its short forms of COUNTRY_NAMES except 'US'."""
+    names = [country] + [k for k, v in COUNTRY_NAMES.items() if v == country and k != 'US']
+    pattern = '|'.join(r'(?<![a-z])' + re.escape(n.lower()) + r'(?![a-z])' for n in names)
+    text = file_names.astype(str).str.lower().str.replace(r'[_\-.]+', ' ', regex=True)
+    return text.str.contains(pattern, regex=True)
 
 
 def water_body_biome(name):
@@ -406,11 +472,23 @@ def main(output_filename, study_id, **kwargs):
             print(f"Fetching file data from {metadata_collection_url}", flush = True)
             metadata_collection_response = SESSION.get(metadata_collection_url, timeout=HTTP_TIMEOUT)
 
-            if metadata_collection_response.status_code == 200:
-                
-                metadata_collection_dict = metadata_collection_response.json()
-                
-                print(f"Fetched metadata collection dict for dataset {uuid}", flush = True)
+            # sheets read while building a stand-in record (not downloaded a second time)
+            prefetched = {}
+            record_status = metadata_collection_response.status_code
+            if record_status != 200:
+                stand_in, files_table = record_from_files_csv(internal_id)
+                if stand_in is not None:
+                    print(f"Dataset {internal_id}: dataset record returned HTTP {record_status}; "
+                          f"using its Files CSV ({len(files_table)} rows) and the sheets it names", flush=True)
+                    prefetched[stand_in['distribution'][0]['downloadURL']] = files_table
+
+            if record_status == 200 or prefetched:
+
+                if record_status == 200:
+                    metadata_collection_dict = metadata_collection_response.json()
+                    print(f"Fetched metadata collection dict for dataset {uuid}", flush = True)
+                else:
+                    metadata_collection_dict = stand_in
 
 
                 # Records without sheets (no 'distribution') hold no files to index
@@ -460,7 +538,8 @@ def main(output_filename, study_id, **kwargs):
 
                         # Make LatitudeandLongitude column in format latitude and longitude separated by a |
                         if 'Latitude' in df_metadata_sheet.columns and 'Longitude' in df_metadata_sheet.columns:
-                            df_metadata_sheet['LatitudeandLongitude'] = df_metadata_sheet['Latitude'].astype(str) + '|' + df_metadata_sheet['Longitude'].astype(str)
+                            df_metadata_sheet['LatitudeandLongitude'] = (df_metadata_sheet['Latitude'].map(plain_coordinate) + '|'
+                                                                         + df_metadata_sheet['Longitude'].map(plain_coordinate))
 
                         # Make DepthorAltitudeMeters first to numeric to make sign negative and then to string
                         if 'Depth (m)' in df_metadata_sheet.columns:
@@ -636,10 +715,16 @@ def main(output_filename, study_id, **kwargs):
 
 
                         # Country from 'Monitored country' (or 'field_country'), with UK/USA spelled
-                        # as in the vocabulary
+                        # as in the vocabulary. When the two name different countries, the sample's
+                        # field_country is kept aside: it replaces the monitored country on the files
+                        # whose names give it as their country (checked after the raw files are joined)
                         if 'Monitored country' in df_metadata_sheet.columns or 'field_country' in df_metadata_sheet.columns:
                             country = df_metadata_sheet.get('Monitored country', pd.Series(np.nan, index=df_metadata_sheet.index))
                             if 'field_country' in df_metadata_sheet.columns:
+                                monitored_name = country_name(country)
+                                field_name = country_name(df_metadata_sheet['field_country'])
+                                conflict = (monitored_name != '') & (field_name != '') & (monitored_name != field_name)
+                                df_metadata_sheet['field_country_if_named'] = field_name.where(conflict, '')
                                 country = country.fillna(df_metadata_sheet['field_country'])
                             df_metadata_sheet = df_metadata_sheet.drop(columns=[c for c in ['Monitored country', 'field_country'] if c in df_metadata_sheet.columns])
                             df_metadata_sheet['Country'] = country.astype('string').str.strip().replace(COUNTRY_NAMES)
@@ -649,7 +734,8 @@ def main(output_filename, study_id, **kwargs):
 
 
                     elif download_url.endswith('files.csv'):
-                        fileinfo_redu_sheet = get_metadata_sheet(download_url)
+                        fileinfo_redu_sheet = (prefetched.pop(download_url) if download_url in prefetched
+                                               else get_metadata_sheet(download_url))
 
                         if fileinfo_redu_sheet.empty or len(fileinfo_redu_sheet) == 0: 
                             print(f"Skipping {metadata_sheet['title']} as it is empty or can not be downloaded.")
@@ -674,11 +760,11 @@ def main(output_filename, study_id, **kwargs):
                         fileinfo_redu_sheet = fileinfo_redu_sheet[required_columns].copy()
                         is_real_file = fileinfo_redu_sheet['sample_type'] == 'Real Sample'
 
-                        fileinfo_redu_sheet['SampleType'] = fileinfo_redu_sheet['sample_type'].replace({'Blank Sample': 'blank_extraction'})
+                        fileinfo_redu_sheet['SampleType'] = fileinfo_redu_sheet['sample_type'].replace(NON_REAL_SAMPLE_TYPES)
                         fileinfo_redu_sheet['SampleTypeSub1'] = np.where(
                             is_real_file,
                             fileinfo_redu_sheet['matrix'].map(MATRIX_TO_SAMPLETYPESUB1).fillna('Real Sample'),
-                            fileinfo_redu_sheet['sample_type'].replace({'Blank Sample': 'blank_extraction'}))
+                            fileinfo_redu_sheet['sample_type'].replace(NON_REAL_SAMPLE_TYPES))
 
                         # Human biomonitoring (blood, urine, placenta): human samples are 'animal'
                         is_human = is_real_file & fileinfo_redu_sheet['matrix'].isin(HUMAN_MATRIX_TO_SAMPLETYPESUB1.keys())
@@ -906,6 +992,24 @@ def main(output_filename, study_id, **kwargs):
                 # Merge with the main DataFrame
                 merged_df = pd.merge(merged_df, spectral_raw_files_df, on='sample_id', how='inner')
                 print(f"Dataset {internal_id}: {len(spectral_raw_files_df)} raw files, {len(merged_df)} rows after matching raw files")
+
+                # Monitored country and field_country differ: the field_country is taken for the
+                # files whose own name gives it (and not the monitored country) as their country
+                if 'field_country_if_named' in merged_df.columns:
+                    alternative = merged_df['field_country_if_named'].fillna('').astype(str)
+                    use = pd.Series(False, index=merged_df.index)
+                    for name in sorted(set(alternative) - {''}):
+                        rows = alternative == name
+                        named = file_names_country(merged_df.loc[rows, 'filename'], name)
+                        current = merged_df.loc[rows, 'Country'].fillna('').astype(str)
+                        not_current = ~pd.Series([file_names_country(pd.Series([f]), c).iat[0] if c else False
+                                                  for f, c in zip(merged_df.loc[rows, 'filename'], current)],
+                                                 index=current.index, dtype=bool)
+                        use.loc[rows] = named & not_current
+                    if use.any():
+                        print(f"Dataset {internal_id}: Country from field_country for {int(use.sum())} files whose names give it")
+                        merged_df.loc[use, 'Country'] = alternative[use]
+                    merged_df = merged_df.drop(columns=['field_country_if_named'])
 
                 # Combine instrument info and instrument setup info
                 ########

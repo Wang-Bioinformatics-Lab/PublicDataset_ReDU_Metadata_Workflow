@@ -112,10 +112,16 @@ PROXI_URL = "https://massive.ucsd.edu/ProteoSAFe/proxi/v0.1/datasets/{}"
 
 # ReDU-format sheets that are not named *gnps_metadata.tsv (other names, .txt, .csv,
 # .xlsx, .tsv.tsv): tabular files with 'metadata' in their path (name or folder), outside
-# ccms_metadata/. Only those whose header is the ReDU template are used.
+# ccms_metadata/. Only those whose header is the ReDU template are used. Only files under the
+# top-level folders metadata/ and updates/ are candidates: all 131 ReDU-format sheets found on
+# 2026-10-14 were there (69 under metadata/, 62 under updates/), while the 1,561 candidates in
+# other folders (peak/, raw/, other/, ...; 34% of all) held none and cost ~35 min of
+# sequential downloads.
 TEMPLATE_SHEET_EXTENSIONS = ('.tsv', '.txt', '.csv', '.xlsx', '.xls')
+OTHER_SHEETS_TOP_FOLDERS = ('metadata/', 'updates/')
 OTHER_SHEETS_WHERE = (
-    "filepath like '%metadata%' "
+    "(" + " or ".join(f"filepath like '{top}%'" for top in OTHER_SHEETS_TOP_FOLDERS) + ") "
+    "and filepath like '%metadata%' "
     "and filepath not like '%ccms_metadata/%' and filepath not like '%gnps_metadata.tsv' and ("
     + " or ".join(f"filepath like '%{ext}'" for ext in TEMPLATE_SHEET_EXTENSIONS) + ")")
 MAX_SHEET_BYTES = 50 * 1024 * 1024
@@ -216,12 +222,27 @@ def _sample_key(filename):
     return re.sub(r'\.(mzml|mzxml|raw|d|wiff|cdf|mzdata|mgf)$', '', base)
 
 
-def combine_versions(sheets, dataset, template_keys):
-    """One table from several metadata files of a dataset, given newest first. Rows of the
-    newest file are all kept; an older file only adds rows of this dataset for files (same
-    file name, ignoring folders, case and .mzML/.mzXML) that no newer file describes."""
+# Rows that an older version (or the MassIVE sheet of a dataset with a GitHub sheet) has for
+# ANOTHER dataset only fill fields of that dataset's own rows for the same file, and never add
+# a row (a dataset's own sheet wins): once all sheets are downloaded they lose every field the
+# dataset's own sheets have an entry for, and rows that describe another sample or have nothing
+# left to fill are dropped (keep_fields_own_sheets_leave_empty); the rest is saved in a separate
+# file with this mark in its name. The name matching step keeps a row of such a file only if a
+# row from the dataset's own metadata names the same file, and the merge step fills only fields
+# the own rows leave missing. E.g. MSV000083559's full sheet, uploaded by mistake as a version of
+# MSV000081571's, fills 11-14 fields of 454 files that MSV000083559's own GitHub sheet leaves out.
+FILL_ONLY_MARK = '_fill_only'
+
+
+def combine_versions(sheets, dataset, template_keys, skip_first=0):
+    """Rows from several metadata files of a dataset, given newest first, as (rows, fill-only
+    rows), each None if empty. Rows of the newest file are all kept; an older file only adds
+    rows for files (same dataset, same file name ignoring folders, case and .mzML/.mzXML) that
+    no newer file describes: rows for this dataset to the first table, rows for other datasets
+    to the second (see FILL_ONLY_MARK). The first skip_first files (GitHub sheets, kept as their
+    own files) only mark the files they describe; their rows are in neither table."""
     described = set()
-    parts = []
+    parts, fill_only = [], []
     for rank, (df, source) in enumerate(sheets):
         df = _canonical_column(df, 'filename', template_keys)
         df = _canonical_column(df, 'MassiveID', template_keys)
@@ -235,20 +256,112 @@ def combine_versions(sheets, dataset, template_keys):
         if rank > 0:
             df['MassiveID'] = accession
         keys = list(zip(accession, df['filename'].map(_sample_key)))
-        # rows without a file name (empty template rows) describe nothing; rows an older
-        # file has for another dataset are left to that dataset's own metadata
+        # rows without a file name (empty template rows) describe nothing
         has_name = ~df['filename'].fillna('').astype(str).str.strip().str.lower().isin(['', 'nan'])
-        own = accession == dataset
-        new = [rank == 0 or (named and mine and k not in described) for k, named, mine in zip(keys, has_name, own)]
+        new = [rank == 0 or (named and k not in described) for k, named in zip(keys, has_name)]
         described.update(k for k, named in zip(keys, has_name) if named)
+        if rank < skip_first:
+            continue
         kept = df[new]
-        if rank > 0:
-            print(f"  {source}: {int(sum(new))} of {len(df)} rows describe files no newer version describes")
-        if len(kept):
+        if rank == 0:
             parts.append(kept)
-    if not parts:
+            continue
+        own = (accession == dataset)[new]
+        print(f"  {source}: {int(sum(new))} of {len(df)} rows describe files no newer version describes"
+              + (f" ({int((~own).sum())} of them for other datasets: fill only)" if (~own).any() else ""))
+        parts.append(kept[own])
+        fill_only.append(kept[~own])
+    parts = [p for p in parts if len(p)]
+    fill_only = [p for p in fill_only if len(p)]
+    return (pd.concat(parts, ignore_index=True, sort=False) if parts else None,
+            pd.concat(fill_only, ignore_index=True, sort=False) if fill_only else None)
+
+
+def _blank(value):
+    return pd.isna(value) or str(value).strip().lower() in ('', 'nan', 'missing value')
+
+
+# what a sample is: a fill-only row that gives another organism (taxonomy ID) than the dataset's
+# own sheet describes another sample (e.g. Mus musculus for MSV000085862's Nepenthes files) and
+# fills nothing. (SampleType and body part are not compared here: the raw sheets of different
+# template generations name the same sample differently, e.g. 'biofluid' / 'animal'.)
+IDENTITY_COLUMNS = ('NCBITaxonomy',)
+_PLACEHOLDERS = {'not applicable', 'not collected', 'not specified', 'not available', 'ml import: not available',
+                 'na', 'n/a', 'none', 'unknown'}
+
+
+# values that carry no information to fill an own row with (free-text placeholders)
+_NO_INFORMATION = {'na', 'n/a', 'nan', 'not available', 'ml import: not available', 'unknown', 'not specified'}
+
+
+def _identity_value(value):
+    """Comparable form of a real value ('9606|Homo sapiens' -> '9606'), or None for placeholders."""
+    value = str(value).strip().lower()
+    if value in _PLACEHOLDERS:
         return None
-    return pd.concat(parts, ignore_index=True, sort=False)
+    return value.split('|')[0].strip() if '|' in value else value
+
+
+def keep_fields_own_sheets_leave_empty(fill_only, own_sheets, template_keys):
+    """fill_only: rows for other datasets (see FILL_ONLY_MARK); own_sheets: [(table, dataset of
+    the file)] of all metadata files saved for the datasets themselves (MassIVE and GitHub); only
+    their rows for that dataset count. A fill-only row of a file (dataset, file name as in
+    combine_versions) that an own row describes as another sample (IDENTITY_COLUMNS) is dropped.
+    Otherwise a field of it is kept only where no own row of the file has any entry in that
+    column, not even 'not applicable' or 'not collected': an older copy must not bring back what
+    the dataset's own, newer sheet replaced (e.g. 'male' on MSV000083463's breast milk samples,
+    now 'not applicable'). Rows left with no field to fill are dropped. Returns (rows, counts)."""
+    fill_only = _canonical_column(_canonical_column(fill_only, 'filename', template_keys), 'MassiveID', template_keys)
+    keys = list(zip(fill_only['MassiveID'].astype(str).str.strip(), fill_only['filename'].map(_sample_key)))
+    wanted = set(keys)
+    # (dataset, file) -> template column -> comparable entries of the own rows
+    present = collections.defaultdict(lambda: collections.defaultdict(set))
+    for df, dataset in own_sheets:
+        df = _canonical_column(_canonical_column(df, 'filename', template_keys), 'MassiveID', template_keys)
+        if 'filename' not in df.columns:
+            continue
+        accession = df['MassiveID'].fillna('').astype(str).str.strip() if 'MassiveID' in df.columns \
+            else pd.Series(dataset, index=df.index)
+        accession = accession.where(accession.str.match(r'^R?MSV\d+$'), dataset)
+        columns = [(j, template_column(c, template_keys)) for j, c in enumerate(df.columns)]
+        columns = [(j, t) for j, t in columns if t not in (None, 'filename', 'MassiveID')]
+        for i, key in enumerate(zip(accession, df['filename'].map(_sample_key))):
+            if key in wanted and key[0] == dataset:
+                for j, t in columns:
+                    value = df.iat[i, j]
+                    if not _blank(value):
+                        present[key][t].add(_identity_value(value))
+    columns = [(j, template_column(c, template_keys)) for j, c in enumerate(fill_only.columns)]
+    columns = [(j, t) for j, t in columns if t not in (None, 'filename', 'MassiveID')]
+    fill_only = fill_only.copy()
+    keep = []
+    counts = collections.Counter()
+    for i, key in enumerate(keys):
+        own = present.get(key, {})
+        conflict = False
+        for j, t in columns:
+            value = fill_only.iat[i, j]
+            if t in IDENTITY_COLUMNS and not _blank(value) and _identity_value(value) is not None:
+                real = own.get(t, set()) - {None}
+                if real and _identity_value(value) not in real:
+                    conflict = True
+        if conflict:
+            counts['dropped_other_sample'] += 1
+            keep.append(False)
+            continue
+        filled = 0
+        for j, t in columns:
+            if t in own:
+                fill_only.iat[i, j] = ''
+            elif _blank(fill_only.iat[i, j]):
+                pass
+            elif str(fill_only.iat[i, j]).strip().lower() in _NO_INFORMATION:
+                fill_only.iat[i, j] = ''   # a placeholder is nothing to fill with
+            else:
+                filled += 1
+        counts['kept' if filled else 'dropped_nothing_to_fill'] += 1
+        keep.append(filled > 0)
+    return fill_only[keep], counts
 
 
 # Proteomics datasets are not taken in through other-named sheets. Same signals and
@@ -353,31 +466,75 @@ def order_versions(links, modify_time):
     tied = [link for link, date in zip(links, dates) if dates.count(date) > 1]
     times = {link: modify_time(link) for link in tied}
     if not all(times.values()):
+        print(f"WARNING: no MassIVE modification time for {[l for l, t in times.items() if not t]}; "
+              f"versions of the same date keep the dataset cache order: {tied}")
         times = {}
     # (sorted keeps the given order of equal keys, also with reverse=True)
     return sorted(links, key=lambda link: (_update_date(link), times.get(link) or ''), reverse=True)
 
 
+def _retry_after(response):
+    """Seconds a 429/503 answer asks to wait (Retry-After: seconds or an HTTP date), or None."""
+    value = (response.headers.get('Retry-After') or '').strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    try:
+        from email.utils import parsedate_to_datetime
+        import datetime
+        return max(0, int((parsedate_to_datetime(value) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+# MassIVE's HTTP endpoint throttles (HTTP 429, without Retry-After) for minutes at a time: a
+# request answered 200 and the next ones, 10 s to 4 min later, 429 (2026-10-14). A throttled
+# request is retried, one at a time, after growing pauses (or the pause Retry-After asks for),
+# within a budget for the whole run: the endpoint is only the fallback for files FTPS does not
+# deliver (1 of 903 files on 2026-10-14), so if FTPS fails altogether the run is not held up
+# for hours. Past the budget, and for other errors, the short retries of before apply.
+HTTP_THROTTLE_WAITS = (30, 60, 120, 240, 480, 600, 600)
+HTTP_THROTTLE_BUDGET = 2400
+HTTP_THROTTLE_WAITED = [0]
+
+
 def _download_metadata_file(session, url, max_retries=5, timeout=120):
-    """Downloads one file from MassIVE, retrying on throttling/server errors.
+    """Downloads one file from MassIVE, retrying on throttling (429) and server errors.
 
     Returns the content, or None if the file could not be downloaded. Error pages are
     never returned, so they cannot end up saved as metadata.
     """
-    for attempt in range(1, max_retries + 1):
+    attempt = 0
+    while True:
+        attempt += 1
+        wait = None
         try:
             r = session.get(url, verify=False, timeout=timeout)
         except requests.RequestException as e:
             print(f"Attempt {attempt} failed for {url}: {e}")
         else:
             if r.status_code == 200:
+                if r.content.lstrip()[:15].lower().startswith((b'<!doctype html', b'<html')):
+                    print(f"Attempt {attempt}: an HTML page instead of a metadata file for {url}")
+                    return None
                 return r.content
             print(f"Attempt {attempt} bad status {r.status_code} for {url}")
             # 4xx other than throttling will not succeed on retry
             if r.status_code < 500 and r.status_code != 429:
                 return None
-        time.sleep(min(2 ** attempt, 60))
-    return None
+            if r.status_code in (429, 503) and attempt <= len(HTTP_THROTTLE_WAITS):
+                asked = _retry_after(r)
+                planned = min(asked if asked is not None else HTTP_THROTTLE_WAITS[attempt - 1], 900)
+                if HTTP_THROTTLE_WAITED[0] + planned <= HTTP_THROTTLE_BUDGET:
+                    wait = planned
+                    HTTP_THROTTLE_WAITED[0] += wait
+        if wait is None:
+            if attempt >= max_retries:
+                return None
+            wait = min(2 ** attempt, 60)
+        print(f"Waiting {wait} s before attempt {attempt + 1} for {url}")
+        time.sleep(wait)
 
 
 class MassiveFTPS:
@@ -514,8 +671,9 @@ def main():
     # Print message to indicate that the CSV file has been read
     print("echo GNPS CSV Read Done!")
 
-    # Convert the create time column to a datetime format
-    gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'], errors='coerce')
+    # Convert the create time column to a datetime format (ISO8601: the cache writes times with
+    # and without fractional seconds, and an inferred format would turn the others into NaT)
+    gnps_df['create_time'] = pd.to_datetime(gnps_df['create_time'], errors='coerce', format='ISO8601')
 
 
     # All *gnps_metadata.tsv files of a dataset, by create time (missing times count as
@@ -535,10 +693,12 @@ def main():
     os.system("echo Filepath list generated ... ")
 
     # Get already present github files by listing file paths in the output_metadata_folder
-    existing_files = os.listdir(args.output_metadata_folder)
+    github_files = collections.defaultdict(list)
+    for file in sorted(os.listdir(args.output_metadata_folder)):
+        github_files[os.path.basename(file).split(".")[0]].append(os.path.join(args.output_metadata_folder, file))
 
     # Get list of basenames of existing files without file extension
-    existing_files = [os.path.basename(file).split(".")[0] for file in existing_files]
+    existing_files = list(github_files)
 
     # Files are fetched over FTPS; the (throttled) HTTP endpoint is only a fallback
     download_link = "https://massive.ucsd.edu/ProteoSAFe/DownloadResultFile?forceDownload=true&file=f."
@@ -552,17 +712,28 @@ def main():
     missing_on_massive = []
     session = requests.Session()
 
-    def fetch(link):
+    def fetch(link, http_if_missing=False):
         content = ftps.download(link)
         if content is not None:
             downloaded_via["FTPS"] += 1
             return content
         if ftps.missing:
-            # the dataset cache lists a file MassIVE does not have (any more); the HTTP
-            # endpoint serves the same files, so it is not asked
-            print(f"Not on MassIVE (no FTPS version root of the dataset has it; listed only by the dataset cache): {link}")
-            missing_on_massive.append(link)
-            return None
+            # the dataset cache lists a file that no FTPS version root of the dataset has
+            # (e.g. MSV000086415's only sheet: FTPS has just its ccms_peak/ folder). The HTTP
+            # endpoint served such files to earlier ReDU runs, so a *gnps_metadata.tsv is
+            # asked there; ftps.missing stays set, so if HTTP fails too the next version counts
+            if not http_if_missing:
+                print(f"Not on MassIVE (no FTPS version root of the dataset has it; listed only by the dataset cache): {link}")
+                missing_on_massive.append(link)
+                return None
+            print(f"Not on MassIVE's FTPS (no version root of the dataset has it); asking the HTTP endpoint: {link}")
+            content = _download_metadata_file(session, download_link + link)
+            if content is not None:
+                downloaded_via["HTTP (not on FTPS)"] += 1
+            else:
+                print(f"Not on MassIVE (not on FTPS, and the HTTP endpoint did not deliver it): {link}")
+                missing_on_massive.append(link)
+            return content
         content = _download_metadata_file(session, download_link + link)
         if content is not None:
             downloaded_via["HTTP"] += 1
@@ -570,35 +741,77 @@ def main():
             failed_downloads.append(link)
         return content
 
-    def save(msv_id, index, content, links):
+    def save(msv_id, index, content, links, mark=''):
         # The dataset accession leads the name so the harmonization step can recover it
         # for files that lack a MassiveID column
-        file_name = os.path.join(args.output_metadata_folder, f"{msv_id}_{index}_gnps_metadata.tsv")
+        file_name = os.path.join(args.output_metadata_folder, f"{msv_id}_{index}{mark}_gnps_metadata.tsv")
         file_paths["sys_name"].append(file_name)
         file_paths["svr_name"].append(';'.join(links))
         with open(file_name, 'wb') as f:
             f.write(content)
 
+    # fill-only rows are written once all sheets are downloaded (keep_fields_own_sheets_leave_empty)
+    pending_fill_only = []
+
+    def save_fill_only(msv_id, index, fill_only, links):
+        if fill_only is not None:
+            print(f"{msv_id}: {len(fill_only)} rows for other datasets, only to fill their own rows")
+            pending_fill_only.append((msv_id, index, fill_only, links))
+
+    def write_fill_only():
+        if not pending_fill_only:
+            return
+        own_sheets = []
+        for path in file_paths["sys_name"] + [p for paths in github_files.values() for p in paths]:
+            with open(path, 'rb') as handle:
+                df = read_sheet(handle.read(), path)
+            if df is not None:
+                own_sheets.append((df, os.path.basename(path).split('_')[0].split('.')[0]))
+        counts = collections.Counter()
+        for msv_id, index, fill_only, links in pending_fill_only:
+            fill_only, n = keep_fields_own_sheets_leave_empty(fill_only, own_sheets, template_keys)
+            counts.update(n)
+            if len(fill_only):
+                save(msv_id, index, fill_only.to_csv(sep='\t', index=False).encode('utf-8'), links, mark=FILL_ONLY_MARK)
+        print(f"Fill-only rows for other datasets: {dict(counts)}")
+
+    def github_sheets(msv_id):
+        """The GitHub sheets of a dataset as [(table, name)], or None if one cannot be read."""
+        sheets = []
+        for path in github_files[msv_id]:
+            with open(path, 'rb') as handle:
+                df = read_sheet(handle.read(), path)
+            if df is None:
+                return None
+            sheets.append((df, 'GitHub ' + os.path.basename(path)))
+        return sheets
+
     # Download files from the links in the gnps_list and store them locally
     for index, (msv_id, links) in enumerate(versions.items()):
 
-        # Check if the files is already present from github
+        # A GitHub sheet describes the dataset: its *gnps_metadata.tsv files on MassIVE only
+        # add rows for files the GitHub sheet does not describe (same rule as for an older
+        # version; e.g. MSV000083772, 43 files listed only in the MassIVE sheet)
+        github = None
         if msv_id in existing_files:
-            print(f"File {msv_id} already present in the folder from github!")
-            continue
+            github = github_sheets(msv_id)
+            if github is None:
+                print(f"File {msv_id} already present in the folder from github (unreadable here, so its MassIVE sheets are not used)!")
+                continue
+            print(f"File {msv_id} already present in the folder from github; its MassIVE sheets only add files it does not describe")
 
         if len(links) > 1:
             links = order_versions(links, ftps.modify_time)
         print(f"Downloading {links[0]}")
-        content = fetch(links[0])
+        content = fetch(links[0], http_if_missing=True)
         # a newest file MassIVE does not have is no version: the next one is the newest
         while content is None and ftps.missing and len(links) > 1:
             links = links[1:]
             print(f"Downloading {links[0]}")
-            content = fetch(links[0])
+            content = fetch(links[0], http_if_missing=True)
         if content is None:
             continue
-        if len(links) == 1:
+        if len(links) == 1 and github is None:
             save(msv_id, index, content, links)
             continue
 
@@ -606,6 +819,9 @@ def main():
         sheets = []
         newest = read_sheet(content, links[0])
         if newest is None:
+            if github is not None:
+                print(f"WARNING: could not parse {links[0]}; the MassIVE sheets of {msv_id} are not used")
+                continue
             print(f"WARNING: could not parse {links[0]}; older versions are not combined with it")
             save(msv_id, index, content, links[:1])
             continue
@@ -616,12 +832,22 @@ def main():
             older = read_sheet(older, link) if older is not None else None
             if older is not None:
                 sheets.append((older, link))
-        combined = combine_versions(sheets, msv_id, template_keys)
+        if github is not None:
+            combined, fill_only = combine_versions(github + sheets, msv_id, template_keys, skip_first=len(github))
+            save_fill_only(msv_id, index, fill_only, [l for _, l in sheets])
+            if combined is None:
+                print(f"{msv_id}: the MassIVE sheets describe no file of {msv_id} the GitHub sheet does not describe")
+                continue
+            print(f"{msv_id}: {len(combined)} rows of the MassIVE sheets for files the GitHub sheet does not describe")
+            save(msv_id, index, combined.to_csv(sep='\t', index=False).encode('utf-8'), [l for _, l in sheets])
+            continue
+        combined, fill_only = combine_versions(sheets, msv_id, template_keys)
         if combined is None or len(combined) <= len(newest):
             save(msv_id, index, content, links[:1])
         else:
             print(f"{msv_id}: {len(combined) - len(newest)} rows from older versions added to {len(newest)}")
             save(msv_id, index, combined.to_csv(sep='\t', index=False).encode('utf-8'), [l for _, l in sheets])
+        save_fill_only(msv_id, index, fill_only, [l for _, l in sheets[1:]])
 
     # ReDU-format sheets with other names, in datasets that have no *gnps_metadata.tsv
     # and no GitHub file
@@ -635,6 +861,8 @@ def main():
         # MassIVE datasets only: the cache also lists Workbench (ST...) and MetaboLights
         # (MTBLS...) files, which MassIVE does not serve (each would only cost futile requests)
         other = other[other['dataset'].astype(str).str.match(r'^R?MSV\d+$')]
+        # (also checked here: the listing query already asks only for these folders)
+        other = other[other['filepath'].astype(str).str.lower().str.startswith(OTHER_SHEETS_TOP_FOLDERS)]
         other = other[~other['dataset'].isin(set(versions) | set(existing_files))]
         extensions = TEMPLATE_SHEET_EXTENSIONS
         for extension, module in (('.xlsx', 'openpyxl'), ('.xls', 'xlrd')):
@@ -645,7 +873,7 @@ def main():
                 extensions = tuple(e for e in extensions if e != extension)
         other = other[other['filepath'].str.lower().str.endswith(extensions)]
         other = other[pd.to_numeric(other['size'], errors='coerce').fillna(0) <= MAX_SHEET_BYTES]
-        other['create_time'] = pd.to_datetime(other['create_time'], errors='coerce')
+        other['create_time'] = pd.to_datetime(other['create_time'], errors='coerce', format='ISO8601')
         print(f"Checking {len(other)} other metadata sheets in {other['dataset'].nunique()} datasets")
         index = len(versions)
         n_sheets = collections.Counter()
@@ -678,16 +906,22 @@ def main():
                 print(f"Skipping ReDU-format sheets of {msv_id}: dataset classified as {kind}")
                 n_sheets[f'redu_format_{kind}_dataset'] += len(sheets)
                 continue
-            combined = combine_versions(sheets, msv_id, template_keys)
+            combined, fill_only = combine_versions(sheets, msv_id, template_keys)
             if combined is None:
                 continue
             n_sheets['redu_format_used'] += len(sheets)
             print(f"{msv_id}: {len(combined)} rows from ReDU-format sheets {[l for _, l in sheets]}")
             save(msv_id, index, combined.to_csv(sep='\t', index=False).encode('utf-8'), [l for _, l in sheets])
+            save_fill_only(msv_id, index, fill_only, [l for _, l in sheets[1:]])
             index += 1
         print(f"Other metadata sheets: {dict(n_sheets)}")
 
     ftps.close()
+    # (an unexpected sheet must not cost the summary and file_paths.tsv: only the fill-only rows are lost)
+    try:
+        write_fill_only()
+    except Exception as e:
+        print(f"ERROR: writing the fill-only rows failed ({type(e).__name__}: {e}); they are left out this run")
     print(f"Downloaded metadata files: {dict(downloaded_via)}")
     if missing_on_massive:
         print(f"{len(missing_on_massive)} metadata files listed by the dataset cache are not on MassIVE:")

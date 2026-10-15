@@ -20,7 +20,7 @@ from REDU_conversion_functions import get_taxonomy_info
 from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
 import REDU_conversion_functions as _rcf
-from getAllWorkbench_file_paths import fetch_archive_listing, listing_query, ArchiveListingError
+from getAllWorkbench_file_paths import fetch_archive_listing, listing_query, ArchiveListingError, collapse_vendor_folder
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -47,7 +47,8 @@ def is_apple_double(path):
 _POS_RE = re.compile(r'(?:^|[^a-z]|hilic|rp|c18|esi|lipid|lipids)(?:pos|positive)(?:[^a-z]|$)')
 _NEG_RE = re.compile(r'(?:^|[^a-z]|hilic|rp|c18|esi|lipid|lipids)(?:neg|negative)(?:[^a-z]|$)')
 _CHROM_TOKENS = {
-    'hilic': re.compile(r'(?:^|[^a-z])hilic|amide|zic'),
+    # word starts only: 'ceramides', 'pantothenamide', 'nicotinamide' are no HILIC columns
+    'hilic': re.compile(r'(?:^|[^a-z])(?:hilic|amide|zic)'),
     'reverse': re.compile(r'(?:^|[^a-z])(?:c18|rp|rplc|reverse|reversed|c8|c30|t3)(?:[^a-z]|pos|neg|$)'),
 }
 
@@ -62,6 +63,97 @@ def _path_indicates(path):
     chrom_hits = [k for k, rx in _CHROM_TOKENS.items() if rx.search(p)]
     chrom = chrom_hits[0] if len(chrom_hits) == 1 else None
     return polarity, chrom
+
+
+def _context_contradicts(context, hints):
+    """True if a file path's (polarity, chromatography) names another polarity or
+    chromatography than the analysis hints ({'polarity': .., 'chrom': ..})."""
+    polarity, chrom = context
+    return bool((polarity is not None and hints.get('polarity') is not None and polarity != hints['polarity'])
+                or (chrom is not None and hints.get('chrom') is not None and chrom != hints['chrom']))
+
+
+def acquisition_contexts(stems, paths, hints=None, ranks=None):
+    """Acquisition context of each file (lists aligned with stems / paths / ranks), for
+    keeping one file per sample and acquisition: files of one stem (sample name) are raw and
+    converted copies of one acquisition unless their paths state different polarities or
+    chromatographies (temp_pos/x.mzML vs temp_neg/x.mzXML, rp_pos/x.mzML vs hilic_pos/x.mzML),
+    which are separate acquisitions. Returns per file a group number within its stem (0 for
+    a stem whose files agree, i.e. one file per stem as before) or -1 for a file left out:
+    a file whose path contradicts the analysis' own polarity / chromatography while another
+    file of the stem does not; in a stem whose files lie in several stated contexts, a file
+    that states less of the analysis' context than another of at least as good a format
+    (GT_H_Negative/x vs GT_RP_Negative/x for a reverse-phase negative analysis); and -
+    where a stem is split by context - a file whose path names no context in the split
+    dimension (an unattributable copy). A file whose path states no context at all, in a stem whose other files lie in
+    stated contexts, is kept as a group of its own only when it is a better format (rank,
+    mzML 0 < mzXML 1 < vendor 2) than every file kept for the contexts (a converted x.mzML
+    next to hilic_p/x.raw, rplc_n/x.raw, ...)."""
+    hints = hints or {}
+    ranks = list(ranks) if ranks is not None else [0] * len(stems)
+    ctx = [_path_indicates(p) for p in paths]
+    by_stem = {}
+    for i, s in enumerate(stems):
+        by_stem.setdefault(s, []).append(i)
+    group = [0] * len(stems)
+
+    def _agreement(c):
+        return int(c[0] is not None and c[0] == hints.get('polarity')) + int(c[1] is not None and c[1] == hints.get('chrom'))
+
+    for s, idx_all in by_stem.items():
+        if len(idx_all) < 2:
+            continue
+        idx = idx_all
+        stated = {ctx[i] for i in idx} - {(None, None)}
+        keep = [i for i in idx if not _context_contradicts(ctx[i], hints)]
+        # files left that state nothing in the dimension the left-out ones contradict and
+        # are another format of them (x.wiff / x.raw / x.d next to positive/x.mzXML for a
+        # negative analysis) are a raw / converted copy of that other acquisition, not this
+        # analysis' file: the stem is left to the one-file-per-stem rule and the path
+        # conflict resolution, as before. Same-format files (postive/x.raw next to
+        # negative/x.raw) stay: they are the other acquisition in an unrecognised folder.
+        _dims = {d for i in idx if i not in keep for d, h in ((0, 'polarity'), (1, 'chrom'))
+                 if ctx[i][d] is not None and hints.get(h) is not None and ctx[i][d] != hints[h]}
+        if keep and _dims and all(ctx[i][d] is None for i in keep for d in _dims):
+            _out_ext = {os.path.splitext(paths[i])[1].lower() for i in idx if i not in keep}
+            if all(os.path.splitext(paths[i])[1].lower() not in _out_ext for i in keep):
+                keep = []
+        if keep and len(stated) > 1:
+            best = max(_agreement(ctx[i]) for i in keep)
+            top = [i for i in keep if _agreement(ctx[i]) == best]
+            # only where that does not give up a better format: x.mzML (HILIC) next to
+            # HILIC_Neg/x.wiff is its conversion, not another acquisition
+            if best > 0 and min(ranks[i] for i in top) <= min(ranks[i] for i in keep):
+                keep = top
+        if keep and len(keep) < len(idx):
+            for i in set(idx) - set(keep):
+                group[i] = -1
+            idx = keep
+        pols = {ctx[i][0] for i in idx} - {None}
+        chroms = {ctx[i][1] for i in idx} - {None}
+        if len(pols) > 1 or len(chroms) > 1:
+            split_pol, split_chrom = len(pols) > 1, len(chroms) > 1
+            keys = {}
+            for i in idx:
+                pol, chrom = ctx[i]
+                if (split_pol and pol is None) or (split_chrom and chrom is None):
+                    group[i] = -1
+                    continue
+                keys[i] = (pol if split_pol else '', chrom if split_chrom else '')
+            order = {k: n for n, k in enumerate(sorted(set(keys.values())))}
+            for i, k in keys.items():
+                group[i] = order[k]
+        if len(stated) > 1:
+            # the unattributed copies (no context in the path) left out above: the best of
+            # them stays as its own group if it is a better format than all kept files
+            kept = [i for i in idx_all if group[i] >= 0 and ctx[i] != (None, None)]
+            loose = sorted((ranks[i], i) for i in idx_all if ctx[i] == (None, None))
+            if kept:
+                for i in (j for _, j in loose):
+                    group[i] = -1
+                if loose and loose[0][0] < min(ranks[i] for i in kept):
+                    group[loose[0][1]] = max(group[i] for i in kept) + 1
+    return group
 
 
 # --- ChromatographyAndPhase from CHROMATOGRAPHY_TYPE + COLUMN_NAME ---------------------
@@ -121,6 +213,11 @@ def chromatography_and_phase(chrom_type, column_name):
     is_hilic = 'hilic' in t or 'normal phase' in t
     if is_rp and is_hilic:
         return ''  # e.g. 'Reversed phase/HILIC': cannot tell which
+    if is_hilic and 'hilic' not in t and any(rx.search(col) for rx in _RP_FAMILIES.values()) \
+            and not _HILIC_COLUMN_RE.search(col) and 'pfp' not in col:
+        # 'Normal phase' with a reverse-phase column (ST003453 'BEH C8', 'BEH C18', 'HSS T3'):
+        # the column decides
+        is_hilic, is_rp = False, True
     if is_hilic:
         return 'normal phase (HILIC)'
     if not is_rp and t.strip() in _NO_PHASE_TYPES:
@@ -230,19 +327,143 @@ def resolve_analysis_conflicts_from_path(df):
     return df.drop(index=drop_idx)
 
 
-def propagate_to_same_name_files(redu_df, raw_file_name_df):
+def _value_contradicts_path(column, value, path_context):
+    """True if an IonizationSourceAndPolarity / ChromatographyAndPhase value names another
+    polarity / chromatography than a file path states ((polarity, chrom) of _path_indicates)."""
+    v = str(value).lower()
+    if v in ('', 'nan', 'none', 'missing value'):
+        return False
+    polarity, chrom = path_context
+    if column == 'IonizationSourceAndPolarity' and polarity is not None:
+        other = 'negative' if polarity == 'positive' else 'positive'
+        return other in v and polarity not in v
+    if column == 'ChromatographyAndPhase' and chrom is not None:
+        return v.startswith('reverse phase') if chrom == 'hilic' else 'hilic' in v
+    return False
+
+
+_POL_WORD_RE = re.compile(r'positive|negative|pos|neg')
+_POL_SWAP = {'positive': 'negative', 'negative': 'positive', 'pos': 'neg', 'neg': 'pos'}
+
+
+def _path_without_extension(path):
+    head, _, base = str(path).lower().rpartition('/')
+    base = base.rsplit('.', 1)[0] if '.' in base else base
+    return f'{head}/{base}' if head else base
+
+
+def polarity_siblings(path):
+    """The lower-cased path (without extension) with its polarity words swapped (pos<->neg,
+    positive<->negative): each word alone, and all of them together."""
+    p = _path_without_extension(path)
+    words = list(_POL_WORD_RE.finditer(p))
+    out = {p[:m.start()] + _POL_SWAP[m.group(0)] + p[m.end():] for m in words}
+    if len(words) > 1:
+        out.add(_POL_WORD_RE.sub(lambda m: _POL_SWAP[m.group(0)], p))
+    return out
+
+
+def clear_polarity_contradicted_by_sibling(df, raw_file_name_df, polarity_table=None):
+    """IonizationSourceAndPolarity that the file's own path contradicts ('x_neg.mzML' with the
+    positive mode of the study's only analysis, a sample listing its _pos and _neg files) is
+    cleared to 'missing value' when the study lists the file's counterpart of the other
+    polarity ('x_pos.mzML'): the polarity word in the path then tells two acquisitions
+    apart. Without such a counterpart the word may belong to a sample or folder name
+    ('Negative control1', 'triple negative breast cancer cells/') and the value stays; so
+    does a value the file's scans (polarity_table) agree with."""
+    if df is None or len(df) == 0 or 'IonizationSourceAndPolarity' not in df.columns:
+        return df
+    listing = {_path_without_extension(p) for p in raw_file_name_df['filename'].astype(str)}
+    scans = {}
+    if polarity_table is not None and len(polarity_table):
+        _pt = polarity_table[polarity_table['USI'].isin(set(df['USI'].astype(str)))]
+        for u, n_neg, n_pos in zip(_pt['USI'], pd.to_numeric(_pt['negative_polarity_count'], errors='coerce'),
+                                   pd.to_numeric(_pt['positive_polarity_count'], errors='coerce')):
+            if n_neg > 0 and not n_pos > 0:
+                scans[u] = 'negative'
+            elif n_pos > 0 and not n_neg > 0:
+                scans[u] = 'positive'
+    values = df['IonizationSourceAndPolarity'].copy()
+    n = 0
+    for i, (path, usi, v) in enumerate(zip(df['filename'].astype(str), df['USI'].astype(str), values.astype(str))):
+        polarity, _ = _path_indicates(path)
+        if polarity is None:
+            continue
+        other = 'negative' if polarity == 'positive' else 'positive'
+        vl = v.lower()
+        if other not in vl or polarity in vl or scans.get(usi) == other:
+            continue
+        if polarity_siblings(path) & listing:
+            values.iat[i] = 'missing value'
+            n += 1
+    if n:
+        print(f"{n} polarity values cleared: the file's path names the other polarity and the study has its counterpart")
+        df = df.copy()
+        df['IonizationSourceAndPolarity'] = values.values
+    return df
+
+
+def clear_chromatography_contradicted_by_path(df, raw_file_name_df):
+    """ChromatographyAndPhase that the file's own path contradicts (a reverse-phase value on
+    'C18/x.mzML', HILIC on 'HILIC_pos/x.raw' given a reverse phase) is cleared to 'missing
+    value' in a study whose file paths name both separations (HILIC and C18 / RP folders):
+    the path then tells the acquisitions apart. Elsewhere a token may belong to a sample
+    name ('T3' time points, 'C8' wells) and the value stays."""
+    if df is None or len(df) == 0 or 'ChromatographyAndPhase' not in df.columns:
+        return df
+    if len({_path_indicates(p)[1] for p in raw_file_name_df['filename'].astype(str)} - {None}) < 2:
+        return df
+    values = df['ChromatographyAndPhase'].copy()
+    n = 0
+    for i, (path, v) in enumerate(zip(df['filename'].astype(str), values.astype(str))):
+        chrom = _path_indicates(path)[1]
+        if chrom is not None and _value_contradicts_path('ChromatographyAndPhase', v, (None, chrom)):
+            values.iat[i] = 'missing value'
+            n += 1
+    if n:
+        print(f"{n} chromatography values cleared: the file's path names the other separation")
+        df = df.copy()
+        df['ChromatographyAndPhase'] = values.values
+    return df
+
+
+def propagate_to_same_name_files(redu_df, raw_file_name_df, polarity_table=None):
     """Studies often hold one raw file per sample under several method folders
     (Method_1/Sample_1.raw, Method_2/Sample_1.raw, ...), but the sample-to-file match
     links each sample to one of them. Give the other same-name files (same basename and
     extension) the sample's metadata, when the basename belongs to exactly one sample.
     Analysis-level fields are copied only if the study has a single analysis setup;
-    otherwise they come from the file path tokens, or stay missing."""
+    otherwise they come from the file path tokens, or stay missing. A polarity /
+    chromatography that the copy's own path (Negative/..., rp_neg/...) or its scans
+    (polarity_table) contradict is never copied: such a file is another acquisition of
+    the sample."""
     if redu_df is None or len(redu_df) == 0 or raw_file_name_df is None or len(raw_file_name_df) == 0:
         return redu_df
     out = redu_df.copy()
     out['_base'] = out['filename'].astype(str).map(lambda x: os.path.basename(x).lower())
     base_counts = out['_base'].value_counts()
     unique_rows = out[out['_base'].map(base_counts) == 1].set_index('_base')
+    # a basename on several rows of one sample (one file per acquisition context, e.g.
+    # Positive/x.raw and Negative/x.raw, each matched by its own analysis): the values its
+    # rows agree on. Rows that differ in a sample field are different samples sharing a
+    # file name; their basename is left alone.
+    multi = out[out['_base'].map(base_counts) > 1]
+    if len(multi):
+        per_file = {'filename', 'USI', '_base', 'IonizationSourceAndPolarity', 'ChromatographyAndPhase', 'MassSpectrometer',
+                    'YearOfAnalysis', 'SampleCollectionMethod', 'SampleExtractionMethod', 'InternalStandardsUsed',
+                    'negative_polarity_count', 'positive_polarity_count'}
+        sample_cols = [c for c in out.columns if c not in per_file]
+        merged = []
+        for _b, g in multi.groupby('_base', sort=True):
+            if any(g[c].astype(str).nunique() > 1 for c in sample_cols):
+                continue
+            row = g.iloc[0].copy()
+            for c in per_file - {'filename', 'USI', '_base'}:
+                if c in g.columns and g[c].astype(str).nunique() > 1:
+                    row[c] = np.nan if c.endswith('_polarity_count') else 'missing value'
+            merged.append(row)
+        if merged:
+            unique_rows = pd.concat([unique_rows, pd.DataFrame(merged).set_index('_base')])
     if len(unique_rows) == 0:
         return redu_df
     files = raw_file_name_df[['filename', 'USI']].drop_duplicates('filename').copy()
@@ -271,7 +492,30 @@ def propagate_to_same_name_files(redu_df, raw_file_name_df):
             if (polarity is not None or chrom is not None) and len(match) and all(match[c].astype(str).nunique() == 1 for c in analysis_cols):
                 for c in analysis_cols:
                     copies.at[i, c] = match[c].iloc[0]
-    print(f"Copied sample metadata to {len(copies)} same-name raw files in other folders")
+    # never a polarity / chromatography the copy's own path or scans contradict
+    n_cleared = 0
+    scans = {}
+    if polarity_table is not None and len(polarity_table) and 'IonizationSourceAndPolarity' in copies.columns:
+        _pt = polarity_table[polarity_table['USI'].isin(set(copies['USI']))]
+        for u, n_neg, n_pos in zip(_pt['USI'], pd.to_numeric(_pt['negative_polarity_count'], errors='coerce'),
+                                   pd.to_numeric(_pt['positive_polarity_count'], errors='coerce')):
+            if n_neg > 0 and not n_pos > 0:
+                scans[u] = 'negative'
+            elif n_pos > 0 and not n_neg > 0:
+                scans[u] = 'positive'
+    for i, path in enumerate(copies['filename']):
+        context = _path_indicates(path)
+        for c in ('IonizationSourceAndPolarity', 'ChromatographyAndPhase'):
+            if c not in copies.columns:
+                continue
+            ctx = context
+            if c == 'IonizationSourceAndPolarity' and copies.at[i, 'USI'] in scans:
+                ctx = (scans[copies.at[i, 'USI']], context[1])
+            if _value_contradicts_path(c, copies.at[i, c], ctx):
+                copies.at[i, c] = 'missing value'
+                n_cleared += 1
+    print(f"Copied sample metadata to {len(copies)} same-name raw files in other folders"
+          + (f" ({n_cleared} polarity/chromatography values their path or scans contradict not copied)" if n_cleared else ""))
     return pd.concat([redu_df, copies[redu_df.columns]], ignore_index=True)
 
 
@@ -612,13 +856,10 @@ def clean_listing_path(path):
 
 
 def collapse_d_folder(path):
-    """Agilent/Bruker .d raw data are folders, listed only as the files inside them;
-    represent them by the .d folder (as getAllWorkbench_file_paths.py does)."""
-    parts = path.split('/')
-    for i, part in enumerate(parts):
-        if part.lower().endswith('.d'):
-            return '/'.join(parts[:i + 1])
-    return path
+    """Agilent/Bruker .d and Waters .raw raw data are folders, listed only as the files
+    inside them; represent them by the folder (the same function as
+    getAllWorkbench_file_paths.py, whose paths the rows are joined with)."""
+    return collapse_vendor_folder(path)
 
 
 # studies left out because the Workbench gave no file list, with the reason
@@ -685,12 +926,23 @@ def get_enviromental_water(x):
             return ['environmental', 'water_ground']
         if 'storm' in x:
             return ['environmental', 'water_storm']
-        if 'sea' in x or 'ocean' in x or 'coast' in x:
+        if 'sea' in x or 'ocean' in x or 'coast' in x or 'marine' in x:
+            return ['environmental', 'water_seawater']
+        # a water sample of no stated kind: sea water when the study's title / summary
+        # is about the sea and names no fresh water
+        if _MARINE_TEXT_RE.search(_STUDY_TEXT_REST or '') and not _FRESHWATER_TEXT_RE.search(_STUDY_TEXT_REST or ''):
             return ['environmental', 'water_seawater']
         else:
             return [None, None]
     else:
         return [None, None]
+
+
+_MARINE_TEXT_RE = re.compile(r'(?i)\b(?:marine|oceans?|oceanic|seas?|seawater|sea water|coastal|atlantic|antarctic|arctic|'
+                             r'(?:north|south|eastern|western|central|subtropical|tropical|equatorial) pacific|pacific ocean|'
+                             r'research cruise|cruise)\b')
+_FRESHWATER_TEXT_RE = re.compile(r'(?i)\b(?:lakes?|rivers?|freshwater|fresh water|ponds?|reservoirs?|streams?|creeks?|'
+                                 r'groundwater|wastewater|estuar\w*|brackish)\b')
 
 
 # --- QC / blank / reference material samples ------------------------------------------
@@ -1340,7 +1592,9 @@ _HPO_KEY_SKIP_RE = re.compile(r'\b(?:death|died|cause|history|family|maternal|pa
                               r'parent|parents|donor|recipient|comorbidit\w*|medications?|complications?|follow|'
                               r'outcomes?|response|toxicit\w*|adverse|events?)\b')
 # HPO names that sample values also use for a sample material
-_HPO_VALUE_SKIP = {'ascites', 'edema', 'oedema', 'pleural effusion', 'effusion', 'abscess', 'scar', 'wound'}
+_HPO_VALUE_SKIP = {'ascites', 'edema', 'oedema', 'pleural effusion', 'effusion', 'abscess', 'scar', 'wound',
+                   # states of hibernating animals, no condition (HPO has 'torpor' as Lethargy)
+                   'torpor', 'hibernation', 'hibernating'}
 # keys whose values can name an exposure of the individual
 _EXP_KEY_STRONG_RE = re.compile(r'\b(?:treat\w*|expos\w*|drugs?|compounds?|chemicals?|agents?|interventions?|stimul\w*|'
                                 r'challeng\w*|toxi\w*|pollut\w*|irradiat\w*|radiation|inhal\w*|administ\w*|medicat\w*|'
@@ -2070,26 +2324,87 @@ AGE_EXCLUDE_RE = r'gestational|maternal|postnatal|postconceptional|foetal|\bfeta
 _AGE_CANONICAL = {'age', 'age (years)', 'age(years)', 'age (year)'}
 
 
-def mwb_age_to_years(value, key):
-    """Convert an age Factor value to years. Unit is taken from the KEY name first
-    (e.g. 'age (months)', 'age in days'), falling back to any unit in the VALUE
-    string, else years. Number extraction matches convert_to_years exactly, so for
-    the previously-handled keys ('age', 'age (years)') the result is identical."""
+# age units: units per year (the divisors used before for days, weeks, months)
+_AGE_UNITS_PER_YEAR = {'mo': 12, 'w': 52.1429, 'd': 365, 'h': 8760}
+_AGE_UNIT_WORDS = {'year': 'y', 'years': 'y', 'yr': 'y', 'yrs': 'y', 'y': 'y', 'yo': 'y', 'y/o': 'y',
+                   'month': 'mo', 'months': 'mo', 'mo': 'mo', 'mos': 'mo', 'mth': 'mo', 'mths': 'mo', 'm': 'mo',
+                   'week': 'w', 'weeks': 'w', 'wk': 'w', 'wks': 'w', 'w': 'w',
+                   'day': 'd', 'days': 'd', 'd': 'd',
+                   'hour': 'h', 'hours': 'h', 'hr': 'h', 'hrs': 'h', 'h': 'h'}
+# unit words anywhere in a key or value (single letters only right after a number, see below)
+_AGE_UNIT_WORD_RE = re.compile(r'(?<![a-z])(years?|yrs?|months?|mos|mths?|weeks?|wks?|days?|hours?|hrs?)(?![a-z])')
+# a unit right after the number: '8w', '20M', '21 d', '7.5-mo', '9 h'
+_AGE_NUM_UNIT_RE = re.compile(r'\d\s*-?\s*(years?|yrs?|y/o|yo|y|months?|mos?|mths?|m|weeks?|wks?|w|days?|d|hours?|hrs?|h)(?![a-z])')
+# a key's unit in brackets: 'age (d)', 'age [w]'
+_AGE_KEY_LETTER_RE = re.compile(r'[(\[]\s*(y|m|mo|w|wk|d|h)\s*[)\]]')
+# the number of an age: not part of a word or code ('P21', 'E18.5', 'C57BL/6', 'SU001')
+_AGE_NUMBER_RE = re.compile(r'(?<![a-z0-9_./])(\d+(?:\.\d+)?)(?![0-9]|[./][0-9]|[a-z]*[0-9])')
+# 'less than 9 h', '>65', '~3 months': not one age
+_AGE_BOUND_RE = re.compile(r'[<>≤≥~]|(?<![a-z])(?:over|under|above|below|less than|more than|greater than|older than|'
+                           r'younger than|up to|at least|approx\w*|about|around|ca)(?![a-z])')
+
+def _age_units(text, after_number):
+    """Distinct units a text names (after_number: also single letters right after a number)."""
+    t = str(text).lower()
+    units = {_AGE_UNIT_WORDS[u] for u in _AGE_UNIT_WORD_RE.findall(t)}
+    if after_number:
+        units |= {_AGE_UNIT_WORDS.get(u, _AGE_UNIT_WORDS.get(u.rstrip('s'))) for u in _AGE_NUM_UNIT_RE.findall(t)}
+    else:
+        units |= {_AGE_UNIT_WORDS[u] for u in _AGE_KEY_LETTER_RE.findall(t)}
+    return units - {None}
+
+
+def study_age_unit(age_range):
+    """The one unit the study-level SUBJECT AGE_OR_AGE_RANGE gives its ages in ('8-12 week
+    old' -> 'w'), else None."""
+    units = _age_units(age_range or '', after_number=True)
+    return next(iter(units)) if len(units) == 1 else None
+
+
+def mwb_age_to_years(value, key, default_unit=None):
+    """Convert an age Factor value to years. The unit comes from the KEY ('age (months)',
+    'age in days', 'age (d)'), else from the VALUE ('8 weeks', '20M', '9 h'), else
+    default_unit (the unit of the study's AGE_OR_AGE_RANGE, or years for human studies);
+    without one the age is unclear and None. Bounds ('< 9 h', '>65'), values with other
+    words ('C57BL/6', 'P21') and keys or values naming two units are not an age. Decimals
+    are kept ('16.8'); whole numbers of years stay integers."""
     value = '' if value is None else str(value)
-    nums = re.findall(r'\b\d+\b', value)
-    if not nums:
+    v = value.strip().lower()
+    nums = _AGE_NUMBER_RE.findall(v)
+    if not nums or _AGE_BOUND_RE.search(v):
         return None
-    num = int(nums[0])
-    src = str(key).lower()
-    if 'day' not in src and 'week' not in src and 'month' not in src and 'year' not in src:
-        src = value.lower()  # no unit in key -> use value (preserves old behavior)
-    if 'day' in src:
-        return num / 365
-    if 'week' in src:
-        return num / 52.1429
-    if 'month' in src:
-        return num / 12
-    return num  # years (default)
+    if re.search(r'[a-z][a-z0-9]*\d|\d+[/.]\d+[/.]', v):
+        # a code with digits ('C57BL/6', 'P21', 'D15') or a date
+        return None
+    key_units = _age_units(str(key).replace('_', ' '), after_number=False)
+    value_units = _age_units(v, after_number=True)
+    units = key_units or value_units
+    if len(units) > 1:
+        return None
+    unit = next(iter(units)) if units else default_unit
+    if unit is None:
+        return None
+    num = float(nums[0])
+    if unit == 'y':
+        return int(num) if num.is_integer() else num
+    if num.is_integer():
+        num = int(num)
+    return num / _AGE_UNITS_PER_YEAR[unit]
+
+
+# unit for ages without one, set per analysis in create_dataframe_outer_dict: the unit of
+# the study's AGE_OR_AGE_RANGE, else years for human studies, else None (unclear)
+_ANALYSIS_AGE_UNIT = 'y'
+
+
+def _is_human_study(entry, taxonomy):
+    """The analysis' subjects are humans: taxonomy 9606, TAXONOMY_ID 9606, or a human
+    SUBJECT_TYPE / SUBJECT_SPECIES."""
+    if str(taxonomy or '').startswith('9606|') or str(entry.get('TAXONOMY_ID') or '').strip() == '9606':
+        return True
+    species = str(entry.get('SUBJECT_SPECIES') or '').strip().lower()
+    return species in ('homo sapiens', 'human', 'humans') or \
+        (str(entry.get('SUBJECT_TYPE') or '').strip().lower() in _HUMAN_SUBJECT_TYPES and species in ('', '-', 'na', 'n/a', 'none'))
 
 
 def get_age_years_into_outer(df, new_col='MWB_age'):
@@ -2103,7 +2418,15 @@ def get_age_years_into_outer(df, new_col='MWB_age'):
     if len(tmp) == 0:
         df[new_col] = 'NA'
         return df
-    tmp['_yr'] = tmp.apply(lambda r: mwb_age_to_years(r['Value'], r['Key']), axis=1)
+    # a unit given in a key of its own ('age_unit: month'), else the analysis' default
+    is_unit = keyl.str.fullmatch(r'(?:age[ _]?units?|units? of age|age[ _]unit[ _]of[ _]measure)', na=False)
+    file_unit = {}
+    for f, v in zip(df.loc[is_unit, 'filename'], df.loc[is_unit, 'Value']):
+        units = _age_units(' ' + str(v), after_number=False)
+        file_unit.setdefault(f, set()).update(units if len(units) == 1 else {None})
+    file_unit = {f: next(iter(u)) for f, u in file_unit.items() if len(u) == 1 and None not in u}
+    tmp['_yr'] = [mwb_age_to_years(v, k, file_unit.get(f, _ANALYSIS_AGE_UNIT))
+                  for v, k, f in zip(tmp['Value'], tmp['Key'], tmp['filename'])]
     tmp = tmp.dropna(subset=['_yr'])
     if len(tmp) == 0:
         df[new_col] = 'NA'
@@ -2133,6 +2456,52 @@ def extract_years(dates):
             return None
     except Exception:
         return None
+
+
+# Excel stores dates as days since 1899-12-30; '41732' in an ACQUISITION_DATE is 2014-04-03
+_EXCEL_SERIAL_RE = re.compile(r'\s*(\d{5})(?:\.\d+)?\s*')
+# M/D/YY dates with a two-digit year ('1/14/21', '4/15/19-4/19/19')
+_SHORT_YEAR_DATE_RE = re.compile(r'(?<![\d/.-])\d{1,2}[-/.]\d{1,2}[-/.](\d{2})(?![\d/.-])')
+
+
+def analysis_year(dates, latest=None):
+    """YearOfAnalysis from an acquisition date as written in the mwTab: 4-digit years in
+    any date format, Excel serial dates ('41732') and M/D/YY dates. A year after
+    `latest` (the study's submission year; data are acquired before they are submitted)
+    is no year."""
+    if not isinstance(dates, str) or not dates.strip():
+        return None
+    year = None
+    m = _EXCEL_SERIAL_RE.fullmatch(dates)
+    if m and 32874 <= int(m.group(1)) <= 47848:  # 1990-01-01 .. 2030-12-31
+        import datetime as _dt
+        year = (_dt.date(1899, 12, 30) + _dt.timedelta(days=int(m.group(1)))).year
+    if year is None:
+        year = extract_years(dates)
+    if year is None:
+        # also ranges of such dates ('4/15/19-4/19/19')
+        parts = re.split(r'(?<=\d)\s*-\s*(?=\d{1,2}/)', dates)
+        short = [2000 + int(y) for part in parts for y in _SHORT_YEAR_DATE_RE.findall(part)]
+        short = [y for y in short if 1998 <= y <= 2030]
+        if short:
+            year = max(short)
+    if year is not None and latest is not None and year > latest:
+        return None
+    return year
+
+
+# submission year of the study being converted (MWB_to_REDU_study_wrapper): the latest
+# YearOfAnalysis allowed
+_STUDY_SUBMIT_YEAR = None
+
+
+def submission_year(*dates):
+    """Year of the first date that has one ('2014-09-15'), else None."""
+    for d in dates:
+        m = re.search(r'(?<!\d)((?:19|20)\d\d)(?!\d)', str(d or ''))
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _norm_key(key):
@@ -2184,11 +2553,36 @@ _LABEL_SUBJECT_ID_RE = re.compile(r'(?<![a-z0-9])(?:samples?|study|qc|quality co
                                   r'reference|nist|unknown|na|n/a|none|not applicable)(?![a-z0-9])')
 
 
+# keys that name the subject itself (their values may be the Subject IDs) and keys whose
+# value cannot differ between the samples of one subject
+_SUBJECT_KEY_RE = re.compile(r'subject|patient|participant|individual|donor|animal|mouse|mice|\brat\b|person|volunteer|'
+                             r'\bid\b|identifier|\bname\b|\bno\b|number|\bcode\b|replicate|\brep\b|\bpair\b|family|'
+                             r'litter|cage|\bpig\b|\bdog\b|\bcow\b|horse|monkey|\bplant\b|\btree\b|\bfish\b|\bhost\b')
+_SUBJECT_LEVEL_KEY_RE = re.compile(r'genotype|strain|\bsex\b|gender|species|organism|breed|cell line|mutant|mutation|'
+                                   r'knock ?out|genetic|transgen|\brace\b|ethnic')
+# Subject IDs that only name a sample matrix or an analysis method ('serum', 'liver',
+# 'HILIC NEG', 'RP POS')
+_MATRIX_OR_METHOD_SID_RE = re.compile(
+    r'(?:(?:whole |human |mouse |rat )?(?:serum|plasma|blood|urine|feces|faeces|stool|liver|kidney|brain|heart|lungs?|muscle|'
+    r'tissue|cells?|media|medium|culture|supernatant|saliva|csf|milk|breast milk|bile|sweat|cecum|caecum|colon|'
+    r'intestine|skin|adipose|fat|spleen|pancreas|retina|tumou?r)s?)'
+    r'|(?:(?:hilic|rp|rplc|c18|c8|lc|gc|pos|neg|positive|negative|esi|apci|ms|ion|mode|polarity|reverse|reversed|'
+    r'phase|normal|plus|minus)(?: |$))+')
+# study-level SUBJECT / COLLECTION texts of the analysis (create_dataframe_outer_dict):
+# a Subject ID they name ('Il10-/-' in GENOTYPE_STRAIN, 'liver' as SAMPLE_TYPE) is a label
+_ANALYSIS_SUBJECT_TEXTS = []
+
+
+def _norm_label(text):
+    return ' '.join(re.sub(r'[\s_\-.,;:()\[\]{}]+', ' ', str(text).lower()).split())
+
+
 def _drop_label_subject_ids(df):
     """Subject IDs that are labels rather than identifiers become '': values naming a
     sample category ('Plasma Study Sample', 'Quality Control'), values equal to one of
     the sample's own metadata values (a group such as 'wild-type' or the sample source),
-    and a study whose samples all carry one and the same Subject ID."""
+    and a study whose samples all carry one and the same Subject ID. Also group labels
+    (_group_label_subject_ids)."""
     sid = df['SubjectIdentifierAsRecorded'].fillna('').astype(str).str.strip()
     low = sid.str.lower()
     bad = low.str.contains(_LABEL_SUBJECT_ID_RE, regex=True) & (low != '')
@@ -2200,7 +2594,110 @@ def _drop_label_subject_ids(df):
     per_sample = pd.DataFrame({'filename': df['filename'], 'sid': low}).query("sid != ''").drop_duplicates()
     if per_sample['filename'].nunique() > 1 and per_sample['sid'].nunique() == 1:
         bad |= low != ''
+    try:
+        bad |= _group_label_subject_ids(df, low, bad, is_meta, key_l)
+    except Exception as e:
+        print(f"Could not check Subject IDs for group labels: {type(e).__name__}: {e}")
     return sid.where(~bad, '')
+
+
+def _group_label_subject_ids(df, low, bad, is_meta, key_l):
+    """Rows whose Subject ID is a group label, not an individual:
+    - a Subject ID (with a letter) equal to a metadata value of any sample of the study,
+      made only of such values ('KO-ND' with Genotype KO and Diet ND), or named in the
+      study's subject / collection description ('Il10-/-' in GENOTYPE_STRAIN, 'liver');
+    - a Subject ID whose samples differ in a value one subject cannot change (genotype,
+      strain, sex, species, cell line);
+    - Subject IDs that are the levels of one (non-numeric) factor: each level one
+      Subject ID, each Subject ID one level, on average >= 2 samples per Subject ID."""
+    sample = (df['_sample_id'] if '_sample_id' in df.columns else df['filename']).astype(str)
+    ok = (low != '') & ~bad
+    if not ok.any():
+        return pd.Series(False, index=df.index)
+    norm_sid = low.map(_norm_label)
+    has_letter = low.str.contains(r'[a-z]', regex=True)
+    meta = is_meta & ~key_l.isin(['raw_data']) & ~key_l.map(lambda k: bool(_SUBJECT_KEY_RE.search(k)))
+    study_values = {_norm_label(v) for v in df.loc[meta, 'Value'].astype(str).unique()} - {''}
+    texts = [' ' + _norm_label(t) + ' ' for t in _ANALYSIS_SUBJECT_TEXTS if t]
+    labels, why = set(), {}
+    for s_raw, s_norm in sorted(set(zip(low[ok & has_letter], norm_sid[ok & has_letter]))):
+        tokens = s_norm.split()
+        if _MATRIX_OR_METHOD_SID_RE.fullmatch(s_norm):
+            labels.add(s_raw); why.setdefault('sample matrix / method', []).append(s_raw)
+        elif s_norm in study_values:
+            labels.add(s_raw); why.setdefault('value', []).append(s_raw)
+        elif len(tokens) >= 2 and all(t in study_values and re.search(r'[a-z]', t) for t in tokens):
+            labels.add(s_raw); why.setdefault('values', []).append(s_raw)
+        elif len(s_norm) >= 3 and any(' ' + s_norm + ' ' in t for t in texts):
+            labels.add(s_raw); why.setdefault('text', []).append(s_raw)
+    rows = pd.DataFrame({'sample': sample, 'sid': low, 'key': key_l, 'value': df['Value'].astype(str).str.strip().str.lower(),
+                         'meta': meta})[ok]
+    sid_of = rows.drop_duplicates(['sample', 'sid']).groupby('sample')['sid'].agg(lambda s: s.iloc[0] if s.nunique() == 1 else None).dropna()
+    kv = rows[rows['meta'] & ~rows['value'].isin(['', 'na', 'n/a', '-', 'none', 'nan', 'not applicable', 'unknown'])]
+    kv = kv.drop_duplicates(['sample', 'key', 'value'])
+    # one subject cannot have two genotypes, sexes, species...
+    subj_level = kv[kv['key'].map(lambda k: bool(_SUBJECT_LEVEL_KEY_RE.search(k)))].copy()
+    # samples with one value of the key only (a sample listed as 'M' and 'Male' is no conflict)
+    subj_level = subj_level[subj_level.groupby(['sample', 'key'])['value'].transform('nunique') == 1]
+    if len(subj_level):
+        subj_level['sid'] = subj_level['sample'].map(sid_of)
+        n_vals = subj_level.dropna(subset=['sid']).groupby(['sid', 'key'])['value'].nunique()
+        conflict = set(n_vals[n_vals > 1].index.get_level_values(0)) - labels
+        labels |= conflict
+        if conflict:
+            why['subject-level ' + '/'.join(sorted(set(n_vals[n_vals > 1].index.get_level_values(1))))] = sorted(conflict)
+    # the Subject IDs are the levels of one factor
+    sids = set(sid_of.values)
+    if 2 <= len(sids) <= 50 and len(sid_of) >= 2 * len(sids) and not sids <= labels:
+        one_val = kv.groupby(['sample', 'key'])['value'].agg(lambda s: s.iloc[0] if len(s) == 1 else None).dropna()
+        per_key = {}
+        for (smp, key), val in one_val.items():
+            if smp in sid_of.index:
+                per_key.setdefault(key, {})[smp] = val
+        for key in sorted(per_key):
+            level_of = per_key[key]
+            levels = set(level_of.values())
+            if len(level_of) != len(sid_of) or len(levels) != len(sids) or not all(re.search(r'[a-z]', v) for v in levels):
+                continue
+            sid_levels, level_sids = {}, {}
+            for smp, lev in level_of.items():
+                sid_levels.setdefault(sid_of[smp], set()).add(lev)
+                level_sids.setdefault(lev, set()).add(sid_of[smp])
+            if all(len(v) == 1 for v in sid_levels.values()) and all(len(v) == 1 for v in level_sids.values()):
+                why['levels of ' + key] = sorted(sids - labels)
+                labels |= sids
+                break
+        else:
+            # or of two factors combined ('KO-ND', 'WT-WD' for Genotype x Diet)
+            keys = [k for k in sorted(per_key) if len(per_key[k]) == len(sid_of)
+                    and all(re.search(r'[a-z]', v) for v in set(per_key[k].values()))
+                    and 2 <= len(set(per_key[k].values())) < len(sids)]
+            for i, k1 in enumerate(keys[:40]):
+                for k2 in keys[i + 1:40]:
+                    combo = {smp: (per_key[k1][smp], per_key[k2][smp]) for smp in sid_of.index}
+                    if len(set(combo.values())) != len(sids):
+                        continue
+                    sid_levels, level_sids = {}, {}
+                    for smp, lev in combo.items():
+                        sid_levels.setdefault(sid_of[smp], set()).add(lev)
+                        level_sids.setdefault(lev, set()).add(sid_of[smp])
+                    if all(len(v) == 1 for v in sid_levels.values()) and all(len(v) == 1 for v in level_sids.values()):
+                        why[f'levels of {k1} x {k2}'] = sorted(sids - labels)
+                        labels |= sids
+                        break
+                else:
+                    continue
+                break
+    # what is left is one Subject ID for all samples ('Breast_Milk' next to the NIST and
+    # water samples' labels)
+    left = set(sid_of.values) - labels
+    if len(left) == 1 and (sid_of == next(iter(left))).sum() > 1 and len(labels) > 0:
+        labels |= left
+        why['only one left'] = sorted(left)
+    if why:
+        print('Subject IDs that are group labels: ' + '; '.join(f"{k}: {v[:5]}{' ...' if len(v) > 5 else ''} ({len(v)})"
+                                                               for k, v in sorted(why.items())))
+    return low.isin(labels) & ok
 
 
 # ---------------------------------------------------------------------------
@@ -2524,7 +3021,10 @@ _GROUP_ID_KEY_RE = re.compile(r'(?:subject|participant|individual|donor|person)s
 _GROUP_INDEPENDENT_KEY_RE = re.compile(
     r'genotyp\w*|\b(?:strains?|lines?|cell lines?|mutants?|mutations?|knock ?outs?|ko|clones?|cultivars?|variet(?:y|ies)|'
     r'accessions?|alleles?|transgen\w*|construct|plasmid|sirna|shrna|crispr|wt)\b')
-_GROUP_NA_VALUES = {'', '-', '--', 'na', 'n/a', 'nan', 'null'}
+_GROUP_NA_VALUES = {'', '-', '--', 'na', 'n/a', 'nan', 'null',
+                     # no group information ('Factor: unknown')
+                     'unknown', 'n.a.', 'n.a', 'not applicable', 'not available', 'not specified', 'unspecified',
+                     'not provided', 'not reported', 'missing', 'missing value'}
 # internal form until the study-level check: sample ID \x1d key \x1e value \x1f key \x1e value
 _GROUP_SID, _GROUP_KV, _GROUP_PART = '\x1d', '\x1e', '\x1f'
 # ReDU columns that may already tell a design factor's groups apart
@@ -2889,6 +3389,41 @@ def assign_cell_lines(MWB_table):
     return t
 
 
+# COLLECTION SAMPLE_TYPE of the analysis being converted (create_dataframe_outer_dict)
+_ANALYSIS_SAMPLE_TYPE = ''
+_NOT_CULTURE_SAMPLE_RE = re.compile(r'(?i)fraction|microsom|\bs9\b|homogen|tissue|\borgans?\b|biops|plasma|serum|'
+                                    r'\bblood\b|urine|feces|faeces|stool|\bmilk\b|saliva')
+
+
+def cultured_study_sample_type(t):
+    """SampleType culture_mammalian for the 'animal' rows of a cultured-cell study
+    (SUBJECT_TYPE 'Cultured cells', ...) of a mammal that got no Cellosaurus line
+    (primary cells, 'HEK cells', 'Fibroblasts'): rows that are cells (no body part, or a
+    cell type), not blanks / QC."""
+    if len(t) == 0 or 'SUBJECT_TYPE' not in t.columns or not is_cultured_cell_study(t['SUBJECT_TYPE'].iloc[0]):
+        return t
+    # subcellular fractions, tissues and body fluids of a 'Cultured cells' study are no cell cultures
+    sample_type_text = str(t['SAMPLE_TYPE'].iloc[0]) if 'SAMPLE_TYPE' in t.columns else str(_ANALYSIS_SAMPLE_TYPE or '')
+    if _NOT_CULTURE_SAMPLE_RE.search(sample_type_text):
+        return t
+    st = t['SampleType'].astype(str).str.strip().str.lower()
+    body = t['UBERONBodyPartName'] if 'UBERONBodyPartName' in t.columns else pd.Series(np.nan, index=t.index)
+    is_cells = body.isna() | body.astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'na', 'missing value']) \
+        | body.isin(_CL_LABELS)
+    tax = t['NCBITaxonomy'].astype(str) if 'NCBITaxonomy' in t.columns else pd.Series('', index=t.index)
+    mammal_of = {}
+    for x in sorted(set(tax[st.eq('animal') & is_cells])):
+        m = re.match(r'^(\d+)\|', x)
+        lineage = _lineage(m.group(1)) if m else None
+        mammal_of[x] = lineage is not None and 'mammalia' in lineage
+    change = st.eq('animal') & is_cells & tax.map(lambda x: mammal_of.get(x, False)).astype(bool)
+    if change.any():
+        t.loc[change, 'SampleType'] = 'culture_mammalian'
+        t.loc[change, 'SampleTypeSub1'] = 'culture_mammalian'
+        print(f"[CellLine] SampleType culture_mammalian for {int(change.sum())} rows of a cultured-cell study")
+    return t
+
+
 def _ncbi_name_lookup(allowedTerm_dict):
     """lower-cased NCBI name -> first allowed 'ID|Name' term with that name (the index
     get_taxonomy_id_from_name__allowedTerms uses; one copy of the ~3M names)."""
@@ -3005,6 +3540,116 @@ def get_rawFile_names(df, key_vars, new_col):
 
 
 
+# a name that ends in an MS file extension, then '.' and a space: 'a.raw, b.raw. c.raw'
+_NAME_DOT_SEP_RE = re.compile(r'(\.(?:raw|mzml|mzxml|wiff|cdf|d))\.\s+', re.I)
+# placeholders between listed names ('a.mzML b.mzML - -')
+_RAW_NAME_PLACEHOLDERS = {'-', '--', 'na', 'n/a', 'none'}
+# one raw file name with an MS file extension (also the .wiff.scan companion)
+_NAMED_FILE_RE = re.compile(r'\S+\.(?:raw|mzml|mzxml|wiff|wiff\.scan|cdf|d)', re.I)
+
+
+def split_raw_file_names(value, split_at_spaces):
+    """The raw file names of one RAW_FILE_NAME value (sorted, distinct): split at ';' and
+    ',' (and at spaces when no listed file name has a space), and also at '. ' after a
+    file extension ('a.raw, b.raw. c.raw'), at '/' between names that all have an MS
+    file extension ('x.RAW/x_diluted.RAW'), and at spaces between names that all have one
+    ('ESI+1.wiff ESI+1.wiff.scan ESI-.wiff', also with '-' placeholders between them) when a
+    listed file name has a space."""
+    v = _NAME_DOT_SEP_RE.sub(r'\1;', str(value))
+    out = []
+    for p in re.split(r'; ?|,| ' if split_at_spaces else r'; ?|,', v):
+        words = p.split()
+        named = sum(1 for w in words if _NAMED_FILE_RE.fullmatch(w))
+        if not split_at_spaces and named > 1 and \
+                all(_NAMED_FILE_RE.fullmatch(w) or w.lower() in _RAW_NAME_PLACEHOLDERS for w in words):
+            out.extend(words)
+            continue
+        pieces = p.split('/')
+        if len(pieces) > 1 and all(_NAMED_FILE_RE.fullmatch(x) for x in pieces):
+            out.extend(pieces)
+            continue
+        out.append(p)
+    return sorted(set(out))
+
+
+def _name_stem(name):
+    return os.path.basename(str(name).replace('\\', '/')).lower().rsplit('.', 1)[0]
+
+
+def per_sample_files_of_shared_names(df, raw_file_name_df):
+    """filename_raw per df row, where several samples name one raw file (a multi-sample
+    SCIEX .wiff) whose per-sample conversions are uploaded as '<file stem>-<Sample ID>.mzML'
+    (or '_'): the sample's own file name instead of the shared one. Other rows unchanged."""
+    raw = df['filename_raw'].astype(str)
+    sid = df['_sample_id'].astype(str) if '_sample_id' in df.columns else df['filename'].astype(str)
+    pairs = pd.DataFrame({'raw': raw.str.lower(), 'sid': sid}).drop_duplicates()
+    n_samples = pairs.groupby('raw')['sid'].nunique()
+    shared = set(n_samples.index[n_samples > 1]) - {'na', 'nan', ''}
+    if not shared:
+        return df['filename_raw']
+    by_stem = {}
+    for base in sorted(set(raw_file_name_df['filename_base'].astype(str))):
+        by_stem.setdefault(_name_stem(base), base)
+    out = df['filename_raw'].copy()
+    n = 0
+    for i, (r, s) in enumerate(zip(raw, sid)):
+        if r.lower() not in shared:
+            continue
+        stem = _name_stem(r)
+        for sep in ('-', '_'):
+            hit = by_stem.get(f'{stem}{sep}{s.lower()}')
+            if hit is not None:
+                out.iat[i] = hit
+                n += 1
+                break
+    if n:
+        print(f"[rawfile] {n} rows: a raw file named by several samples replaced by the sample's own file '<file>-<Sample ID>'")
+    return out
+
+
+def match_unmatched_names_by_prefix(df, raw_file_name_df):
+    """After an exact file-name match of an analysis' raw file names (some names matched): a
+    listed name that matched nothing (samples listing one raw file per platform,
+    'x-N;x-P;20160915_S1;20160913_S1', whose lipidomics names lack the '_N' / '_P' suffix)
+    gets the one file nothing else matched whose name starts with the listed name and a
+    separator ('20160915_S1' -> NEG/BATCH1/20160915_S1_N.wiff). Names with a file extension,
+    names that fit no such file or several files, and names fitting a file another name also
+    fits stay unmatched."""
+    if 'USI' not in df.columns:
+        return df
+    todo = df['USI'].isna()
+    if not todo.any():
+        return df
+    # names without a file extension only: a full file name that is not listed is another file
+    names = sorted({str(n) for n in df.loc[todo, 'filename_raw']
+                    if len(str(n)) >= 4 and str(n).lower() not in ('na', 'nan') and not _NAMED_FILE_RE.fullmatch(str(n))})
+    claimed = set(df['USI'].dropna())
+    free = raw_file_name_df[~raw_file_name_df['USI'].isin(claimed)]
+    by_prefix = {}
+    for lbl, base in zip(free.index, free['filename_base'].astype(str)):
+        stem = _name_stem(base)
+        for m in re.finditer(r'[-_.]', stem):
+            by_prefix.setdefault(stem[:m.start()], []).append(lbl)
+    hits = {}
+    for n in names:
+        lbls = by_prefix.get(os.path.basename(n.replace('\\', '/')).lower(), [])
+        if len(lbls) == 1:
+            hits[n] = lbls[0]
+    used = Counter(hits.values())
+    hits = {n: l for n, l in hits.items() if used[l] == 1}
+    if not hits:
+        return df
+    df = df.copy()
+    rows = todo & df['filename_raw'].astype(str).isin(hits)
+    cols = [c for c in raw_file_name_df.columns if c in df.columns]
+    fill = raw_file_name_df.loc[df.loc[rows, 'filename_raw'].astype(str).map(hits), cols]
+    fill.index = df.index[rows]
+    for c in cols:
+        df.loc[rows, c] = fill[c]
+    print(f"[rawfile] {len(hits)} listed raw file names without extension matched by name prefix ('<name>_N.wiff')")
+    return df
+
+
 def map_potential_matches(df, target_df, target_column, source_columns):
     
     # Temporary storage for potential matches
@@ -3069,7 +3714,9 @@ def resolve_contradictions(contradictions, potential_matches):
         
         raw_value_length = len(raw_value)
         
-        for df_value in conflicting_values:
+        # sorted: of equally long names the first wins, not the first in set order (which
+        # changes with PYTHONHASHSEED)
+        for df_value in sorted(conflicting_values):
             # Find the percentage of the raw_value that matches the df_value
             # Assuming df_value represents the key in potential_matches that relates to raw_value
             percentage = len(df_value) / raw_value_length
@@ -3272,8 +3919,19 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
         before_n = len(tmp)
 
-        # keep one row per stem: best rank, tie-break by name for determinism
-        tmp = tmp.sort_values(["_stem", "_rank", "_base_lower"]).drop_duplicates("_stem", keep="first")
+        # keep one row per stem and acquisition context (a stem's files in folders of
+        # another polarity / chromatography are other acquisitions, not copies; files
+        # whose path contradicts this analysis are left out where the stem has others):
+        # best rank, tie-break by name for determinism
+        tmp["_ctx"] = acquisition_contexts(tmp["_stem"].tolist(), tmp["filename_raw_path"].astype(str).tolist(), hints,
+                                           tmp["_rank"].tolist())
+        n_ctx_out = int((tmp["_ctx"] < 0).sum())
+        n_ctx_split = int(tmp.loc[tmp["_ctx"] > 0, "_stem"].nunique())
+        if n_ctx_out or n_ctx_split:
+            print(f"[rawfile pref] acquisition contexts: {n_ctx_split} stems kept per polarity/chromatography folder, "
+                  f"{n_ctx_out} files of another polarity/chromatography left out")
+        tmp = tmp[tmp["_ctx"] >= 0]
+        tmp = tmp.sort_values(["_stem", "_ctx", "_rank", "_base_lower"]).drop_duplicates(["_stem", "_ctx"], keep="first")
 
         after_n = len(tmp)
 
@@ -3310,14 +3968,13 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         df = get_rawFile_names(df, key_vars=expected_raw_file_keys, new_col="filename_raw")
 
         #explode cases where we have multiple files by separators
-        if raw_file_name_df['filename_base'].str.contains(" ").any():
-            split_by_this = r'; ?|,'
-        else:
-            split_by_this = r'; ?|,| '
-
-        df = df.assign(filename_raw=df['filename_raw'].str.split(split_by_this).apply(lambda x: sorted(set(x)))).explode('filename_raw')
+        _split_at_spaces = not raw_file_name_df['filename_base'].str.contains(" ").any()
+        df = df.assign(filename_raw=df['filename_raw'].map(lambda v: split_raw_file_names(v, _split_at_spaces))).explode('filename_raw')
 
         df.reset_index(drop=True, inplace=True)
+
+        # a raw file several samples name, uploaded also as one file per sample
+        df['filename_raw'] = per_sample_files_of_shared_names(df, raw_file_name_df)
 
 
         # --- Prefer mzML > mzXML > others BEFORE matching/merging ---
@@ -3342,10 +3999,13 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             .astype(int)
         )
 
+        # a stem kept in several acquisition contexts (pos/x.mzML, neg/x.mzXML) gives each
+        # of its file names; any other stem its one preferred name
+        _pref_sorted = raw_file_name_df.sort_values(['_stem', '_rank', '_base_lower'])
+        _multi_ctx = _pref_sorted.groupby('_stem')['_ctx'].transform('nunique') > 1
         preferred_raw_by_stem = (
-            raw_file_name_df
-            .sort_values(['_stem', '_rank', '_base_lower'])
-            .drop_duplicates('_stem', keep='first')
+            pd.concat([_pref_sorted[~_multi_ctx].drop_duplicates('_stem', keep='first'),
+                       _pref_sorted[_multi_ctx].drop_duplicates(['_stem', 'filename_base'], keep='first')])
             [['_stem', 'filename_base']]
             .rename(columns={'filename_base': 'preferred_filename_base'})
         )
@@ -3399,9 +4059,11 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             print('found filename_raw to filename_base match')
             df = df.merge(raw_file_name_df, left_on='filename_raw', right_on='filename_base', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
+            df = match_unmatched_names_by_prefix(df, raw_file_name_df)
         elif bool(set(df['filename_raw_lower']) & set(raw_file_name_df['filename_base_lower'])):
             df = df.merge(raw_file_name_df, left_on='filename_raw_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
+            df = match_unmatched_names_by_prefix(df, raw_file_name_df)
         elif bool(set(df['filename_lower']) & set(raw_file_name_df['filename_base_lower'])):
             df = df.merge(raw_file_name_df, left_on='filename_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
@@ -3446,19 +4108,22 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                 
                 #create dict to assign matches
                 match_indices = {}
-                # first row label of each file stem (the column was scanned once per match)
+                # first row label of each file stem (the column was scanned once per match),
+                # per acquisition context (one stem kept in pos and neg folders: both)
                 _first_label = {}
-                for _lbl, _stem_value in zip(raw_file_name_df.index, raw_file_name_df['filename_base_wo_extension']):
-                    _first_label.setdefault(_stem_value, _lbl)
+                for _lbl, _stem_value, _c in zip(raw_file_name_df.index, raw_file_name_df['filename_base_wo_extension'],
+                                                 raw_file_name_df['_ctx']):
+                    _first_label.setdefault(_stem_value, {}).setdefault(_c, _lbl)
 
+                # sorted: the order of a set of strings changes with PYTHONHASHSEED
                 for df_value, matches in potential_matches.items():
                     if matches:
-                        for match_value in matches:
-                            match_index = _first_label[match_value]
-                            if df_value not in match_indices:
-                                match_indices[df_value] = [match_index]
-                            else:
-                                match_indices[df_value].append(match_index)
+                        for match_value in sorted(matches):
+                            for match_index in _first_label[match_value].values():
+                                if df_value not in match_indices:
+                                    match_indices[df_value] = [match_index]
+                                else:
+                                    match_indices[df_value].append(match_index)
 
                 
                 df['match_index'] = df['filename_base_wo_extension'].map(match_indices)
@@ -3535,8 +4200,10 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                 .astype(int)
             )
 
+            # stems kept in several acquisition contexts keep the file each row matched
+            _multi_ctx = raw_file_name_df.groupby('_stem')['_ctx'].transform('nunique') > 1
             preferred_raw_by_stem = (
-                raw_file_name_df
+                raw_file_name_df[~_multi_ctx]
                 .sort_values(['_stem', '_rank', '_base_lower'])
                 .drop_duplicates('_stem', keep='first')
                 [['_stem', 'filename_base', 'filename_raw_path']]
@@ -3643,6 +4310,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
 
 
+    df = df.drop(columns=[c for c in df.columns if str(c).startswith('_ctx')])
     if 'USI' not in df.columns:
         raise ValueError("No raw data could be associated with metadata. Stopping!")
     df = df[pd.notna(df['USI'])]
@@ -3700,6 +4368,9 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
     df['Value'] = df['Value'].str.lower()
     df['SubjectIdentifierAsRecorded'] = df['SubjectIdentifierAsRecorded'].replace('-', '')
+    # Subject ID and Sample ID as given, to tell pooled QC samples ('WB_SERUM_PLASMA_...')
+    _id_text = (df['SubjectIdentifierAsRecorded'].fillna('').astype(str) + ' ' + df['filename'].astype(str)) \
+        .groupby(df['filename'].astype(str)).agg(lambda s: ' '.join(sorted(set(s)))).str.lower()
     try:
         df['SubjectIdentifierAsRecorded'] = _drop_label_subject_ids(df)
     except Exception as e:
@@ -3731,7 +4402,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     _age_fb = (~_keyl.str.contains(r'\bage\b', regex=True) & _keyn.str.contains(r'\bage\b', regex=True)
                & ~_keyn.str.contains(AGE_EXCLUDE_RE + r'|' + _AGE_FB_EXCLUDE_RE, regex=True))
     if _age_fb.any():
-        _vals = [mwb_age_to_years(v, k.replace('_', ' ')) if _SINGLE_AGE_VALUE_RE.fullmatch(str(v).strip()) else None
+        _vals = [mwb_age_to_years(v, k.replace('_', ' '), _ANALYSIS_AGE_UNIT) if _SINGLE_AGE_VALUE_RE.fullmatch(str(v).strip()) else None
                  for k, v in zip(df.loc[_age_fb, 'Key'], df.loc[_age_fb, 'Value'])]
         df = _fill_from_rows(df, pd.Series(_vals, index=df.index[_age_fb], dtype=object), 'MWB_age')
     smoking_keys = ["smoking_status", "smoking status", "smokstatus",
@@ -3933,6 +4604,10 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         _set = ~_typed & df['filename'].isin(_qc_per_sample.index)
         if _set.any():
             _t = df.loc[_set, 'filename'].map(_qc_per_sample)
+            # a 'QC' sample whose Subject / Sample ID names a pool or a body fluid is a pooled QC
+            _pooled = _t.eq('blank_QC') & df.loc[_set, 'filename'].astype(str).map(_id_text).fillna('').str.contains(
+                r'pool|(?<![a-z])(?:serum|plasma|blood|urine|saliva|csf|milk)(?![a-z])', regex=True)
+            _t = _t.mask(_pooled, 'pool_QC')
             df.loc[_set, 'SampleType_inner'] = _t
             df.loc[_set, 'SampleTypeSub1_inner'] = _t.map(lambda t: 'missing value' if t == 'reference material' else t)
             print(f"QC/blank/reference samples from their values: {df.loc[_set, 'filename'].nunique()}")
@@ -4101,6 +4776,13 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     }
 
     ontology_table = kwargs['ontology_table']
+    # the Cell Ontology labels (_CL_LABELS, read by assign_cell_lines and
+    # cultured_study_sample_type) are set by the first cell-type lookup: make it here, so
+    # that a study's rows never depend on which studies were converted before it
+    try:
+        _cl_lookup(ontology_table, allowedTerm_dict)
+    except Exception as e:
+        print(f"Could not load the Cell Ontology labels: {type(e).__name__}: {e}")
 
     if entry['ANALYSIS_TYPE'] != 'MS':
         raise ValueError("This is not an MS analysis!")
@@ -4124,6 +4806,12 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     # 'Oat (Avena sativa L.)', 'Lactuca sativa L.'
     processed_species = {sp: (term if term is not None else study_species_variant_term(sp, df_outer['TAXONOMY_ID'].iloc[0], allowedTerm_dict))
                          for sp, term in processed_species.items()}
+    # renamed and merged taxa: a TAXONOMY_ID merged into another one, a synonym in the
+    # pinned names.dmp ('Blautia coccoides')
+    processed_species = {sp: (term if term is not None else
+                              _rcf.pinned_ncbi_current_term(df_outer['TAXONOMY_ID'].iloc[0], allowedTerm_dict)
+                              or _rcf.pinned_ncbi_synonym_term(sp, allowedTerm_dict))
+                         for sp, term in processed_species.items()}
     df_outer['NCBITaxonomy'] = df_outer['SUBJECT_SPECIES'].map(processed_species)
     attempt_taxa_extraction_from_inner = False
     if all(value is None for value in processed_species.values()):
@@ -4139,10 +4827,21 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
         df_outer['CHROMATOGRAPHY_TYPE'] = df_outer['CHROMATOGRAPHY_TYPE'].fillna('').astype(str).str.lower()
 
 
-    #add YearOfAnalysis on dataset level
-    df_outer['YearOfAnalysis'] = df_outer['ACQUISITION_DATE'].apply(lambda x: extract_years(x))
-    df_outer['YearOfAnalysis'] = df_outer.apply(
-        lambda x: extract_years(x['CREATED_ON']) if x['YearOfAnalysis'] is None else x['YearOfAnalysis'], axis=1)
+    #add YearOfAnalysis on dataset level: the acquisition date of the analysis (ANALYSIS,
+    # else MS section), never later than the study's submission. CREATED_ON is the date
+    # the mwTab file was (re)generated, not when the samples were analysed: no fallback.
+    _latest = _STUDY_SUBMIT_YEAR
+    if _latest is None:
+        _latest = submission_year(_section(MWB_mwTAB_dict, 'STUDY').get('SUBMIT_DATE', ''))
+    _acq_ms = _section(MWB_mwTAB_dict, 'MS').get('ACQUISITION_DATE', '')
+    # without an acquisition date: the year the mwTab was created (CREATED_ON), only when
+    # it is not after the submission year (the original deposition; a regenerated mwTab
+    # says 2025/2026 and is no year of analysis)
+    _created = analysis_year(_section(MWB_mwTAB_dict, 'METABOLOMICS WORKBENCH').get('CREATED_ON', ''), _latest) \
+        if _latest is not None else None
+    df_outer['YearOfAnalysis'] = [analysis_year(x, _latest) if analysis_year(x, _latest) is not None
+                                  else analysis_year(_acq_ms, _latest) if analysis_year(_acq_ms, _latest) is not None
+                                  else _created for x in df_outer['ACQUISITION_DATE']]
 
     df_outer['IonizationSourceAndPolarity'] = df_outer['MS_TYPE'] + '|' + df_outer['ION_MODE']
 
@@ -4200,8 +4899,18 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
         add_to_cols = []
 
 
-    global _ANALYSIS_IN_VITRO, _ANALYSIS_ABBR
+    global _ANALYSIS_IN_VITRO, _ANALYSIS_ABBR, _ANALYSIS_AGE_UNIT
     _ANALYSIS_ABBR = []
+    # unit of ages given without one: the study's AGE_OR_AGE_RANGE unit, else years in
+    # human studies, else unclear (no age)
+    _ANALYSIS_AGE_UNIT = study_age_unit(entry['SUBJECT_AGE'])
+    global _ANALYSIS_SUBJECT_TEXTS, _ANALYSIS_SAMPLE_TYPE
+    _ANALYSIS_SAMPLE_TYPE = entry['SAMPLE_TYPE'] if isinstance(entry['SAMPLE_TYPE'], str) else ''
+    _ANALYSIS_SUBJECT_TEXTS = [str(v) for v in (entry['SAMPLE_TYPE'], entry['SUBJECT_SPECIES'], entry['SUBJECT_TYPE'],
+                                                _section(MWB_mwTAB_dict, 'SUBJECT').get('GENOTYPE_STRAIN', ''))
+                               if isinstance(v, str) and v.strip() and v.strip().upper() != 'NA']
+    if _ANALYSIS_AGE_UNIT is None and _is_human_study(entry, df_outer['NCBITaxonomy'].iloc[0]):
+        _ANALYSIS_AGE_UNIT = 'y'
     try:
         _doid_t = _STUDY_HPO['doid_table'] if _STUDY_HPO is not None else DOID_TABLE
         if _doid_t is not None and len(_doid_t):
@@ -4360,6 +5069,10 @@ def _read_sheet(path, **kwargs):
     if key not in _SHEET_CACHE:
         _SHEET_CACHE[key] = pd.read_csv(path, **kwargs)
     return _SHEET_CACHE[key].copy()
+
+
+# keys whose values name the sampled organism ('Species', 'Organism', 'Bacterial strain')
+_SPECIES_KEY_RE = r'(?:^|[^a-z])(?:species|organisms?|strains?|taxon|taxonomy|genus|isolates?|serovar|serotype)(?:[^a-z]|$)'
 
 
 def _miss_run_in_most_orders(n_hits, n_misses, run=100):
@@ -4524,22 +5237,36 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                 # no species names
                 _not_species = (MWB_table['Key'] == 'raw_file_name') | (MWB_table['Key'] == 'Sample ID') \
                     | MWB_table['Key'].map(is_variant_raw_file_key)
-                unique_species = set(MWB_table[~_not_species]['Value'])
                 _names = _ncbi_name_lookup(allowedTerm_dict)
-
                 # same result as get_taxonomy_id_from_name__allowedTerms(species) (first
-                # allowed term with that name, case-insensitive), as a dictionary lookup
-                for species in unique_species:
+                # allowed term with that name, case-insensitive), as a dictionary lookup;
+                # values tried in sorted order (the set order changes with PYTHONHASHSEED)
+                _species_key = MWB_table['Key'].astype(str).str.lower().str.contains(_SPECIES_KEY_RE, regex=True)
+                key_values = set(MWB_table[~_not_species & _species_key]['Value'])
+                other_values = set(MWB_table[~_not_species & ~_species_key]['Value']) - key_values
+                # values of a species / organism / strain key are species names wherever
+                # they are one (a 'Species' factor with two bacteria among hundreds of other
+                # values kept them only in some runs)
+                for species in sorted(key_values, key=str):
                     result = _names.get(str(species).lower())
+                    if result is None:
+                        # surrounding blanks, renamed taxa (synonyms in the pinned names.dmp)
+                        result = _names.get(' '.join(str(species).lower().split())) \
+                            or _rcf.pinned_ncbi_synonym_term(str(species), allowedTerm_dict)
                     if result is not None:
                         processed_species[species] = result
-                # The values are no species names if 100 of them in a row are none. This
-                # used to be decided while trying the values in set order, which changes with
-                # every run (PYTHONHASHSEED): studies lost their NCBITaxonomy - and rows with
-                # nothing else, to the minimum-metadata filter - in some runs only. Decided
-                # now as most of those orders decide it.
-                if _miss_run_in_most_orders(len(processed_species), len(unique_species) - len(processed_species)):
-                    processed_species = {}
+                # values of other keys ('Acquisition method: IDA', 'group: Salmo') are no
+                # species names if 100 of all the values in a row are none - decided as most
+                # of the orders of trying them decide it (the result used to change with the
+                # set order); this rule no longer drops the values of species keys
+                other_hits = {}
+                for species in sorted(other_values, key=str):
+                    result = _names.get(str(species).lower())
+                    if result is not None:
+                        other_hits[species] = result
+                n_hits = len(processed_species) + len(other_hits)
+                if not _miss_run_in_most_orders(n_hits, len(key_values) + len(other_values) - n_hits):
+                    processed_species.update(other_hits)
 
                 if len(processed_species) > 0:
 
@@ -4750,6 +5477,10 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
     except Exception as e:
         print(f"Could not assign cell lines: {type(e).__name__}: {e}")
         MWB_table['CellLine'] = np.nan
+    try:
+        MWB_table = cultured_study_sample_type(MWB_table)
+    except Exception as e:
+        print(f"Could not check the sample type of a cultured-cell study: {type(e).__name__}: {e}")
 
 
     # List of columns to check and add if not present
@@ -4872,12 +5603,14 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     elif not isinstance(rest_response, dict):
         rest_response = {}
 
-    global _STUDY_TEXT_REST
+    global _STUDY_TEXT_REST, _STUDY_SUBMIT_YEAR
     _STUDY_TEXT_REST = ''
+    _STUDY_SUBMIT_YEAR = None
     try:
         _summ = _mwb_get(f'https://www.metabolomicsworkbench.org/rest/study/study_id/{str(study_id)}/summary').json()
         if isinstance(_summ, dict):
             _STUDY_TEXT_REST = ' \n '.join(str(_summ.get(k) or '') for k in ('study_title', 'study_summary'))
+            _STUDY_SUBMIT_YEAR = submission_year(_summ.get('submission_date'))
     except Exception as e:
         print(f"No study summary: {type(e).__name__}: {e}")
 
@@ -4987,9 +5720,14 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
 
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
     try:
-        redu_df_final = propagate_to_same_name_files(redu_df_final, raw_file_name_df)
+        redu_df_final = propagate_to_same_name_files(redu_df_final, raw_file_name_df, polarity_table=polarity_table)
     except Exception as e:
         print(f"Could not copy metadata to same-name files: {type(e).__name__}: {e}")
+    try:
+        redu_df_final = clear_polarity_contradicted_by_sibling(redu_df_final, raw_file_name_df, polarity_table=polarity_table)
+        redu_df_final = clear_chromatography_contradicted_by_path(redu_df_final, raw_file_name_df)
+    except Exception as e:
+        print(f"Could not check polarities / chromatographies against file paths: {type(e).__name__}: {e}")
 
     # QC pools and reference materials are not samples of the study's subjects: like
     # blanks (cleared in complete_and_fill_REDU_table) they get no organism, body part
@@ -5107,11 +5845,12 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
     
     
 
-    complete_df['LifeStage'] = complete_df['AgeInYears'].apply(lambda x: age_category(x))
+    # LifeStage brackets are human ages: from the age only for humans; other organisms only
+    # get a life stage the study states (newborn, adolescent, ...)
+    is_human = complete_df['NCBITaxonomy'].astype(str).str.startswith('9606|')
+    complete_df['LifeStage'] = [age_category(a) if h else '' for a, h in zip(complete_df['AgeInYears'], is_human)]
     if 'MWB_lifestage' in complete_df.columns:
-        # LifeStage is defined for humans only
-        is_human = complete_df['NCBITaxonomy'].astype(str).str.startswith('9606|')
-        fill = (complete_df['LifeStage'].isin(['', None]) | complete_df['LifeStage'].isna()) & complete_df['MWB_lifestage'].notna() & is_human
+        fill = (complete_df['LifeStage'].isin(['', None]) | complete_df['LifeStage'].isna()) & complete_df['MWB_lifestage'].notna()
         complete_df.loc[fill, 'LifeStage'] = complete_df.loc[fill, 'MWB_lifestage']
 
     for col in ['SampleCollectionDateandTime', 'DepthorAltitudeMeters', 'ENVOEnvironmentMaterial']:

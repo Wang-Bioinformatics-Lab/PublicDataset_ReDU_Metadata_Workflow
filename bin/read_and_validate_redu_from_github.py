@@ -45,6 +45,13 @@ def _cached(name, source, build):
     key = (name, id(source), len(source))
     hit = _LOOKUP_CACHE.get(key)
     if hit is None or hit[0] is not source:
+        # entries whose source only this cache still holds (one reference per entry of it)
+        # can never be hit again: drop them, so a caller that passes a new allowed-term list
+        # per call (e.g. the NCBI list, whose lookups take ~1.2 GB) does not pin a copy per call
+        entries = collections.Counter(id(v[0]) for v in _LOOKUP_CACHE.values() if isinstance(v, tuple))
+        for k in [k for k, v in _LOOKUP_CACHE.items()
+                  if isinstance(v, tuple) and sys.getrefcount(v[0]) <= 1 + entries[id(v[0])]]:
+            del _LOOKUP_CACHE[k]
         if len(_LOOKUP_CACHE) >= _LOOKUP_CACHE_MAX:
             _LOOKUP_CACHE.clear()
         hit = (source, build())
@@ -98,9 +105,11 @@ def _prepare_ncbi_table(table):
     weak reference to the table (it is not kept alive) and the converted column arrays (so
     their memory cannot be reused), and is used again only for the same table object with
     the same length and the very same column arrays; a call with another table, or after a
-    column of this one was replaced, converts and indexes again. TaxonIDs edited in place
-    inside the table (no caller does that) are not noticed: a row given the TaxonID of
-    another row is not found under it."""
+    column of this one was replaced, converts and indexes again. Values edited in place
+    inside the table after the first call (no caller does that) are not converted again
+    (a NaN written into NCBIRank stays NaN and gives 'missing value', where the str
+    conversion on every call gave 'nan'), and TaxonIDs edited in place are not noticed: a
+    row given the TaxonID of another row is not found under it."""
     hit = _NCBI_PREPARED.get('entry')
     if hit is not None and hit['table']() is table and hit['len'] == len(table) \
             and _column_buffers(table)[1] == hit['addresses']:
@@ -312,6 +321,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     # LifeStage is regenerated from the age below; keep the submitter's value for when it can't be
     if 'LifeStage' in df.columns:
         df['_recorded_LifeStage'] = df['LifeStage']
+    # the ages as given, to tell a LifeStage a converter derived from them (see LifeStage below)
+    ages_as_given = df['AgeInYears'].copy() if 'AgeInYears' in df.columns else None
     df = df.drop(columns=columns_to_remove)
 
 
@@ -412,6 +423,17 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         observed_value: next((allowed for allowed in allowed_terms if allowed.replace(" ", "") == str(observed_value).replace(" ", "")), missing_value)
                         for observed_value in unique_values
                     }
+                if key == 'UBERONBodyPartName' and isinstance(value.get('synonyms'), dict):
+                    # an exact synonym of exactly one class (built from the pinned UBERON/CL/PO by
+                    # update_allowed_terms_from_ontologies.py) -> its label, e.g. the former CL
+                    # label 'mononuclear cell' -> 'mononuclear leukocyte' (CL:0000842)
+                    synonyms = value['synonyms']
+                    allowed_labels = _cached('allowed_set', allowed_terms, lambda: set(allowed_terms))
+                    for observed_value, mapped in value_map.items():
+                        if mapped == missing_value:
+                            label = synonyms.get(str(observed_value).strip().lower())
+                            if label is not None and label in allowed_labels:
+                                value_map[observed_value] = label
                 if case_insensitive_terms:
                     # Fall back to a case/separator-insensitive match when it is unambiguous
                     def _build_canonical(terms=allowed_terms):
@@ -534,6 +556,11 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             elif allowed_terms[0] == '00':
                 # Handling for terms where '00' indicates a placeholder for any value
                 value_map = {x: x if pd.notna(x) and x != "" else missing_value for x in unique_values}
+                if key in _IDENTIFIER_COLUMNS:
+                    # placeholder words ('not applicable', 'ML import: not available', a Qiita
+                    # study prefix with 'not applicable' as sample) identify nothing
+                    value_map = {x: missing_value if _is_identifier_placeholder(x) else v
+                                 for x, v in value_map.items()}
             elif allowed_terms[0] == 'datetime':
                 # Flexible date/time normalisation to precision-preserving ISO-8601
                 # (year / year-month / date / date+time / interval). Ambiguous slash
@@ -583,6 +610,11 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                     nums = nums.where(nums >= lo)
                 if hi is not None:
                     nums = nums.where(nums <= hi)
+                if key in _WHOLE_NUMBERS_WITHOUT_FRACTION:
+                    # whole numbers are written '72', not '72.0' (other values as before)
+                    nums = nums.astype(object).map(
+                        lambda x: str(int(x)) if isinstance(x, (int, float, np.integer, np.floating))
+                        and math.isfinite(x) and float(x).is_integer() else x)
                 df[key] = nums.fillna(missing_value).replace("", missing_value)
                 continue
             elif allowed_terms[0] == 'numeric|numeric':
@@ -639,15 +671,30 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 # a life stage recorded by the submitter is kept when the age gives none
                 if '_recorded_LifeStage' in df.columns and len(value.get('allowed_values') or []) > 0:
                     recorded = df['_recorded_LifeStage'].where(df['_recorded_LifeStage'].isin(value['allowed_values']))
+                    if not kwargs.get('life_stage_as_submitted', False) and ages_as_given is not None \
+                            and ages_as_given.index.equals(df.index):
+                        # The converters (Workbench, MetaboLights) fill LifeStage with the human
+                        # age bracket of AgeInYears for every organism. LifeStage is defined for
+                        # humans only, so on rows of other (or unknown) organisms a value that
+                        # is just the bracket of the row's own age is not kept; a life stage
+                        # stated otherwise (no age, or not the age's bracket) still is. GNPS
+                        # sheets give the submitter's own value (life_stage_as_submitted=True).
+                        brackets = {a: age_category(a) for a in ages_as_given.unique()}
+                        derived = recorded.notna() & (df['NCBITaxonomy'] != "9606|Homo sapiens") \
+                            & (recorded == ages_as_given.map(brackets))
+                        recorded = recorded.mask(derived)
                     computed = computed.where(computed != value['missing'], recorded).fillna(value['missing'])
                 df[key] = computed
             if key == 'UniqueSubjectID' and df.columns.is_unique:
                 # the row-wise rule below on the two columns it reads
+                # no dataset (MassiveID missing: 'not allowed'), no subject ID across datasets
+                no_dataset = ('', allowedTerm_dict.get('MassiveID', {}).get('missing', 'not allowed'))
                 df[key] = pd.Series([str(massive_id) + '_' + str(subject)
                                      if subject != allowedTerm_dict['SubjectIdentifierAsRecorded']['missing']
                                      and subject != ''
                                      and subject != 'not applicable'
                                      and not pd.isna(subject)
+                                     and massive_id not in no_dataset
                                      else value['missing']
                                      for massive_id, subject in zip(df['MassiveID'], df['SubjectIdentifierAsRecorded'])],
                                     index=df.index, dtype=object)
@@ -663,11 +710,17 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 # QC, blank and standard rows keep their own SampleTypeSub1 (e.g. pool_QC of plasma)
                 sample_type = df['SampleType'] if 'SampleType' in df.columns else pd.Series('', index=df.index)
                 not_qc = ~sample_type.astype(str).str.match(r'blank_|pool_QC|molecular_standards|reference material')
-                # only where Sub1 is still open; finer Sub1 values (insect, plant_angiospermae, ...) are kept
+                # only where Sub1 is still open: a given Sub1 (tissue, biofluid or a finer value such
+                # as insect, plant_angiospermae) is kept. Both 'tissue' and 'biofluid' are valid
+                # SampleTypeSub1 terms; the body part's flags (e.g. feces, which UBERON does not
+                # place under bodily fluid but this table flags as fluid) only fill a missing Sub1
                 sub1 = df['SampleTypeSub1'] if 'SampleTypeSub1' in df.columns else pd.Series(pd.NA, index=df.index, dtype=object)
-                sub1_open = sub1.isna() | sub1.isin(['', value['missing'], allowedTerm_dict['SampleTypeSub1']['missing'], 'tissue', 'biofluid'])
+                sub1_open = sub1.isna() | sub1.isin(['', value['missing'], allowedTerm_dict['SampleTypeSub1']['missing']])
+                # a given 'tissue' on a fluid body part (blood plasma, urine) is still corrected;
+                # feces keeps the given value (see above)
+                tissue_on_fluid = (sub1 == 'tissue') & (df['Is Fluid'] == True) & (df['Label'] != 'feces')
                 df.loc[(df['Is Multicellular'] == True) & not_qc & sub1_open, 'SampleTypeSub1'] = 'tissue'
-                df.loc[(df['Is Fluid'] == True) & not_qc & sub1_open, 'SampleTypeSub1'] = 'biofluid'
+                df.loc[(df['Is Fluid'] == True) & not_qc & (sub1_open | tissue_on_fluid), 'SampleTypeSub1'] = 'biofluid'
                 df.drop(columns=['Label', 'Is Multicellular', 'Is Organ', 'Is Fluid'], inplace=True)
             if key == 'DOIDOntologyIndex':
                 df = df.merge(doid_ontology_table[['Label', 'DOIDOntologyIndex']].drop_duplicates('Label'), left_on='DOIDCommonName', right_on='Label', how='left')
@@ -945,6 +998,75 @@ def _is_missing_like(value):
     return str(value).strip().lower() in _MISSING_LIKE
 
 
+# Numeric columns whose whole numbers are written without '.0' (a time point of 72 h is
+# '72'); the other numeric columns keep their former representation
+_WHOLE_NUMBERS_WITHOUT_FRACTION = ('TimePointHoursRelativeToEvent',)
+
+
+# Identifier columns ('00' = any text) in which placeholder words stand for no identifier
+_IDENTIFIER_COLUMNS = ('SubjectIdentifierAsRecorded', 'qiita_sample_name')
+_IDENTIFIER_PLACEHOLDERS = _MISSING_LIKE | {
+    'not provided', 'not reported', 'not recorded', 'not determined', 'not known', 'unknown',
+    'missing', 'null', 'n.a.', 'n.a', 'restricted access', '-', '--', '?'}
+
+
+def _is_identifier_placeholder(value):
+    """True for a placeholder instead of an identifier: 'not applicable', 'Not_Applicable',
+    'ML import: not available', or a Qiita study prefix followed by placeholders only
+    ('14577.not applicable .not applicable', '14577.T.not reported' is not: 'T' is a value)."""
+    text = re.sub(r'[\s_]+', ' ', str(value)).strip().lower()
+    if text in _IDENTIFIER_PLACEHOLDERS:
+        return True
+    m = re.fullmatch(r'\d+\.(.+)', text)
+    if m:
+        parts = [p.strip() for p in m.group(1).split('.')]
+        return all(p in _IDENTIFIER_PLACEHOLDERS for p in parts)
+    return False
+
+
+# First-generation sheets name the organism as SampleType (ATTRIBUTE_Curated_SampleType
+# 'mouse', 'rat', 'human', 'Solanum lycopersicum'). Common names -> (SampleType, organism),
+# as the curated (current-template) rows of the same datasets have them ('animal',
+# '10088|Mus' / '10114|Rattus'); the organism fills an empty NCBITaxonomy.
+_LEGACY_SAMPLE_TYPES = {
+    'mouse': ('animal', '10088|Mus'), 'mice': ('animal', '10088|Mus'),
+    'rat': ('animal', '10114|Rattus'), 'human': ('animal', '9606|Homo sapiens'),
+    'animal_insecta_nos': ('animal', None), 'soil': ('environmental', None),
+}
+_SCIENTIFIC_NAME = re.compile(r'^[A-Z][a-z]+(?: [a-z][a-z-]+)?$')
+
+
+def _legacy_sample_type_organisms(df, column, allowedTerm_dict):
+    """Organisms given as SampleType in a first-generation column (see _LEGACY_SAMPLE_TYPES):
+    a common name becomes its SampleType and fills an empty NCBITaxonomy with its taxon; a
+    scientific name ('Zea mays', 'Penicillium') that is no SampleType term fills an empty
+    NCBITaxonomy (the NCBI validation resolves it or drops it) and gives no SampleType."""
+    values = df[column]
+    text = values.astype(str).str.strip()
+    lower = text.str.lower()
+    common = lower.map({k: v for k, v in _LEGACY_SAMPLE_TYPES.items()})
+    sample_types = {str(t).lower() for t in allowedTerm_dict['SampleType']['allowed_values']} \
+        | {str(t).lower() for t in allowedTerm_dict['SampleTypeSub1']['allowed_values']} \
+        | set(_VALUE_SYNONYMS['SampleType'])
+    scientific = text.str.match(_SCIENTIFIC_NAME) & ~lower.isin(sample_types) & common.isna() \
+        & ~values.map(_is_missing_like)
+    if not common.notna().any() and not scientific.any():
+        return df
+    organism = common.map(lambda v: v[1] if isinstance(v, tuple) else None)
+    organism = organism.where(organism.notna(), text.where(scientific))
+    if organism.notna().any():
+        if 'NCBITaxonomy' not in df.columns:
+            df['NCBITaxonomy'] = ''
+        fill = organism.notna() & df['NCBITaxonomy'].map(_is_missing_like)
+        if fill.any():
+            df.loc[fill, 'NCBITaxonomy'] = organism[fill]
+            print(f"NCBITaxonomy of {int(fill.sum())} rows from the organism in legacy column {column}")
+    is_common = common.notna()
+    if is_common.any():
+        df.loc[is_common, column] = common[is_common].map(lambda v: v[0])
+    return df
+
+
 def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon_synonym_table=None,
                             envo_tables=(), NCBIRankDivision_table=None):
     """Repairs common, unambiguous deviations in submitted GNPS/ReDU metadata files before
@@ -959,6 +1081,8 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
         name = _template_column(column, allowedTerm_dict)
         if name is None or name == column:
             continue
+        if name == 'SampleType':
+            df = _legacy_sample_type_organisms(df, column, allowedTerm_dict)
         if name not in df.columns:
             df = df.rename(columns={column: name})
             print(f"Renamed legacy column {column} -> {name}")
@@ -973,6 +1097,13 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
     if 'MassiveID' not in df.columns and dataset_accession:
         df['MassiveID'] = dataset_accession
         print(f"Added MassiveID {dataset_accession} from the file name")
+    elif dataset_accession:
+        # empty dataset cells are the file's dataset too (the matcher matches such rows in it;
+        # the accession also builds UniqueSubjectID, which was 'not allowed_<subject>')
+        empty = df['MassiveID'].map(_is_missing_like)
+        if empty.any():
+            df.loc[empty, 'MassiveID'] = dataset_accession
+            print(f"MassiveID {dataset_accession} from the file name for {int(empty.sum())} rows without one")
 
     def _ci_lookup(mapping, value):
         return mapping.get(str(value).strip().lower())
@@ -1305,7 +1436,7 @@ if __name__ == '__main__':
     print('Starting tsv processing.')
     #for file_path in glob.glob(f"{args.path_to_github_metadata}/redu_*.tsv"):
 
-    all_metadata_files = glob.glob(f"{args.path_to_github_metadata}/*.tsv")
+    all_metadata_files = sorted(glob.glob(f"{args.path_to_github_metadata}/*.tsv"))
 
     print("Processing", len(all_metadata_files), "files")
 
@@ -1357,7 +1488,8 @@ if __name__ == '__main__':
                                               attempt_adding_file_extensions=True,
                                               case_insensitive_terms=True,
                                               NCBI_name_resolver=ncbi_name_resolver,
-                                              CellLineIndex_table=cellosaurus_table)
+                                              CellLineIndex_table=cellosaurus_table,
+                                              life_stage_as_submitted=True)
             
             if len(df) > 0:
                 # written under a name the next steps do not read (*.tsv), then renamed, so
@@ -1375,11 +1507,20 @@ if __name__ == '__main__':
                   file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
-            if partial_name is not None and os.path.exists(partial_name):
-                os.remove(partial_name)
+            if partial_name is not None:
+                try:
+                    os.remove(partial_name)
+                except OSError:
+                    pass  # no partial file, or it cannot be removed; it is not read as *.tsv
 
-    print(f"Harmonised {len(all_metadata_files) - len(failed_files)} of {len(all_metadata_files)} files "
-          f"({written_files} written, {len(failed_files)} failed)")
+    if failed_files:
+        # one line on stdout (the step's log) that names the files missing from the output
+        print(f"WARNING: harmonised only {len(all_metadata_files) - len(failed_files)} of {len(all_metadata_files)} files "
+              f"({written_files} written, {len(failed_files)} failed, not in the output: "
+              f"{', '.join(sorted(os.path.basename(p) for p in failed_files))})")
+    else:
+        print(f"Harmonised {len(all_metadata_files) - len(failed_files)} of {len(all_metadata_files)} files "
+              f"({written_files} written, {len(failed_files)} failed)")
     if failed_files:
         print(f"WARNING: {len(failed_files)} of {len(all_metadata_files)} files could not be harmonised "
               f"and are not in the output: {', '.join(os.path.basename(p) for p in failed_files)}", file=sys.stderr)

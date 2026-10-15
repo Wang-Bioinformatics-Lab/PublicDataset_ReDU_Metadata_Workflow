@@ -224,12 +224,27 @@ def clean_listing_path(path):
     return _7Z_LISTING_PREFIX.sub('', path)
 
 
-def process_filename(filename):
-    path_parts = filename.split('/')
-    for part in path_parts:
+_MS_FILE_EXTENSIONS = (".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d")
+
+
+def collapse_vendor_folder(path):
+    """Vendor raw data that are folders, listed only as the files inside them, as the
+    folder: Agilent/Bruker '.d' folders (the first '.d' folder of the path) and Waters
+    MassLynx '.raw' folders ('x.raw/_FUNC001.DAT', 'x.raw/_HEADER.TXT', 'x.raw/_extern.inf';
+    the folder that holds the file, whose MassLynx file names start with '_'). An MS data
+    file inside a folder named '*.raw' (a Thermo 'y.raw/x.raw') is left as it is."""
+    parts = path.split('/')
+    for i, part in enumerate(parts):
         if part.lower().endswith('.d'):
-            return '/'.join(path_parts[:path_parts.index(part)+1])
-    return filename
+            return '/'.join(parts[:i + 1])
+    if len(parts) > 1 and parts[-2].lower().endswith('.raw') and parts[-1].startswith('_') \
+            and not parts[-1].lower().endswith(_MS_FILE_EXTENSIONS):
+        return '/'.join(parts[:-1])
+    return path
+
+
+def process_filename(filename):
+    return collapse_vendor_folder(filename)
 
 def _get_existing_datasets(path_to_file):
     try:
@@ -289,13 +304,13 @@ if __name__ == '__main__':
 
     if args.filter_extensions == 'True':
         extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
-        # filter on the collapsed path so .d folders listed only by their inner files are kept
+        # filter on the collapsed path so .d / Waters .raw folders listed only by their inner files are kept
         result_df = result_df[result_df['file_path'].str.lower().str.endswith(tuple(extensions))]
 
 
     result_df = result_df[['study_id', 'file_path', 'USI']]
 
-    # one row per file; .d folders collapse many listed files into one path
+    # one row per file; .d and Waters .raw folders collapse many listed files into one path
     result_df = result_df.drop_duplicates(subset=['study_id', 'file_path'], keep='first')
      
 

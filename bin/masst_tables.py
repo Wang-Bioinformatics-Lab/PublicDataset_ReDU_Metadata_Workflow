@@ -434,6 +434,10 @@ def microbiome_rows(df, vocab, division_by_taxid, microbe_sample_type=None, stat
                 doid.append(vocab.disease(v) or v)
         rec['DOIDCommonName'] = one(doid, 'DOIDCommonName')
         rec['HealthStatus'] = one(health, 'HealthStatus')
+        # a file listed as healthy (under another tree node) carries no disease
+        if rec['HealthStatus'] == 'healthy' and rec['DOIDCommonName']:
+            stats['microbiome_files_healthy_disease_dropped'] += 1
+            rec['DOIDCommonName'] = ''
         rec['BiologicalSex'] = one([clean(v).lower() for v in g['BiologicalSex']], 'BiologicalSex')
         rec['AgeInYears'] = one([_number(v) for v in g['AgeInYears_MSV000092757']], 'AgeInYears')
         rec['TimePointHoursRelativeToEvent'] = one([_number(v) for v in g['Timepoint_h']], 'TimePointHoursRelativeToEvent')
