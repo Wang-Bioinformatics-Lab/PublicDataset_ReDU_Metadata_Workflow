@@ -328,9 +328,9 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     #Resolve contradictory fields
     if 'SampleType' in df.columns:
-        # blanks, pooled QCs and standards are not samples of the study's subjects/organisms
+        # blanks, pooled QCs, standards and products are not samples of the study's subjects/organisms
         mask = df['SampleType'].str.contains('blank', case=False) | \
-            df['SampleType'].isin(['pool_QC', 'reference material', 'molecular_standards'])
+            df['SampleType'].isin(['pool_QC', 'reference material', 'personal care product', 'molecular_standards'])
         strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex', 'ColonizationStatus']
         df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
         if '_recorded_LifeStage' in df.columns:
@@ -707,9 +707,9 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                                 else value['missing'], axis=1)
             if key == 'UBERONOntologyIndex':
                 df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex', 'Is Multicellular','Is Organ', 'Is Fluid']].drop_duplicates('Label'), left_on='UBERONBodyPartName', right_on='Label', how='left')
-                # QC, blank and standard rows keep their own SampleTypeSub1 (e.g. pool_QC of plasma)
+                # QC, blank, standard and product rows keep their own SampleTypeSub1 (e.g. pool_QC of plasma)
                 sample_type = df['SampleType'] if 'SampleType' in df.columns else pd.Series('', index=df.index)
-                not_qc = ~sample_type.astype(str).str.match(r'blank_|pool_QC|molecular_standards|reference material')
+                not_qc = ~sample_type.astype(str).str.match(r'blank_|pool_QC|molecular_standards|reference material|personal care product')
                 # only where Sub1 is still open: a given Sub1 (tissue, biofluid or a finer value such
                 # as insect, plant_angiospermae) is kept. Both 'tissue' and 'biofluid' are valid
                 # SampleTypeSub1 terms; the body part's flags (e.g. feces, which UBERON does not

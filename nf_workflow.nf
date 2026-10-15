@@ -446,6 +446,7 @@ process prepare_ontologies {
     path 'HPO_ontology.csv'
     path 'Exposure_ontology.csv'
     path 'DOID_parents.csv'
+    path 'UBERON_sex_specific_parts.csv'
 
     """
     python $TOOL_FOLDER/prepare_ontologies.py \
@@ -725,6 +726,55 @@ process enrich_ncbi_information {
 }
 
 
+// Rules for every row of the final table, also the rows kept from earlier runs (final_table_rules.py):
+// personal care products, BiologicalSex of mammal samples from a body part only one sex has
+process finalTableRules {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    path merged_ch
+    path sex_specific_parts
+
+    output:
+    path 'merged_with_rules.tsv'
+
+    """
+    python $TOOL_FOLDER/final_table_rules.py \
+    ${merged_ch} \
+    merged_with_rules.tsv \
+    --path_to_sex_specific_parts ${sex_specific_parts}
+    """
+}
+
+
+// Last edits of SampleGroupFreeText and of the columns its factors are moved into, on every row (also the
+// rows saveOlderData keeps from earlier runs), after finalTableRules: Diet / FastingStatus /
+// InternalStandardsUsed from the texts, removal of the factors these columns hold, the group-consistency rule
+process finalizeTextColumns {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    path merged_ch
+    path allowed_terms
+    path exposure_csv
+
+    output:
+    path 'merged_with_text_columns.tsv'
+
+    """
+    python $TOOL_FOLDER/final_text_columns.py \
+    ${merged_ch} \
+    merged_with_text_columns.tsv \
+    --path_to_allowed_term_json ${allowed_terms} \
+    --path_to_exposure_csv ${exposure_csv}
+    """
+}
+
+
 // Files tracked in data/ (allowed terms seed, Cellosaurus table); fail early with a clear message if one is missing
 def dataFile(name) {
     file("$DATA_FOLDER/$name", checkIfExists: true)
@@ -734,7 +784,7 @@ workflow {
 
     //  Reference data, then ontologies
     ref = fetchReferenceData()
-    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, hpo_onto, exposure_onto, doid_parents) = prepare_ontologies(
+    (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, hpo_onto, exposure_onto, doid_parents, sex_specific_parts) = prepare_ontologies(
         ref.uberon, ref.cl, ref.po, ref.doid, ref.biome, ref.material,
         ref.nodes, ref.division, ref.hp, ref.ecto, ref.peco)
     cellosaurus = dataFile(CELLOSAURUS_TABLE)
@@ -784,7 +834,13 @@ workflow {
     // Enrich NCBI information
     merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch, ref.nodes, ref.names, ref.merged)
 
+    // Rules for every row (needs the lineage)
+    merged_with_rules_ch = finalTableRules(merged_with_ncbi_ch, sex_specific_parts)
+
+    // Diet / FastingStatus / InternalStandardsUsed from the sample group texts; SampleGroupFreeText rules
+    merged_with_text_ch = finalizeTextColumns(merged_with_rules_ch, allowed_terms, exposure_onto)
+
     // Add Cache columns
-    cache_enriched_metadata = add_cache_columns(merged_with_ncbi_ch)
+    cache_enriched_metadata = add_cache_columns(merged_with_text_ch)
 
 }

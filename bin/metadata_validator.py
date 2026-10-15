@@ -77,6 +77,10 @@ def perform_validation(filename, terms):
         'BiologicalSex': [
             SetValidator(valid_set= list(set(terms['BiologicalSex']["allowed_values"] + legacy_missing_values))) 
         ],
+        # regimen terms and the food terms (FoodOntologyTerm) updateAllowedTerms adds
+        'Diet': [
+            SetValidator(valid_set= list(set(terms['Diet']["allowed_values"] + [terms['Diet']["missing"]] + legacy_missing_values)))
+        ],
         'Country': [
             SetValidator(valid_set= list(set(terms['Country']["allowed_values"] + legacy_missing_values)))  
         ],
@@ -164,7 +168,9 @@ def main():
     args = parser.parse_args()
 
 
-    passes_validation, failures, errors_list, valid_rows, total_rows = perform_validation(args.inputmetadata, args.path_to_allowed_terms_json)
+    with open(args.path_to_allowed_terms_json) as handle:
+        terms = json.load(handle)
+    passes_validation, failures, errors_list, valid_rows, total_rows = perform_validation(args.inputmetadata, terms)
     no_validation_lines = [int(error["line_number"]) for error in errors_list]
 
     output_list = ["MING", os.path.basename(args.inputmetadata), str(total_rows), str(len(valid_rows))]

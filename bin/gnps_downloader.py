@@ -111,7 +111,7 @@ def download_gnps_metadata(out_path="gnps_metadata.tsv"):
 PROXI_URL = "https://massive.ucsd.edu/ProteoSAFe/proxi/v0.1/datasets/{}"
 
 # ReDU-format sheets that are not named *gnps_metadata.tsv (other names, .txt, .csv,
-# .xlsx, .tsv.tsv): tabular files with 'metadata' in their path (name or folder), outside
+# .xlsx, .xls, .tsv.tsv): tabular files with 'metadata' in their path (name or folder), outside
 # ccms_metadata/. Only those whose header is the ReDU template are used. Only files under the
 # top-level folders metadata/ and updates/ are candidates: all 131 ReDU-format sheets found on
 # 2026-10-14 were there (69 under metadata/, 62 under updates/), while the 1,561 candidates in
@@ -181,12 +181,18 @@ def _excel_sheet(content, template_keys=None):
 
 
 def read_sheet(content, name, template_keys=None):
-    """Reads a tabular metadata file (tsv/txt/csv/xlsx) as strings, or returns None."""
+    """Reads a tabular metadata file (tsv/txt/csv/xlsx/xls) as strings, or returns None."""
     lower = name.lower()
     try:
         if lower.endswith(('.xlsx', '.xls')):
             # needs openpyxl (.xlsx) / xlrd (.xls); without them the file is skipped
-            return _excel_sheet(content, template_keys)
+            try:
+                return _excel_sheet(content, template_keys)
+            except ValueError as e:
+                # no Excel file at all (no .xls/.xlsx signature): read as text below; 26 of the 28
+                # .xls candidates of the 2026-10-15 run were tab-separated text (Spectronaut exports, ...)
+                if not str(e).startswith('Excel file format cannot be determined'):
+                    raise
         for encoding in ('utf-8', 'latin-1'):
             try:
                 text = content.decode(encoding)

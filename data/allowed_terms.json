@@ -43,6 +43,7 @@
             "blank_extraction",
             "culture_bacterial",
             "reference material",
+            "personal care product",
             "plant",
             "environmental",
             "archaea",
@@ -138,8 +139,8 @@
         "generate": "False",
         "type": "sample type",
         "missing": "missing value",
-        "description": "The category of a consumer product analysed as reference material (personal care or household product), as a path from the broad to the specific category separated by ' > '. Free text.",
-        "example": "Personal Care > Cosmetics > Skin Care > Sunscreen",
+        "description": "The category of a personal care product (SampleType personal care product; also household products such as dish washing liquid): the most specific category of the personalCareProductMASST product tree (e.g. 'Sunscreen' for Personal Care > Cosmetics > Skin Care > Sunscreen). Free text.",
+        "example": "Sunscreen",
         "source": "personalCareProductMASST: https://github.com/robinschmid/microbe_masst/blob/master/data/personalCareProduct_masst_table.csv",
         "allowed_values": [
             "00"
@@ -1124,7 +1125,7 @@
         "generate": "False",
         "type": "analysis",
         "missing": "missing value",
-        "description": "The internal standards used in the analysis.",
+        "description": "The internal standards used in the analysis, as names of this list (the GNPS template names and the names public sources state; a new name is added here, not accepted as free text). Several standards are joined by ';' (new combinations in alphabetical order); 'none' means no internal standard was used.",
         "example": "sulfadimethoxine",
         "source": "-",
         "allowed_values": [
@@ -1155,7 +1156,14 @@
             "1-O-hexadecyl-2-acetyl-snglycero-3-phosphocholine",
             "cocaine-d3",
             "Sulfadimethoxine-d6",
-            "glycocholic acid"
+            "glycocholic acid",
+            "caffeine",
+            "ibuprofen",
+            "13C9-PFNA",
+            "C13-labelled PFAS mix",
+            "sulfamethoxazole",
+            "caffeine;sulfamethoxazole",
+            "amitryptiline;caffeine"
         ]
     },
     "MassSpectrometer": {
@@ -1234,7 +1242,7 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The biological sex of the subject.",
+        "description": "The biological sex of the subject. Where none is recorded, a mammal sample of a body part only one sex has (UBERON/CL, e.g. cervical mucus, testis; milk unless the subject is a child) gives it.",
         "example": "female",
         "source": "-",
         "allowed_values": [
@@ -1310,9 +1318,9 @@
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The dietary regimen of the subject: a human dietary pattern or an experimental/composition diet type. Vocabulary aligned with the Ontology for Nutritional Studies (ONS).",
+        "description": "What the subject ate: its dietary regimen (an experimental or composition diet, or a human dietary pattern; terms aligned with the Ontology for Nutritional Studies (ONS), e.g. high-fat diet) or, when the dietary treatment is a food the subject ate or was fed (e.g. in the feed or drinking water), that food as a GFOP term. The food terms are those of FoodOntologyTerm (without its general classes such as plant or animal, and water), added to these allowed values when the workflow runs; FoodOntologyTerm itself describes samples that are foods. One value per sample: a regimen other than the control diet wins over a food given with it (the food then stays in SampleGroupFreeText). Only for samples of animals (NCBITaxonomy in Metazoa, humans included) that are not themselves foods, blanks, QCs, standards, cultures or cell lines.",
         "example": "high-fat diet",
-        "source": "ONS",
+        "source": "ONS (regimen terms); GFOP (Global FoodOmics food ontology) as used by foodMASST for foods, the same terms as FoodOntologyTerm (bin/translation_sheets/GFOP_food_ontology.csv)",
         "allowed_values": [
             "omnivore",
             "vegetarian",
@@ -1328,7 +1336,12 @@
             "ketogenic diet",
             "Mediterranean diet",
             "prebiotic diet",
-            "calorie-restricted diet"
+            "calorie-restricted diet",
+            "lithogenic diet",
+            "iron-deficient diet",
+            "intermittent fasting",
+            "time-restricted feeding",
+            "fibre-supplemented diet"
         ]
     },
     "DOIDCommonName": {

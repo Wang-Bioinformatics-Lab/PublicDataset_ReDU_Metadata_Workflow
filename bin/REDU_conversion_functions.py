@@ -12,6 +12,8 @@ import owlready2.namespace as _owl_ns
 import pandas as pd
 import tqdm
 
+from blank_qc_names import blank_qc_type_from_filename
+
 # owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
 # declares an IRI as both a property and a class/individual. Patch _load_properties
 # to skip only those conflicting entries instead of crashing. (Catching the TypeError
@@ -42,6 +44,11 @@ def _is_missing_observation(value):
     return value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip().lower() in ('', 'nan', 'missing value')
 
 
+def _blank_qc_sample_type(value):
+    """a blank or pooled QC SampleType (blank_analysis, blank_extraction, blank_QC, blank_culturemedia, pool_QC)"""
+    return not _is_missing_observation(value) and ('blank' in str(value).lower() or str(value).strip() == 'pool_QC')
+
+
 def merge_repeated_fileobservations(df):
     """Collapses rows describing the same file into one.
 
@@ -49,7 +56,30 @@ def merge_repeated_fileobservations(df):
     columns with conflicting values become 'missing value'. Blank/missing entries are not
     a conflict: if exactly one real value is present it is kept (e.g. a sample listed twice,
     once with 'France' and once with an empty country).
+    A file listed both for a blank / pooled QC and for samples of another SampleType whose name
+    marks it as a blank / QC (blank_qc_names.py; MTBLS10288 HF5_Neg_QC4.raw: a pooled QC and five
+    experimental samples) is the blank / QC: only its blank / QC rows are merged, so it keeps that
+    SampleType and, as any blank / QC, none of the samples' subject fields
+    (complete_and_fill_REDU_table clears them). Other such files (batch files holding samples,
+    blanks and QCs: MTBLS3839 Batch1_MRM3_June22_2020.wiff) keep the merge's 'missing value'.
     """
+    if 'SampleType' in df.columns and 'filename' in df.columns and len(df):
+        blank_qc = df['SampleType'].map(_blank_qc_sample_type)
+        other = ~blank_qc & ~df['SampleType'].map(_is_missing_observation)
+        mixed = df['filename'].isin(set(df.loc[blank_qc, 'filename'])) & df['filename'].isin(set(df.loc[other, 'filename']))
+        if mixed.any():
+            named = df['filename'].map(lambda f: isinstance(f, str) and blank_qc_type_from_filename(f) is not None)
+            if (mixed & ~named).any():
+                study = df['MassiveID'].iloc[0] if 'MassiveID' in df.columns else ''
+                print(f"[repeated file] {study}: {df.loc[mixed & ~named, 'filename'].nunique()} files listed for blanks / QCs "
+                      f"and for samples are not named as blanks / QCs: merged as they are")
+            mixed &= named
+        if mixed.any():
+            for name, group in df[mixed].groupby('filename', sort=True):
+                study = group['MassiveID'].iloc[0] if 'MassiveID' in group.columns else ''
+                print(f"[repeated file] {study} {name}: listed as {dict(group['SampleType'].astype(str).value_counts().sort_index())}; "
+                      f"named as a blank / QC: its blank / QC rows are kept")
+            df = df[~mixed | blank_qc]
 
     def process_group(group):
 
@@ -527,6 +557,230 @@ def bmi_to_numeric(x):
     except ValueError:
         return 'missing value'
     return v if 10 <= v <= 60 else 'missing value'
+
+
+# Food and beverage products -> GFOP food ontology label (FoodOntologyTerm, labels of
+# translation_sheets/GFOP_food_ontology.csv). Only names of things that exist as food or drink
+# alone: milk, meat, fish, fruit, berry, grape, juice, oil, seed, leaf, tea leaf, chicken,
+# yeast, insect ... also name body fluids, tissues or organisms of a study's subjects and are
+# not listed (they count only for samples a study declares food, see food_ontology_term); eggs
+# count only for samples of poultry (food_term_of_organism). A value matches as a whole or by
+# its last words ('Aroeira honey'); None marks names ending in a listed word that are not that
+# food. Animal products: not for plant-based analogues ('vegan cheese', _FOOD_ANALOGUE_WORDS).
+_ANIMAL_FOOD_PRODUCTS = {
+    # dairy
+    'cheese': 'cheese', 'blue cheese': 'blue cheese', 'cheddar cheese': 'cheddar cheese', 'goat cheese': 'goat cheese',
+    'cream cheese': 'cream cheese', 'feta cheese': 'feta cheese', 'gouda cheese': 'gouda cheese',
+    'mozzarella cheese': 'mozzarella cheese', 'parmesan cheese': 'parmesan cheese', 'pecorino cheese': 'pecorino cheese',
+    'ricotta cheese': 'ricotta cheese', 'brie cheese': 'brie cheese',
+    'yogurt': 'yogurt', 'yoghurt': 'yogurt', 'kefir': 'dairy', 'fermented milk': 'dairy', 'buttermilk': 'dairy',
+    'whey': 'dairy', 'butter': 'butter', 'cocoa butter': None, 'shea butter': None, 'body butter': None,
+    'apple butter': None, 'mango butter': None, 'ice cream': 'ice cream', 'sour cream': 'sour cream',
+    'infant formula': 'formula', 'baby formula': 'formula', 'formula milk': 'formula',
+    'milk powder': 'milk', 'powdered milk': 'milk',
+    # honey, eggs, meat
+    'honey': 'honey', 'clover honey': 'honey_clover', 'sage honey': 'honey_sage', 'chestnut honey': 'honey_chestnut',
+    'egg': 'egg', 'whole egg': 'egg', 'egg white': 'egg', 'egg yolk': 'egg', 'egg albumen': 'egg',
+    'beef': 'beef', 'ground beef': 'beef', 'pork': 'pork', 'veal': 'veal', 'salami': 'salami', 'ham': 'ham',
+    'prosciutto': 'prosciutto', 'bacon': 'bacon', 'sausage': 'meat', 'pork sausage': 'pork sausage',
+    'beef jerky': 'beef jerkey',
+}
+FOOD_PRODUCT_TERMS = dict(_ANIMAL_FOOD_PRODUCTS, **{
+    # beverages (wine: see _WINE_CULTIVARS)
+    'beer': 'beer', 'wheat beer': 'wheat beer', 'wine': 'grape_fermented', 'red wine': 'red wine',
+    'white wine': 'white wine', 'rose wine': 'rose wine, red', 'rosé wine': 'rose wine, red', 'port wine': 'port, red',
+    'rice wine': 'grain_fermented', 'sake': 'grain_fermented', 'cider': 'apple_cider', 'pear cider': None,
+    'kombucha': 'kombucha', 'coffee': 'coffee', 'coffee bean': 'coffee', 'tea': 'tea', 'hybrid tea': None,
+    'green tea': 'Green tea', 'black tea': 'Black tea', 'white tea': 'White tea', 'oolong tea': 'Oolong tea',
+    'pu erh tea': "Pu'er tea", "pu'er tea": "Pu'er tea", 'matcha': 'Matcha tea', 'yerba mate': 'yerba mate',
+    'fruit juice': 'fruit', 'grape juice': 'grape', 'grape must': 'grape', 'orange juice': 'orange',
+    'apple juice': 'apple', 'tomato juice': 'tomato',
+    # other products
+    'olive oil': 'olive', 'canola oil': 'canola oil', 'sesame oil': 'sesame oil',
+    'tofu': 'soybean', 'tempeh': 'soybean', 'tempe': 'soybean', 'miso': 'soybean', 'natto': 'soybean',
+    'soy sauce': 'soybean', 'soy milk': 'soybean', 'soymilk': 'soybean', 'sauerkraut': 'saurkraut',
+    'tomato sauce': 'tomato sauce', 'ketchup': 'tomato sauce', 'tomato paste': 'tomato paste',
+    'strawberry jam': 'strawberry jam', 'peanut butter': 'peanut butter', 'maple syrup': 'maple syrup',
+    'molasses': 'molasses', 'balsamic vinegar': 'balsamic vinegar', 'potato chip': 'potato chip',
+    'mashed potato': 'mashed potato', 'nori': 'nori',
+})
+_ANIMAL_FOOD_TERMS = set(_ANIMAL_FOOD_PRODUCTS.values()) - {None}
+# words that make an animal product a plant-based analogue ('Beyond beef', 'almond butter')
+_FOOD_ANALOGUE_WORDS = {'plant', 'vegan', 'vegetarian', 'veggie', 'vegetable', 'meatless', 'imitation', 'analog',
+                        'analogue', 'substitute', 'mock', 'faux', 'beyond', 'impossible', 'soy', 'soya', 'almond',
+                        'oat', 'coconut', 'cashew', 'nut', 'nuts', 'peanut', 'rice', 'pea', 'hemp'}
+# grape cultivars -> GFOP label of their wine, else its colour. They narrow a wine ('Wine' and
+# 'cv. Merlot' -> 'merlot, red'; 'Chardonnay wine' -> 'white wine'); in front of 'wine' only
+# they, colours and styles (_WINE_WORDS) make it a grape wine, not 'plum wine' or 'palm wine'
+_WINE_CULTIVARS = dict(
+    {'cabernet sauvignon': 'cabernet sauvignon, red', 'merlot': 'merlot, red', 'pinot noir': 'pinot noir, red',
+     'syrah': 'syrah, red', 'shiraz': 'syrah, red', 'petite sirah': 'petit sirah, red', 'petit sirah': 'petit sirah, red',
+     'zinfandel': 'zinfindel, red', 'white zinfandel': 'zinfindel, white', 'sauvignon blanc': 'sauvignon blanc, white',
+     'riesling': 'riesling, white'},
+    **dict.fromkeys(['aglianico', 'barbera', 'cabernet franc', 'cannonau', 'carignan', 'carmenere', 'corvina', 'dolcetto',
+                     'gamay', 'garnacha', 'grenache', 'lagrein', 'malbec', 'monastrell', 'montepulciano', 'mourvedre',
+                     'nebbiolo', 'negroamaro', 'nerello mascalese', 'petit verdot', 'pinotage', 'primitivo', 'raboso',
+                     'refosco', 'sagrantino', 'sangiovese', 'tannat', 'tempranillo', 'teroldego', 'touriga nacional'],
+                    'red wine'),
+    **dict.fromkeys(['albarino', 'arneis', 'chardonnay', 'chenin blanc', 'cortese', 'falanghina', 'fiano', 'friulano',
+                     'garganega', 'gewurztraminer', 'glera', 'grenache blanc', 'gruner veltliner', 'italian riesling',
+                     'pinot bianco', 'pinot blanc', 'pinot grigio', 'pinot gris', 'riesling italico', 'semillon',
+                     'timorasso', 'tocai friulano', 'trebbiano', 'verdejo', 'verdicchio', 'vermentino', 'viognier',
+                     'welschriesling'], 'white wine'))
+_WINE_CULTIVAR_RE = re.compile(r'\b(?:%s)\b' % '|'.join(sorted(map(re.escape, _WINE_CULTIVARS), key=len, reverse=True)))
+_WINE_WORDS = {'red', 'white', 'sparkling', 'still', 'dry', 'medium', 'semi', 'sweet', 'dessert', 'table', 'fortified',
+               'commercial', 'young', 'aged', 'grape', 'and', 'vitis', 'vinifera', 'l', 'cv'}
+_GRAPE_WINE_TERMS = {'grape_fermented', 'red wine', 'white wine', 'rose wine, red', 'port, red'} | set(_WINE_CULTIVARS.values())
+# GFOP terms of a product by the genus of the sample's organism; eggs only of poultry ('egg'
+# also names eggs of insects, worms and fish)
+_FOOD_TERM_OF_GENUS = {
+    'yogurt': {'Bos': 'yogurt_cow'}, 'milk': {'Bos': 'milk_cow', 'Capra': 'milk_goat'}, 'cream': {'Bos': 'cream_cow'},
+    'meat': {'Bos': 'beef', 'Sus': 'pork'}, 'sausage': {'Sus': 'pork sausage'},
+    'egg': {'Gallus': 'egg_chicken', 'Coturnix': 'egg_quail', 'Meleagris': 'egg_poultry', 'Anas': 'egg_poultry',
+            'Anser': 'egg_poultry', 'Numida': 'egg_poultry'},
+}
+# words after a GFOP name that keep it that food, for declared food ('Pork Loin', 'Coffee neat')
+_FOOD_PREPARATION_WORDS = {'raw', 'fresh', 'frozen', 'dried', 'cooked', 'boiled', 'fried', 'grilled', 'roasted', 'baked',
+                           'steamed', 'smoked', 'canned', 'whole', 'sliced', 'diced', 'ground', 'minced', 'peeled', 'neat',
+                           'diluted', 'brewed', 'loin', 'tenderloin', 'chop', 'chops', 'fillet', 'filet', 'breast',
+                           'thigh', 'leg', 'wing', 'shoulder', 'belly', 'steak', 'mince'}
+# a digest of a food (in vitro digestion, colonic fermentation) is no sample of the food
+_FOOD_DIGEST_RE = re.compile(r'(?i)\bdigest(?:a|ate|ates|ed|ion|ions|s)?\b|'
+                             r'\b(?:colonic|fa?ecal|gut)\s+(?:fermentation|incubation|inocul)')
+# values that declare a sample a food (MetaboLights 'Food or Food Product', Workbench 'Sample
+# type: Food'); trailing words dropped before matching
+FOOD_SAMPLE_MARKERS = {'food', 'foods', 'food item', 'food sample', 'food or food product', 'foodstuff'}
+_FOOD_VALUE_TAIL = re.compile(r'(?:\s+(?:food\s+)?(?:products?|samples?))+$')
+# GFOP labels that name an organism or a whole branch, never the food of a sample
+_GFOP_NOT_A_FOOD_NAME = {'plant', 'animal', 'fungi', 'algae', 'mineral', 'water', 'supplement', 'invertebrate',
+                         'worm', 'reptile', 'lizard', 'insect', 'arthropod', 'gastropod', 'mouse', 'rat', 'cow',
+                         'pig', 'horse', 'yeast', 'chlamydomonas reinhardtii'}
+
+
+def _food_value_key(value):
+    """Lower-case words of a value: separators as spaces, 'milk (fermented)' as 'fermented
+    milk', 'yogurt food product' as 'yogurt'."""
+    v = str(value).strip().lower()
+    m = re.fullmatch(r'([^()]+?)\s*\(([^()]+)\)', v)
+    if m:
+        v = f'{m.group(2)} {m.group(1)}'
+    v = re.sub(r'[\s_\-/,;:]+', ' ', v).strip()
+    return _FOOD_VALUE_TAIL.sub('', v) if v not in FOOD_SAMPLE_MARKERS else v
+
+
+def _food_lookup(words, terms, whole=False):
+    """The longest last-words phrase in terms ('cocoa butter' before 'butter'; only all
+    words if whole), also with a plural last word ('wines', 'blueberries'), or None."""
+    for i in range(1 if whole else len(words)):
+        tail = words[i:]
+        last = tail[-1]
+        for w in (last, last[:-3] + 'y' if last.endswith('ies') else None, last[:-1] if last.endswith('s') else None):
+            phrase = ' '.join(tail[:-1] + [w]) if w else None
+            if phrase in terms:
+                return phrase
+    return None
+
+
+def _food_match(key, labels, prefix=False):
+    """(phrase, term) of the food a value key names, or None: its last words in
+    FOOD_PRODUCT_TERMS, else all of it in labels, else (prefix) its first words in either
+    when the rest are _FOOD_PREPARATION_WORDS ('pork loin'). The term is None for analogues
+    of animal products ('vegan cheese') and for wine after other words than _WINE_WORDS and
+    grape cultivars ('plum wine')."""
+    words = key.split(' ')
+    phrase = _food_lookup(words, FOOD_PRODUCT_TERMS)
+    label = _food_lookup(words, labels, whole=True) if phrase is None else None
+    if phrase is not None:
+        match = (phrase, FOOD_PRODUCT_TERMS[phrase], words[:len(words) - len(phrase.split(' '))])
+    elif label is not None:
+        match = (label, labels[label], [])
+    else:
+        match = next(((p, t[p], words[j:]) for j in range(len(words) - 1, 0, -1)
+                      if prefix and _FOOD_PREPARATION_WORDS.issuperset(words[j:]) for t in (FOOD_PRODUCT_TERMS, labels)
+                      for p in [_food_lookup(words[:j], t, whole=True)] if p is not None), None)
+    if match is None:
+        return None
+    phrase, term, other = match
+    if term in _ANIMAL_FOOD_TERMS and _FOOD_ANALOGUE_WORDS.intersection(other):
+        term = None
+    elif term in _GRAPE_WINE_TERMS and not _WINE_WORDS.issuperset(
+            w.strip('.') for w in _WINE_CULTIVAR_RE.sub(' ', ' '.join(other)).split()):
+        term = None
+    return phrase, term
+
+
+def _wine_of_cultivars(term, keys):
+    """A grape wine term narrowed by the grape cultivars the keys name: one cultivar -> its
+    wine ('cv. Merlot' -> 'merlot, red'), several of one colour -> that colour; never against
+    the colour already known."""
+    def colour(t):
+        return 'red wine' if t == 'red wine' or t.endswith(', red') else 'white wine'
+    found = {_WINE_CULTIVARS[m] for k in keys for m in _WINE_CULTIVAR_RE.findall(k)}
+    found = {t for t in found if term == 'grape_fermented' or colour(t) == term}
+    if len(found) == 1:
+        return found.pop()
+    colours = {colour(t) for t in found}
+    return colours.pop() if term == 'grape_fermented' and len(colours) == 1 else term
+
+
+def food_sample_marker(value):
+    """Whether a value declares its sample a food ('Food or Food Product', 'Food')."""
+    return isinstance(value, str) and _food_value_key(value) in FOOD_SAMPLE_MARKERS
+
+
+def food_term_of_organism(term, organism='', sample_type='', phrase=None):
+    """The FoodOntologyTerm for a sample of an organism (its NCBITaxonomy term) and SampleType:
+    the product of the genus where GFOP has one ('yogurt' of Bos -> 'yogurt_cow', a 'sausage'
+    (phrase) of Sus -> 'pork sausage'); None for eggs of other animals than poultry and for
+    grape wine of a sample of another plant (fruit wines of Lycium samples)."""
+    genus = organism.split('|', 1)[1].strip().split(' ')[0] if isinstance(organism, str) and '|' in organism else ''
+    if term in _GRAPE_WINE_TERMS and sample_type == 'plant' and genus and genus != 'Vitis':
+        return None
+    by_genus = dict(_FOOD_TERM_OF_GENUS.get(term, {}), **_FOOD_TERM_OF_GENUS.get(phrase, {}))
+    if term == 'egg' and genus not in by_genus:
+        return None
+    return by_genus.get(genus, term)
+
+
+def food_ontology_term(values, gfop_labels, food_sample=False, organism=None, sample_type='', extra_values=(),
+                       detail_values=()):
+    """GFOP label (FoodOntologyTerm) of a sample from the values that describe it (most
+    reliable first), or None. A value names a product of FOOD_PRODUCT_TERMS; for a sample its
+    study declares food (food_sample, or one of the values is a FOOD_SAMPLE_MARKERS word) a
+    GFOP label counts too, as the whole value ('Beef', 'Blueberries') or before preparation
+    words ('Pork Loin', 'Coffee neat'), except labels of organisms. extra_values (e.g. other
+    factors of a food sample) only count with a product name. A later value, also of
+    detail_values (the sample's other characteristics and factors), can only narrow the
+    product ('Wine', then 'red wine'), as can grape cultivars ('cv. Merlot'). A value naming a
+    digest ('In Vitro Digestions') makes it no food sample. With an organism (NCBITaxonomy
+    term, may be '') the term must fit it (food_term_of_organism)."""
+    if any(isinstance(v, str) and _FOOD_DIGEST_RE.search(v) for v in (*values, *extra_values, *detail_values)):
+        return None
+    keys = [_food_value_key(v) for v in values if isinstance(v, str) and v.strip()]
+    food_sample = food_sample or any(k in FOOD_SAMPLE_MARKERS for k in keys)
+    labels = {str(l).lower(): l for l in gfop_labels if str(l).lower() not in _GFOP_NOT_A_FOOD_NAME} if food_sample else {}
+    extra = [_food_value_key(v) for v in extra_values if isinstance(v, str) and v.strip()]
+    detail = [_food_value_key(v) for v in detail_values if isinstance(v, str) and v.strip()]
+    first = None
+    for i, key in enumerate(keys + extra + detail):
+        if not key or key in FOOD_SAMPLE_MARKERS or (first is None and i >= len(keys) + len(extra)):
+            continue
+        match = _food_match(key, labels if i < len(keys) else {}, prefix=food_sample and i < len(keys))
+        if match is None:
+            continue
+        if first is None:
+            first = match
+        elif match[0].endswith(' ' + first[0]) and match[1] is not None:
+            first = match
+            break
+    if first is None or first[1] is None:
+        return None
+    phrase, term = first
+    if term in ('grape_fermented', 'red wine', 'white wine'):
+        term = _wine_of_cultivars(term, keys + extra + detail)
+    if organism is not None:
+        term = food_term_of_organism(term, organism, sample_type, phrase)
+    return term if term in gfop_labels else None
 
 
 def map_instrument_to_allowed(instrument, allowed_values):

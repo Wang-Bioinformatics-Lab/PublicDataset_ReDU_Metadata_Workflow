@@ -75,9 +75,9 @@ def _is_set(value):
 
 def apply_filename_blank_qc(df, filename_column='filename', verbose=True):
     """Labels rows whose file name says blank / pooled QC (see module docstring) and whose
-    SampleType is not already a blank, QC, culture-medium blank, reference material or
-    standard. SampleType and SampleTypeSub1 are set to the blank/QC type; the organism,
-    body part and other subject fields are then cleared by complete_and_fill_REDU_table,
+    SampleType is not already a blank, QC, culture-medium blank, reference material, personal
+    care product or standard. SampleType and SampleTypeSub1 are set to the blank/QC type; the
+    organism, body part and other subject fields are then cleared by complete_and_fill_REDU_table,
     as for any blank. Returns the frame and the number of changed rows."""
     if filename_column not in df.columns or len(df) == 0:
         return df, 0
@@ -88,7 +88,7 @@ def apply_filename_blank_qc(df, filename_column='filename', verbose=True):
         df['SampleTypeSub1'] = ''
     current = df['SampleType'].fillna('').astype(str).str.strip()
     already = current.str.contains('blank', case=False) | current.isin(
-        ['pool_QC', 'reference material', 'molecular_standards'])
+        ['pool_QC', 'reference material', 'personal care product', 'molecular_standards'])
     types = df[filename_column].map(lambda f: blank_qc_type_from_filename(f) if pd.notna(f) else None)
     change = types.notna() & ~already
     if change.any():

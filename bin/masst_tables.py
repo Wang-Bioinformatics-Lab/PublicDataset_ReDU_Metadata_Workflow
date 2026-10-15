@@ -15,6 +15,7 @@ import collections
 
 import pandas as pd
 
+import diet_columns
 from blank_qc_names import blank_qc_type_from_filename, name_tokens
 
 _MISSING = {'', 'nan', 'na', 'n/a', 'none', 'null', 'unknown', 'not applicable', 'not_applicable', 'not entered',
@@ -265,8 +266,10 @@ def food_rows(df_csv, df_full, vocab, gfop_labels, division_by_taxid=None):
 
 def personal_care_rows(df):
     """personalCareProduct_masst_table -> ReDU rows. Products (personal care and the few
-    household cleaners) are reference material_personalcareproduct with the product category
-    path; Root > Blank > Solvent/Method Blank are analysis/extraction blanks."""
+    household cleaners) are SampleType personal care product (SampleTypeSub1
+    reference material_personalcareproduct) with the last, most specific category of the
+    product tree ('Root > Personal Care > Cosmetics > Skin Care > Sunscreen' -> 'Sunscreen');
+    Root > Blank > Solvent/Method Blank are analysis/extraction blanks."""
     if df is None:
         return pd.DataFrame()
     out = pd.DataFrame({'MassiveID': df['MassIVE'], 'filename': df['Filename']})
@@ -275,11 +278,16 @@ def personal_care_rows(df):
     path = path.map(lambda p: ' > '.join(x.strip() for x in p.split('>') if x.strip()))
     blank = path.str.match(r'(?i)^blank(\s|$)')
     method = blank & path.str.contains(r'(?i)method|extraction|procedur')
-    out['SampleType'] = 'reference material'
+    out['SampleType'] = 'personal care product'
     out['SampleTypeSub1'] = 'reference material_personalcareproduct'
     out.loc[blank, ['SampleType', 'SampleTypeSub1']] = 'blank_analysis'
     out.loc[method, ['SampleType', 'SampleTypeSub1']] = 'blank_extraction'
-    out['ProductCategory'] = path.where(~blank, '')
+    category = path.str.split(' > ').str[-1]
+    # the same category name under several paths of the tree (none in the pinned table) is one value
+    paths = path[~blank].groupby(category[~blank]).unique()
+    for name, ps in paths[paths.map(len) > 1].items():
+        print(f"personalCareProductMASST: category {name!r} is under {len(ps)} paths: {sorted(ps)}")
+    out['ProductCategory'] = category.where(~blank, '')
     return out
 
 
@@ -488,41 +496,83 @@ def microbiome_rows(df, vocab, division_by_taxid, microbe_sample_type=None, stat
     return out
 
 
+def _intervention_value(k):
+    """an intervention by what was given (its value, the type where it has none), any type"""
+    return ' '.join((k[1] or k[0]).lower().split())
+
+
+def _is_diet(k):
+    """a diet intervention ('mice diet', 'human diet'; not the 'DrugsNDiet' communities)"""
+    return diet_columns.masst_diet_type(k[0])
+
+
 def _assign_interventions(out, vocab, stats):
-    """Exposure (ECTO 'exposure to <chemical>' exact match) or SampleGroupFreeText
-    ('Intervention: <type>: <value>') from the interventions of each file.
+    """Exposure (ECTO 'exposure to <chemical>' exact match), Diet (diet interventions, the
+    mapping of diet_columns.py) or SampleGroupFreeText ('Intervention: <type>: <value>') from
+    the interventions of each file.
     - an intervention given for every real (non blank/QC) file of its dataset is a
       property of the study, not of a group of files (e.g. the drug of a study whose
-      vehicle controls are listed under the drug too): not used;
+      vehicle controls are listed under the drug too): not used. Compared by value under
+      any type (MSV000083777 lists its antibiotics under 'mice bile acids' and 'mice drug');
     - files named as controls (control, vehicle, sham, placebo, untreated, ...) keep only
-      genetic interventions (their genotype);
+      genetic and diet interventions (their genotype and diet: the vehicles of a diet study,
+      MSV000089518);
+    - a diet intervention also gives the file's Diet (animal files only); not one given for every
+      real file, nor a Diet that every real file would get under different wordings ('high-fat,
+      dark' / 'high-fat, light'; diet_columns.study_level_diet): microbiomeMASST lists a study's
+      diet for its control files too (MSV000085879, MSV000097318); its text stays, the final
+      table's pass (final_text_columns.py) removes it where Diet holds it on every file;
+    - an intervention type that is an Exposure for some real files of the dataset and not
+      for others keeps its text on all of them, as a Workbench / MetaboLights factor that the
+      ReDU columns tell only partly apart (MSV000084783 'mice diet': iron / iron-deficient /
+      normal chow diet);
     - SampleGroupFreeText only where the dataset's real files form >= 2 groups with on
       average >= 2 files per group."""
+    gfop = diet_columns.gfop_index(vocab.allowed['FoodOntologyTerm']['allowed_values'])
+    diet_terms = set(vocab.allowed['Diet']['allowed_values'])
     real = out['_kind'] == ''
     out['Exposure'] = ''
+    out['Diet'] = ''
     out['SampleGroupFreeText'] = ''
     for mid, idx in out.groupby('MassiveID').groups.items():
         sub = out.loc[idx]
         real_idx = sub.index[real[sub.index]]
         n_real = len(real_idx)
-        counts = collections.Counter(k[:2] for ivs in sub.loc[real_idx, '_interventions'] for k in set(ivs))
+        counts = collections.Counter(v for ivs in sub.loc[real_idx, '_interventions'] for v in {_intervention_value(k) for k in ivs})
         study_level = {k for k, n in counts.items() if n >= n_real}
         stats['microbiome_interventions_study_level'] += len(study_level)
-        groups = {}
+        files, diets = {}, {}
         for i in real_idx:
-            ivs = [k for k in out.at[i, '_interventions'] if k[:2] not in study_level]
+            ivs = [k for k in out.at[i, '_interventions'] if _intervention_value(k) not in study_level]
             if out.at[i, '_control_name']:
-                kept = [k for k in ivs if 'genetic' in k[0].lower()]
+                kept = [k for k in ivs if 'genetic' in k[0].lower() or _is_diet(k)]
                 if len(kept) < len(ivs):
                     stats['microbiome_files_control_name_interventions_dropped'] += 1
                 ivs = kept
-            exposures = [vocab.chemical_exposure(k[2]) for k in ivs]
+            files[i] = (ivs, [vocab.chemical_exposure(k[2]) for k in ivs])
+            diets[i], _ = diet_columns.row_diet([diet_columns.map_value('Intervention', k[1], gfop, masst_type=k[0])
+                                                 for k in ivs if _is_diet(k)],
+                                                human=str(out.at[i, 'NCBITaxonomy']).startswith('9606|'))
+        if diet_columns.study_level_diet(diets.values()):
+            stats['microbiome_datasets_study_level_Diet_not_used'] += 1
+            diets = {}
+        for i, diet in diets.items():
+            if diet in diet_terms and out.at[i, 'SampleType'] == 'animal':
+                out.at[i, 'Diet'] = diet
+                stats['microbiome_files_Diet'] += 1
+        is_exposure = collections.defaultdict(set)
+        for ivs, exposures in files.values():
+            for k, e in zip(ivs, exposures):
+                is_exposure[k[0]].add(bool(e))
+        partly = {t for t, s in is_exposure.items() if len(s) == 2}
+        groups = {}
+        for i, (ivs, exposures) in files.items():
             matched = [e for e in exposures if e]
             if len(set(matched)) == 1:
                 out.at[i, 'Exposure'] = matched[0]
             elif len(set(matched)) > 1:
                 stats['microbiome_conflict_blanked_Exposure'] += 1
-            rest = [k for k, e in zip(ivs, exposures) if not e]
+            rest = [k for k, e in zip(ivs, exposures) if not e or k[0] in partly]
             text = '; '.join(sorted(f'Intervention: {t}: {v}' if v else f'Intervention: {t}' for t, v, _ in rest))
             if text:
                 groups[i] = text

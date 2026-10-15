@@ -327,9 +327,17 @@ def _sample_class(value):
         return 'missing'
     if 'blank' in v.lower() or v == 'pool_QC':
         return 'blank/QC'
-    if v in ('reference material', 'molecular_standards'):
+    if v in ('reference material', 'personal care product', 'molecular_standards'):
         return 'standard/reference'
     return 'sample'
+
+
+def _sample_type_key(value):
+    """SampleType as compared between the sources: GNPS metadata files name a personal care product
+    'reference material' (with SampleTypeSub1 reference material_personalcareproduct; finalTableRules
+    renames it), the MASST rows 'personal care product'"""
+    v = str(value).strip()
+    return 'reference material' if v == 'personal care product' else v
 
 
 def supplement_from_masst(primary, supplement, columns, study_level=frozenset()):
@@ -367,7 +375,7 @@ def supplement_from_masst(primary, supplement, columns, study_level=frozenset())
             stats['conflict_redu_sample_masst_blankqc'] += 1
             continue
         same_type = cr == 'missing' or cm == 'missing' or \
-            str(redu.get('SampleType')).strip() == str(row.get('SampleType')).strip()
+            _sample_type_key(redu.get('SampleType')) == _sample_type_key(row.get('SampleType'))
         if not same_type:
             stats['conflict_sample_type_differs'] += 1
         subject_ok = cm == 'sample' and cr in ('sample', 'missing')

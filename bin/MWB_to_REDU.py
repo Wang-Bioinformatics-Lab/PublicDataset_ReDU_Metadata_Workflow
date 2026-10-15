@@ -14,6 +14,7 @@ import time
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
 from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
+from REDU_conversion_functions import food_ontology_term, food_sample_marker, food_term_of_organism
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
@@ -3389,8 +3390,9 @@ def assign_cell_lines(MWB_table):
     return t
 
 
-# COLLECTION SAMPLE_TYPE of the analysis being converted (create_dataframe_outer_dict)
+# COLLECTION SAMPLE_TYPE and SUBJECT_TYPE of the analysis being converted (create_dataframe_outer_dict)
 _ANALYSIS_SAMPLE_TYPE = ''
+_ANALYSIS_SUBJECT_TYPE = ''
 _NOT_CULTURE_SAMPLE_RE = re.compile(r'(?i)fraction|microsom|\bs9\b|homogen|tissue|\borgans?\b|biops|plasma|serum|'
                                     r'\bblood\b|urine|feces|faeces|stool|\bmilk\b|saliva')
 
@@ -3733,6 +3735,47 @@ def resolve_contradictions(contradictions, potential_matches):
                     match_set.remove(raw_value)
 
     return potential_matches
+
+
+# factor keys that say what a sample is (not what its subject was given or ate)
+_FOOD_SAMPLE_KEY_RE = re.compile(r'sample[ _]?(?:type|matrix|material)|matrix|material|specimen(?:[ _]type)?|'
+                                 r'food[ _](?:type|item|product)|product(?:[ _]type)?|commodity')
+_NO_SAMPLE_SOURCE = {'', 'na', 'n/a', '-', 'none', 'nan', 'not applicable'}
+
+
+def sample_food_terms(df):
+    """GFOP label (FoodOntologyTerm) of the sample of each row (food_ontology_term), or None:
+    from the sample source and the factors that say what the sample is ('Sample type',
+    'Matrix', 'Food type'), then the analysis' SAMPLE_TYPE where the sample source says
+    nothing. Samples of a 'Food item' study (SUBJECT_TYPE) and samples with 'Sample type:
+    Food' are food samples: plain GFOP names count ('Food type: Beef'), and product names in
+    their other factors ('Treatment: Ground Beef'). The other factors of other samples can
+    only narrow the product (grape cultivar) or rule it out (digests). The organism is
+    checked later (food_term_of_organism)."""
+    gfop = allowedTerm_dict['FoodOntologyTerm']['allowed_values'] if 'FoodOntologyTerm' in allowedTerm_dict else []
+    keyl = df['Key'].astype(str).str.strip().str.lower()
+    is_source = keyl == 'sample source'
+    described = keyl.str.fullmatch(_FOOD_SAMPLE_KEY_RE) & ~is_source
+    other = ~is_source & ~described & ~keyl.str.contains(r'file|raw', regex=True)
+    sample_type = _ANALYSIS_SAMPLE_TYPE if isinstance(_ANALYSIS_SAMPLE_TYPE, str) else ''
+    food_study = str(_ANALYSIS_SUBJECT_TYPE).strip().lower() == 'food item'
+    # most studies: no value names a food, no sample is declared food
+    candidates = set(df.loc[is_source | described, 'Value'].dropna()) | {sample_type}
+    if not food_study and not any(food_sample_marker(v) or food_ontology_term([v], gfop) for v in candidates):
+        return pd.Series(None, index=df.index, dtype=object)
+    terms = {}
+    for f, g in pd.DataFrame({'f': df['filename'], 'v': df['Value'], 'source': is_source, 'described': described,
+                              'other': other}).groupby('f', sort=False):
+        source = list(g.loc[g['source'], 'v'])
+        values = source + list(g.loc[g['described'], 'v'])
+        if all(str(s).strip().lower() in _NO_SAMPLE_SOURCE or food_sample_marker(s) for s in source):
+            values.append(sample_type)
+        food = food_study or any(food_sample_marker(v) for v in values)
+        others = list(g.loc[g['other'], 'v'])
+        terms[f] = food_ontology_term(values, gfop, food_sample=food, extra_values=others if food else (),
+                                      detail_values=() if food else others)
+    return df['filename'].map(terms)
+
 
 def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
     
@@ -4377,6 +4420,13 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         print(f"Could not check Subject IDs: {type(e).__name__}: {e}")
         df['SubjectIdentifierAsRecorded'] = ''
     df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
+    # the food or beverage product a sample is (FoodOntologyTerm); a problem here must never
+    # cost the study its rows
+    try:
+        df['MWB_food'] = sample_food_terms(df)
+    except Exception as e:
+        print(f"Could not check for food samples: {type(e).__name__}: {e}")
+        df['MWB_food'] = None
     # sex keys: the known ones plus other 'sex'/'gender' keys about the sampled subject;
     # numeric codes are decoded only where the key defines them
     _keyl = df['Key'].astype(str).str.lower()
@@ -4904,8 +4954,9 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     # unit of ages given without one: the study's AGE_OR_AGE_RANGE unit, else years in
     # human studies, else unclear (no age)
     _ANALYSIS_AGE_UNIT = study_age_unit(entry['SUBJECT_AGE'])
-    global _ANALYSIS_SUBJECT_TEXTS, _ANALYSIS_SAMPLE_TYPE
+    global _ANALYSIS_SUBJECT_TEXTS, _ANALYSIS_SAMPLE_TYPE, _ANALYSIS_SUBJECT_TYPE
     _ANALYSIS_SAMPLE_TYPE = entry['SAMPLE_TYPE'] if isinstance(entry['SAMPLE_TYPE'], str) else ''
+    _ANALYSIS_SUBJECT_TYPE = entry['SUBJECT_TYPE'] if isinstance(entry['SUBJECT_TYPE'], str) else ''
     _ANALYSIS_SUBJECT_TEXTS = [str(v) for v in (entry['SAMPLE_TYPE'], entry['SUBJECT_SPECIES'], entry['SUBJECT_TYPE'],
                                                 _section(MWB_mwTAB_dict, 'SUBJECT').get('GENOTYPE_STRAIN', ''))
                                if isinstance(v, str) and v.strip() and v.strip().upper() != 'NA']
@@ -5853,6 +5904,15 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
         fill = (complete_df['LifeStage'].isin(['', None]) | complete_df['LifeStage'].isna()) & complete_df['MWB_lifestage'].notna()
         complete_df.loc[fill, 'LifeStage'] = complete_df.loc[fill, 'MWB_lifestage']
 
+    # food and beverage samples (sample_food_terms), not blanks / QCs / standards, as fits their
+    # organism (food_term_of_organism); SampleType and NCBITaxonomy stay as they are (honey has
+    # SampleType 'food', no organism)
+    _food = complete_df['MWB_food'] if 'MWB_food' in complete_df.columns else pd.Series(None, index=complete_df.index)
+    _not_sample = complete_df['SampleType'].astype(str).str.contains('blank', case=False) | \
+        complete_df['SampleType'].isin(['pool_QC', 'reference material', 'personal care product', 'molecular_standards'])
+    complete_df['FoodOntologyTerm'] = [food_term_of_organism(t, o, s) if isinstance(t, str) and not q else None
+                                       for t, q, o, s in zip(_food, _not_sample, complete_df['NCBITaxonomy'], complete_df['SampleType'])]
+
     for col in ['SampleCollectionDateandTime', 'DepthorAltitudeMeters', 'ENVOEnvironmentMaterial']:
         if col not in complete_df.columns:
             complete_df[col] = 'missing value'
@@ -5891,7 +5951,8 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                             "TimePointHoursRelativeToEvent",
                             "SampleGroupFreeText",
                             "FastingStatus",
-                            "CellLine"
+                            "CellLine",
+                            "FoodOntologyTerm"
                             ]
     
     complete_df['ENVOEnvironmentMaterial'] = complete_df['ENVOEnvironmentMaterial'].replace({np.nan: 'missing value', None: 'missing value'})
@@ -5940,6 +6001,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                            "SampleGroupFreeText",
                            "FastingStatus",
                            "CellLine",
+                           "FoodOntologyTerm",
                            "UniqueSubjectID",
                            "LifeStage",
                            "UBERONOntologyIndex",

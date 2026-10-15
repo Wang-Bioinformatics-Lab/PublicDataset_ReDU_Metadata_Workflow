@@ -7,6 +7,7 @@ import tqdm
 import os
 import argparse
 import json
+import re
 from obo_tables import hpo_table, exposure_table
 
 # owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
@@ -99,6 +100,71 @@ def get_uberon_table(owl_path):
 
     return df
 
+
+# Body parts only one sex has (BiologicalSex from the body part, bin/final_table_rules.py): the
+# classes below the female / male reproductive system or organism (UBERON) or germ cell (CL), by
+# is_a, part_of, produced_by (cervical mucus is produced by the uterine cervix) or has_part (semen
+# has part sperm). Embryonic and extraembryonic structures belong to the conceptus, which can be of
+# either sex (UBERON puts the placenta in the female reproductive system): left out, as are classes
+# below both sexes (e.g. 'synchronous hermaphroditic organism').
+SEX_ROOTS = {
+    'female': {'UBERON_0000474', 'UBERON_0003100', 'CL_0000021'},  # reproductive system, organism, germ cell
+    'male': {'UBERON_0000079', 'UBERON_0003101', 'CL_0000015'},
+}
+EITHER_SEX_ROOTS = {'UBERON_0000922', 'UBERON_0000478', 'UBERON_0016887'}  # embryo, extraembryonic structure and component
+SEX_RELATIONS = {'BFO_0000050', 'RO_0003001', 'BFO_0000051'}  # part_of, produced_by, has_part
+# milk and colostrum (mammary gland fluid/secretion) come from the mammary gland, which both sexes
+# have, but only females lactate; 'Is Milk' lets the final table rule tell the subject's own milk
+# from the milk an infant subject drank
+MILK = 'UBERON_0006539'
+# errors of the pinned UBERON, left out: both sexes have a cranial suspensory ligament (UBERON puts it
+# in the male reproductive system), a mating plug is made by the male but sampled from the female,
+# 'pars recta' is an amphibian oviduct part but in mammals the name of the kidney's proximal straight
+# tubule. A label that names the other sex is left out too ('female deep inguinal ring' is part_of
+# the male reproductive system)
+SEX_EXCLUDED = {'UBERON_0008848', 'UBERON_0010148', 'UBERON_3010780'}
+SEX_WORD = re.compile(r'\b(female|male)\b', re.I)
+
+
+def get_sex_specific_parts(uberon_owl_path, cl_owl_path):
+    """UBERON and CL classes only one sex has (SEX_ROOTS, EITHER_SEX_ROOTS, MILK, SEX_EXCLUDED):
+    UBERONOntologyIndex, Label, BiologicalSex, Is Milk"""
+    rows = []
+    for owl_path, prefix in ((uberon_owl_path, 'UBERON_'), (cl_owl_path, 'CL_')):
+        onto = owlready2.World().get_ontology(owl_path).load()
+        children, labels = {}, {}
+        for cls in onto.classes():
+            labels[cls.name] = cls.label.first() if cls.label else None
+            for parent in cls.is_a:
+                if isinstance(parent, owlready2.Restriction):
+                    if parent.type != owlready2.SOME or getattr(parent.property, 'name', None) not in SEX_RELATIONS:
+                        continue
+                    parent = parent.value
+                if isinstance(parent, owlready2.ThingClass):
+                    children.setdefault(parent.name, set()).add(cls.name)
+
+        def below(roots):
+            seen, todo = set(roots), list(roots)
+            while todo:
+                for child in children.get(todo.pop(), ()):
+                    if child not in seen:
+                        seen.add(child)
+                        todo.append(child)
+            return seen
+        milk = below({MILK})
+        female, male, either = below(SEX_ROOTS['female']) | milk, below(SEX_ROOTS['male']), below(EITHER_SEX_ROOTS)
+        for name, label in labels.items():
+            if not name.startswith(prefix) or not label or str(label).lower().startswith('obsolete') or name in either \
+                    or name in SEX_EXCLUDED:
+                continue
+            if (name in female) != (name in male):
+                sex = 'female' if name in female else 'male'
+                if {w.lower() for w in SEX_WORD.findall(str(label))} - {sex}:
+                    continue
+                rows.append({'UBERONOntologyIndex': name.replace('_', ':'), 'Label': str(label),
+                             'BiologicalSex': sex, 'Is Milk': name in milk})
+    df = pd.DataFrame(rows, columns=['UBERONOntologyIndex', 'Label', 'BiologicalSex', 'Is Milk'])
+    return df.sort_values('UBERONOntologyIndex', kind='stable').reset_index(drop=True)
 
 
 def get_doid_parents(owl_path):
@@ -207,6 +273,9 @@ if __name__ == '__main__':
     uberon_ontology_table = pd.concat([uberon_onto, cl_onto, po_onto], ignore_index=True, sort=False)
     uberon_ontology_table['UBERONOntologyIndex'] = uberon_ontology_table['UBERONOntologyIndex'].str.replace('_', ':')
 
+    print('Processing body parts only one sex has,..')
+    sex_specific_parts = get_sex_specific_parts(args.path_to_uberon_owl, args.path_to_cl_owl)
+
     #environment ontology
     print('Processing environmental biome ontology,..')
     envBiome_onto = get_ontology_table(args.path_to_biome_envs_owl, ont_prefix = 'ENVO_', index_column_name = 'ENVOEnvironmentBiomeIndex')
@@ -253,6 +322,7 @@ if __name__ == '__main__':
 
 
     uberon_ontology_table.to_csv('UBERON_CL_PO_ontology.csv', index=False)
+    sex_specific_parts.to_csv('UBERON_sex_specific_parts.csv', index=False)
     doid_ontology_table.to_csv('DOID_ontology.csv', index=False)
     doid_parents_table.to_csv('DOID_parents.csv', index=False)
     hpo_ontology_table.to_csv('HPO_ontology.csv', index=False)

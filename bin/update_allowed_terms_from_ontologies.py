@@ -4,6 +4,7 @@ import json
 from REDU_conversion_functions import get_uberon_table
 from REDU_conversion_functions import get_ontology_table
 from obo_tables import hpo_table, exposure_table
+from diet_columns import NOT_DIET_FOODS
 
 def exact_synonym_labels(table):
     """{exact synonym (lower case): label} for the synonyms of a Label/Synonym table that
@@ -244,6 +245,16 @@ if __name__ == "__main__":
 
         allowedTerm_dict['MassSpectrometer']['allowed_values'] = unique_labels
 
+
+    # Diet: the regimen terms of the seed, then the food terms (the food a subject ate), which are
+    # the FoodOntologyTerm (GFOP) terms, so both columns use the same food vocabulary; without the
+    # GFOP classes too general for a diet and water (diet_columns.NOT_DIET_FOODS)
+    if 'Diet' in allowedTerm_dict and 'FoodOntologyTerm' in allowedTerm_dict:
+        gfop = allowedTerm_dict['FoodOntologyTerm']['allowed_values']
+        regimens = [t for t in allowedTerm_dict['Diet']['allowed_values'] if t not in set(gfop)]
+        foods = [t for t in gfop if t not in NOT_DIET_FOODS]
+        allowedTerm_dict['Diet']['allowed_values'] = regimens + foods
+        print(f"Diet: {len(regimens)} regimen terms and {len(foods)} food terms")
 
     #print(f"Saving new allowed terms to {args.path_to_allowed_terms_json}")
 

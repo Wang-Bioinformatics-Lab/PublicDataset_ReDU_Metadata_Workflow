@@ -22,9 +22,10 @@ from REDU_conversion_functions import merge_repeated_fileobservations
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 from REDU_conversion_functions import map_instrument_to_allowed
-from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, food_ontology_term
 from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
+import diet_columns
 # time point, fasting and sample group rules shared with the Workbench converter
 from MWB_to_REDU import (_norm_key, _TP_UNIT_WORDS, timepoint_key_tier, timepoint_hours, _timepoint_key_unit,
                          sample_timepoint_hours, sample_fasting_status,
@@ -480,6 +481,10 @@ def _extraction_method(text, allowed):
     return t, 'ratio'
 
 
+# the usual spelling of vocabulary names spelled otherwise in the vocabulary
+_IS_SPELLINGS = {'amitryptiline': 'amitriptyline'}
+
+
 def _internal_standards(protocol_texts, allowed_terms):
     """InternalStandardsUsed term for the vocabulary compounds named in a sentence about
     internal standards ('ribitol was added as internal standard'), else None. Several
@@ -491,7 +496,8 @@ def _internal_standards(protocol_texts, allowed_terms):
             if not re.search(r'internal\s+standard', sent, re.I):
                 continue
             for t in singles:
-                for m in re.finditer(r'(?<![A-Za-z0-9-])' + re.escape(t) + r'(?![A-Za-z0-9-])', sent, re.I):
+                names = '|'.join(re.escape(n) for n in (t, _IS_SPELLINGS.get(t)) if n)
+                for m in re.finditer(r'(?<![A-Za-z0-9-])(?:' + names + r')(?![A-Za-z0-9-])', sent, re.I):
                     # an isotope-labelled form ('deuterated biotin', '[13C5]ribitol') is another compound
                     after = sent[m.end():m.end() + 60]
                     if after.lstrip().startswith('('):
@@ -1895,6 +1901,11 @@ _ML_GROUP_ID_KEY_RE = re.compile(r'identification|identifier|^(?:patients?|anima
 # and preparation settings)
 _ML_GROUP_TECH_KEY_RE = re.compile(r'\b(?:barcodes?|urls?|uri|accessions?|operators?|dilutions?|aliquots?|volumes?|'
                                    r'evaporation|dda|dia|analysis|analyses|sample roles?|storage|freezer|tubes?|box)\b')
+# time factors (left out by name) and their values that name a sampling before the intervention
+# ('Visit: Baseline', 'Time post intervention: 1 (Baseline)', 'Timepoint: Before treatment')
+_ML_GROUP_TIME_KEY_RE = re.compile(r'time|visit|\b(?:day|days|week|weeks|hour|hours|hr|hrs|month|months|tp|timept)\b')
+_ML_PRE_INTERVENTION_RE = re.compile(r'(?i)\bbaseline\b|\b(?:pre|before)[- ]?(?:the )?(?:intervention|treatment|diet|'
+                                     r'supplementation)\b')
 
 
 def _ml_unit_column(df, column):
@@ -2131,12 +2142,18 @@ def _specimen_family(body_part):
 
 
 # ---- SampleGroupFreeText ----
-def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Samples_Sample Name', study_id=''):
+def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Samples_Sample Name', study_id='',
+                          gfop=None):
     """Per-row sample group in the internal form of finalize_sample_groups (sample ID,
     then 'factor -> value' parts) from the Factor Value columns, in the study's factor
     order and wording (values with their unit). Factors that have a ReDU column of their
     own or are no groups (Workbench rules), and factors with a different value for nearly
-    every sample, are left out. ';' inside a name or value becomes ','."""
+    every sample, are left out. Of a time factor, the values naming a sampling before the
+    intervention ('Visit: Baseline') stay where another factor names a diet (gfop: GFOP label
+    index of diet_columns.gfop_index): the final table's diet pass (diet_columns.py) then does
+    not give these samples their arm's diet, which no column could tell it
+    (TimePointHoursRelativeToEvent needs hours); not where they would make more groups than
+    half the samples. ';' inside a name or value becomes ','."""
     out = pd.Series(np.nan, index=df.index, dtype=object)
     if not factor_columns or sample_column not in df.columns:
         return out
@@ -2147,11 +2164,16 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
                                .replace(_GROUP_PART, ' ').split())
     sid = df[sample_column].astype(str).str.strip()
     n = sid.nunique()
-    values, drop = {}, []
+    values, drop, pre_values = {}, [], {}
     for c in columns:
         key = clean(_ml_key(c))
         nk = _norm_key(key)
         v = df[c].map(clean)
+        if nk and _GROUP_KEY_EXCLUDE_RE.search(nk) and _ML_GROUP_TIME_KEY_RE.search(nk):
+            # (the value without its unit: 'Baseline', not 'Baseline hour')
+            pre = v.str.contains(_ML_PRE_INTERVENTION_RE, na=False) & ~_is_missing(df[c])
+            if pre.any():
+                pre_values[key] = v.where(pre)
         uc = _ml_unit_column(df, c)
         if uc is not None:
             unit = df[uc].map(clean).where(~_is_missing(df[uc]), '')
@@ -2178,10 +2200,22 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
     if not values:
         print(f"[SampleGroupFreeText] {study_id}: no grouping factors left")
         return out
-    text = pd.Series('', index=df.index, dtype=object)
-    for key, v in values.items():
-        part = (key + _GROUP_KV + v).where(v.notna(), '')
-        text = text.where(part == '', text.where(text == '', text + _GROUP_PART) + part)
+
+    def joined(factors):
+        text = pd.Series('', index=df.index, dtype=object)
+        for key, v in factors.items():
+            part = (key + _GROUP_KV + v).where(v.notna(), '')
+            text = text.where(part == '', text.where(text == '', text + _GROUP_PART) + part)
+        return text
+    text = joined(values)
+    if pre_values and gfop is not None and any(m.regimens or m.foods for key, v in values.items()
+                                               for m in (diet_columns.map_value(key, x, gfop) for x in sorted(v.dropna().unique()))):
+        keys = dict.fromkeys(clean(_ml_key(c)) for c in columns)
+        marked = joined({k: pre_values[k] if k in pre_values else values[k] for k in keys if k in pre_values or k in values})
+        groups = pd.DataFrame({'sid': sid, 't': marked})[marked != ''].drop_duplicates('sid')['t']
+        if groups.nunique() <= len(groups) / 2:
+            print(f"[SampleGroupFreeText] {study_id}: samplings before the intervention kept: {sorted(pre_values)}")
+            text = marked
     # one sample listed with different factors gets none
     ok = pd.DataFrame({'sid': sid, 't': text}).groupby('sid')['t'].transform('nunique') == 1
     text = text.where(ok & (text != ''))
@@ -2534,6 +2568,15 @@ def Metabolights2REDU(study_id, **kwargs):
                         _blank = df_study['Samples_Organism part'].isna() | df_study['Samples_Organism part'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
                         df_study.loc[_blank, 'Samples_Organism part'] = df_study.loc[_blank, _c]
                         _bp_accession.loc[_blank] = _body_part_accession(_c).loc[_blank]
+                # One body part text recorded with several accessions is a spreadsheet fill-down
+                # (MTBLS12824: 'muscle' with UBERON_0002385, _0002386, ... one per sample, among them
+                # clitoris): those accessions are not used, the text is
+                _bp_text = df_study['Samples_Organism part'].astype(str).str.strip().str.lower()
+                _fill_down = ~_is_missing(df_study['Samples_Organism part']) & \
+                    (_bp_accession.where(_bp_accession != '').groupby(_bp_text).transform('nunique') > 1)
+                if _fill_down.any():
+                    print(f'{study_id}: organism part {sorted(_bp_text[_fill_down].unique())} has several term accessions; they are not used')
+                    _bp_accession = _bp_accession.where(~_fill_down, '')
 
                 df_study['UBERONBodyPartName'] = 'missing value'
 
@@ -3064,6 +3107,38 @@ def Metabolights2REDU(study_id, **kwargs):
                 _need = _is_missing(df_study[column]) & values.notna()
                 df_study.loc[_need, column] = values[_need]
 
+            #add FoodOntologyTerm
+            #######
+            # Samples whose organism part / sample type / variant names a food or beverage product
+            # ('Cheese', 'Wine', 'kefir', 'Infant Formula'); their other characteristics and factors
+            # can narrow it (grape cultivar) or rule it out (digests). SampleType and NCBITaxonomy
+            # stay those of the organism (cheese of Bos taurus is an animal sample)
+            _food_cols = [c for p in ('organism part', 'sample type', 'variant') for c in df_study.columns
+                          if re.fullmatch(r'Samples_%s(?:_\d+)?' % p, str(c), re.I)]
+            if _food_cols:
+                _gfop = allowedTerm_dict['FoodOntologyTerm']['allowed_values'] if 'FoodOntologyTerm' in allowedTerm_dict else []
+                _blank = pd.Series('', index=df_study.index)
+                _cache = {}
+                def _food_of(k):
+                    if k not in _cache:
+                        _cache[k] = food_ontology_term(k, _gfop)
+                    return _cache[k]
+                _food = pd.Series([_food_of(k) for k in zip(*[df_study[c] for c in _food_cols])], index=df_study.index, dtype=object)
+                # no blanks, QCs or standards
+                _food = _food.where(_real_sample & ~df_study.get('SampleType', _blank).astype(str).str.contains(
+                    r'blank|pool_QC|molecular_standards|reference material|personal care product', regex=True))
+                _is_food = _food.notna()
+                if _is_food.any():
+                    _detail_cols = [c for c in df_study.columns
+                                    if c not in _food_cols and _sample_kind_pos.get(c) in ('Characteristics', 'Factor Value')]
+                    _food[_is_food] = [food_ontology_term(list(v), _gfop, organism=o, sample_type=s, detail_values=list(d))
+                                       for v, d, o, s in zip(df_study.loc[_is_food, _food_cols].values,
+                                                             df_study.loc[_is_food, _detail_cols].values,
+                                                             df_study.get('NCBITaxonomy', _blank)[_is_food],
+                                                             df_study.get('SampleType', _blank)[_is_food])]
+                    if _food.notna().any():
+                        _fill('FoodOntologyTerm', _food)
+
             #add SampleExtractionMethod / InternalStandardsUsed (study protocols)
             #######
             _extraction_text = ' '.join(d for n, d in protocols if re.match(r'\s*extraction', n, re.I))
@@ -3346,7 +3421,8 @@ def Metabolights2REDU(study_id, **kwargs):
                 print(f"Could not derive fasting states: {type(e).__name__}: {e}")
             try:
                 _groups = ml_sample_group_texts(df_study, [c for c in df_study.columns if _sample_kind_pos.get(c) == 'Factor Value'],
-                                                [f.get('name') for f in _content.get('factors') or []], study_id=study_id)
+                                                [f.get('name') for f in _content.get('factors') or []], study_id=study_id,
+                                                gfop=diet_columns.gfop_index((allowedTerm_dict.get('FoodOntologyTerm') or {}).get('allowed_values', [])))
                 if _groups.notna().any():
                     df_study['SampleGroupFreeText'] = _groups.fillna('missing value')
             except Exception as e:
