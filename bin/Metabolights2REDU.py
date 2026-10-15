@@ -3379,8 +3379,17 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_doid_csv", type=str, default="none", help="Optional path to the prepared DOID ontology csv (exact synonyms and DOID accessions for DOIDCommonName)")
     parser.add_argument("--path_to_hpo_csv", type=str, default="none", help="Optional path to the prepared HPO ontology csv (HPOCommonName)")
     parser.add_argument("--path_to_exposure_csv", type=str, default="none", help="Optional path to the prepared ECTO/PECO exposure csv (Exposure)")
+    parser.add_argument("--path_to_ncbi_nodes_dmp", type=str, required=True, help="nodes.dmp of the pinned NCBI taxdump (fetchReferenceData); NCBI lineages for SampleType")
+    parser.add_argument("--path_to_ncbi_names_dmp", type=str, required=True, help="names.dmp of the pinned NCBI taxdump")
+    parser.add_argument("--path_to_ncbi_merged_dmp", type=str, required=True, help="merged.dmp of the pinned NCBI taxdump")
             
     args = parser.parse_args()
+
+    # NCBI lineages (get_taxonomy_info) from the pinned taxonomy, no E-utilities requests; loaded
+    # before any study, so a missing or broken taxdump stops the run here
+    import REDU_conversion_functions
+    REDU_conversion_functions.use_pinned_ncbi_taxonomy(args.path_to_ncbi_nodes_dmp, args.path_to_ncbi_names_dmp,
+                                                       args.path_to_ncbi_merged_dmp)
 
     if args.study_id == 'ALL':
         public_metabolights_studies = safe_api_request('https://www.ebi.ac.uk:443/metabolights/ws/studies', retries = 5)

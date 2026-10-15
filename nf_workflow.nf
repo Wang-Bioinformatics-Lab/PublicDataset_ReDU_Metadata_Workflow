@@ -288,6 +288,10 @@ process mlRun {
     // staged for the MetaboLights cell lines; Metabolights2REDU.py does not take
     // --path_to_cellosaurus_tsv yet (its CellLine / CellLineIndex are 'missing value')
     path cellosaurus_tsv
+    // pinned NCBI taxdump (fetchReferenceData): lineages for SampleType without E-utilities
+    path nodes_dmp
+    path names_dmp
+    path merged_dmp
     val after_listing
 
     output:
@@ -307,6 +311,9 @@ process mlRun {
     --path_to_doid_parents_csv ${doid_parents_csv} \
     --path_to_hpo_csv ${hpo_csv} \
     --path_to_exposure_csv ${exposure_csv} \
+    --path_to_ncbi_nodes_dmp ${nodes_dmp} \
+    --path_to_ncbi_names_dmp ${names_dmp} \
+    --path_to_ncbi_merged_dmp ${merged_dmp} \
     || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; }
     """
 }
@@ -760,7 +767,7 @@ workflow {
     // one request stream per repository: the file listing first, then the converter
     ml_files_ch = mlFiles(1)
     ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
-        ml_files_ch)
+        ref.nodes, ref.names, ref.merged, ml_files_ch)
     ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
 
     // NORMAN
