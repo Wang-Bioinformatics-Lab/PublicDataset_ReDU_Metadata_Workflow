@@ -10,6 +10,9 @@ import html
 import math
 import itertools
 import traceback
+import csv
+import io
+from urllib.parse import quote
 import numpy as np
 from tqdm import tqdm
 from REDU_conversion_functions import age_category
@@ -22,6 +25,11 @@ from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
 from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
+# time point, fasting and sample group rules shared with the Workbench converter
+from MWB_to_REDU import (_norm_key, _TP_UNIT_WORDS, timepoint_key_tier, timepoint_hours, _timepoint_key_unit,
+                         sample_timepoint_hours, sample_fasting_status,
+                         _GROUP_KEY_EXCLUDE_RE, _GROUP_ID_KEY_RE, _GROUP_NA_VALUES, _GROUP_SID, _GROUP_KV, _GROUP_PART,
+                         finalize_sample_groups)
 
 
 
@@ -29,6 +37,10 @@ from ms_instrument_matching import match_mass_spectrometer
 # MS file formats REDU indexes, and the compression suffixes MetaboLights uses for them
 # (x.raw.zip, x.d.zip, x.cdf.gz, x.mzXML.lzma ...). A compressed file is listed under its
 # real path; only single files of a supported format qualify (a bare x.zip is not indexed).
+# one session (kept-alive connection) for all requests to EBI, made one at a time: EBI bans
+# IPs that open many concurrent connections
+EBI_SESSION = requests.Session()
+
 MS_FILE_EXTENSIONS = ['.mzml', '.mzxml', '.cdf', '.raw', '.wiff', '.d']
 COMPRESSION_SUFFIXES = ['.zip', '.gz', '.lzma', '.bz2', '.7z', '.xz', '.rar']
 COMPRESSED_MS_FILE_EXTENSIONS = [e + c for e in MS_FILE_EXTENSIONS for c in COMPRESSION_SUFFIXES]
@@ -528,7 +540,7 @@ def safe_api_request(url, retries=3, expected_codes={200}):
 
   for _ in range(retries):
     try:
-      response = requests.get(url, timeout=(10, 300))
+      response = EBI_SESSION.get(url, timeout=(10, 300))
       print(f"Requested: {url}")
       if response.status_code in expected_codes:
         data = response.json()
@@ -545,6 +557,312 @@ def safe_api_request(url, retries=3, expected_codes={200}):
     time.sleep(10)
   print(f"All retries failed for {url}.")
   return None
+
+# ---------------------------------------------------------------------------------------------
+# Study record when the per-study API is down
+#
+# The converter reads the study record of 'ws/studies/public/study/<MTBLS>' (assays with their
+# technology and assay table, the sample table, protocols, submission year, title, description,
+# design descriptors and factors). When that endpoint fails with server errors or timeouts
+# (EBI maintenance: HTTP 503 for every study), the same structure is built from the study's
+# ISA-Tab metadata, taken from
+#   1. the API's working copy ('ws/studies/<MTBLS>/investigation' and
+#      'ws/studies/<MTBLS>/<s_ or a_ file>'), which is what the study record is made from, else
+#   2. the public FTP folder (i_Investigation.txt, s_ and a_ files over HTTPS), which can lag
+#      behind the working copy (assay sheets naming files EBI has compressed since, ...).
+# Headers follow the API: 'Characteristics[Organism part]' -> header 'Organism part' with
+# fieldType 'Characteristics' (also 'Factor Value', 'Parameter Value', 'Comment'; a repeated
+# one keeps its name), other columns keep their name with the pandas suffix for repeats
+# ('Term Source REF.1', 'Unit.2'), and the pandas NA words ('NA', 'None', 'n/a') become ''.
+# ---------------------------------------------------------------------------------------------
+METABOLIGHTS_WS = 'https://www.ebi.ac.uk/metabolights/ws/studies/'
+METABOLIGHTS_FTP = 'https://ftp.ebi.ac.uk/pub/databases/metabolights/studies/public/'
+# consecutive failures (server errors / timeouts) after which a source is taken as down and
+# skipped; while down, it is tried again once every REPROBE_EVERY studies
+SOURCE_DOWN_AFTER = 2
+REPROBE_EVERY = 100
+_SOURCE_STATE = {name: {'consecutive_failures': 0, 'down': False, 'since_probe': 0} for name in ('api', 'workcopy')}
+# 'Kind[name]' headers (anything after the first ']' is ignored, as in the API: 'Factor
+# Value[Storage location]]', the pandas suffix of repeats '.1')
+_ISA_BRACKET_HEADER = re.compile(r'([^\[\]]*?)\s*\[([^\]]*)\].*', re.S)
+_ISA_CANONICAL_KINDS = ('Characteristics', 'Factor Value', 'Parameter Value', 'Comment')
+_ISA_IN_VENDOR_FOLDER = re.compile(r'(.*\.(?:d|raw))/[^/]*', re.I)
+_MS_TECHNOLOGIES = ('mass spectrometry', 'mass spectrometry assay')
+
+
+class SourceUnavailable(Exception):
+    """A metadata source answered with server errors or timed out."""
+
+
+def _ebi_get(url, retries=3, pause=5):
+    """GET with the shared session: the response for 200, None for 401/403/404; raises
+    SourceUnavailable after repeated server errors or timeouts."""
+    last = None
+    for attempt in range(retries):
+        try:
+            response = EBI_SESSION.get(url, timeout=(10, 300))
+            if response.status_code == 200:
+                return response
+            if response.status_code in (401, 403, 404):
+                return None
+            last = f'HTTP {response.status_code}'
+        except requests.RequestException as e:
+            last = f'{type(e).__name__}: {e}'
+        if attempt + 1 < retries:
+            time.sleep(pause * (attempt + 1))
+    raise SourceUnavailable(f'{url}: {last}')
+
+
+def _decode(content):
+    try:
+        return content.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        return content.decode('latin-1')
+
+
+def fetch_workcopy_investigation(study_id):
+    """i_Investigation.txt of the API's working copy (text), None if not available."""
+    response = _ebi_get(METABOLIGHTS_WS + study_id + '/investigation')
+    return None if response is None else _decode(response.content)
+
+
+def fetch_workcopy_table(study_id, file_name):
+    """An s_ / a_ table of the API's working copy ({'header': {name: index}, 'data': {'rows':
+    [...]}}), None if not available."""
+    response = _ebi_get(METABOLIGHTS_WS + study_id + '/' + quote(file_name))
+    return None if response is None else response.json()
+
+
+def fetch_isa_file(study_id, file_name):
+    """Text of one ISA-Tab file from the public FTP folder (over HTTPS), None if absent."""
+    response = _ebi_get(METABOLIGHTS_FTP + study_id + '/' + quote(file_name))
+    return None if response is None else _decode(response.content)
+
+
+def _parse_investigation(text):
+    """'Study ...' rows of an i_Investigation.txt (the STUDY part): key -> list of values.
+    Quoted values may span lines; trailing empty values are dropped."""
+    out, in_study = {}, False
+    for row in csv.reader(io.StringIO(text), delimiter='\t', strict=False):
+        if not row:
+            continue
+        key = row[0].strip()
+        if key == 'STUDY':
+            in_study = True
+            continue
+        if in_study and key and key not in out:
+            values = [v.strip() for v in row[1:]]
+            while values and values[-1] == '':
+                values.pop()
+            out[key] = values
+    return out
+
+
+def _table_record(raw_headers, rows):
+    """{'fields', 'data'} as in the API study record from the raw column names (pandas
+    suffixes '.1', ... on repeats) and the rows (lists of values in column order), with the
+    API's reading of ISA-Tab: a repeated 'Characteristics[...]' etc. keeps its name; a
+    bracketed name with 'comment' in it is a Comment ('Factor Value[Comments]'); other
+    bracketed names count only with the exact kind ('Factor value[Sex]', 'Factor[Treatment]'
+    are left out); columns without a name are left out; rows whose first value starts with
+    '#' are comment lines."""
+    fields, keep = {}, []
+    for i, raw in enumerate(raw_headers):
+        if not isinstance(raw, str) or not raw.strip():
+            continue  # column without a header
+        m = _ISA_BRACKET_HEADER.fullmatch(raw.strip())
+        if m:
+            kind, header = m.group(1).strip(), m.group(2)
+            if 'comment' in raw.lower():
+                kind = 'Comment'
+            elif kind not in _ISA_CANONICAL_KINDS:
+                continue
+            raw = f'{kind}[{header}]'
+        else:
+            header, kind = raw, 'basic'
+        fields[f'{i}~{raw.lower()}'] = {'index': i, 'header': header, 'fieldType': kind, 'description': '',
+                                       'cleanHeader': header}
+        keep.append(i)
+    rows = [row for row in rows if not (row and str(row[0]).lstrip().startswith('#'))]
+    return {'fields': fields, 'data': [[row[i] for i in keep] for row in rows]}
+
+
+def _isa_table(text):
+    """An ISA-Tab table file (FTP) as the API record gives it."""
+    df = pd.read_csv(io.StringIO(text), sep='\t', dtype=str, header=None)
+    if len(df) == 0:
+        return {'fields': {}, 'data': []}
+    raw, seen = [], {}
+    for h in df.iloc[0].tolist():
+        if isinstance(h, str) and h.strip():
+            n = seen.get(h, 0)  # pandas-style suffix of repeated names, as in the working copy
+            seen[h] = n + 1
+            h = h if n == 0 else f'{h}.{n}'
+        raw.append(h)
+    return _table_record(raw, df.iloc[1:].fillna('').values.tolist())
+
+
+_NA_WORDS = {'#N/A', '#N/A N/A', '#NA', '-1.#IND', '-1.#QNAN', '-NaN', '-nan', '1.#IND', '1.#QNAN', '<NA>', 'N/A',
+             'NA', 'NULL', 'NaN', 'None', 'n/a', 'nan', 'null'}
+
+
+def _ws_table(js):
+    """An s_ / a_ table of the working copy (JSON) as the API record gives it."""
+    header = (js or {}).get('header') or {}
+    # sample tables give name -> index, assay tables name -> {'index': ..., ...}
+    position = lambda v: v.get('index', 0) if isinstance(v, dict) else v
+    names = [n for n, _ in sorted(header.items(), key=lambda kv: position(kv[1]))]
+    rows = sorted(((js or {}).get('data') or {}).get('rows') or [], key=lambda r: r.get('index', 0))
+    value = lambda v: '' if v is None or str(v) in _NA_WORDS else str(v)
+    return _table_record(names, [[value(r.get(n)) for n in names] for r in rows])
+
+
+def _record_from_isa(study_id, inv_text, get_table):
+    """The study record ({'content': ...}) from the investigation text and a function giving
+    the API-like table of an s_ / a_ file name (None if missing)."""
+    inv = _parse_investigation(inv_text)
+    first = lambda key: (inv.get(key) or [''])[0]
+    at = lambda key, i: (inv.get(key) or [])[i] if i < len(inv.get(key) or []) else ''
+
+    year = None
+    for key in ('Study Submission Date', 'Study Public Release Date'):
+        m = re.search(r'(19|20)\d{2}', first(key))
+        if m:
+            year = int(m.group(0))
+            break
+    names = inv.get('Study Protocol Name') or []
+    protocols = [{'name': n, 'description': at('Study Protocol Description', i)} for i, n in enumerate(names)]
+    types = inv.get('Study Design Type') or []
+    descriptors = [{'description': (f"{at('Study Design Type Term Source REF', i)}:{t}"
+                                    if at('Study Design Type Term Source REF', i) else t)}
+                   for i, t in enumerate(types) if t]
+    factors = [{'name': n} for n in inv.get('Study Factor Name') or [] if n]
+
+    sample_file = first('Study File Name')
+    sample_table = get_table(sample_file) if sample_file else None
+    if sample_table is None:
+        raise RuntimeError(f'{study_id}: sample file {sample_file!r} not available')
+    assays = []
+    for i, name in enumerate(inv.get('Study Assay File Name') or []):
+        if not name:
+            continue
+        technology = at('Study Assay Technology Type', i)
+        table = {'fields': {}, 'data': []}
+        # only mass spectrometry assays are read by the converter
+        if technology.strip().lower() in _MS_TECHNOLOGIES:
+            table = get_table(name)
+            if table is None:
+                print(f'{study_id}: assay file {name} not available')
+                continue
+        assays.append({'measurement': at('Study Assay Measurement Type', i), 'technology': technology,
+                       'platform': at('Study Assay Technology Platform', i), 'fileName': name,
+                       'assayNumber': str(i + 1), 'assayTable': table})
+    content = {'studyIdentifier': first('Study Identifier') or study_id, 'title': first('Study Title'),
+               'description': first('Study Description'), 'studyDescription': None,
+               'factors': factors, 'descriptors': descriptors, 'protocols': protocols,
+               'derivedData': {'submissionYear': year}, 'assays': assays, 'sampleTable': sample_table}
+    return {'content': content}
+
+
+def study_details_from_workcopy(study_id):
+    """The study record built from the API's working copy of the ISA-Tab files; None if the
+    working copy has no investigation for the study."""
+    inv_text = fetch_workcopy_investigation(study_id)
+    if inv_text is None or not inv_text.strip():
+        return None
+
+    def table(name):
+        js = fetch_workcopy_table(study_id, name)
+        return None if js is None else _ws_table(js)
+    details = _record_from_isa(study_id, inv_text, table)
+    details['content']['source'] = 'API working copy (ISA-Tab)'
+    return details
+
+
+def study_details_from_isa(study_id):
+    """The study record built from the public FTP ISA-Tab files; {'content': None, ...} if
+    the study has no public investigation file."""
+    inv_text = fetch_isa_file(study_id, 'i_Investigation.txt')
+    if inv_text is None:
+        return {'content': None, 'message': 'no public ISA-Tab investigation file'}
+
+    def table(name):
+        text = fetch_isa_file(study_id, name)
+        if text is None:
+            return None
+        t = _isa_table(text)
+        # the FTP copy of an assay sheet can still name a file inside a vendor folder
+        # ('x.D/data.ms', 'x.raw/_FUNC001.DAT', 'x.D/') where the working copy (and the FTP
+        # data) have the folder, often compressed since ('x.D.zip'): take the folder
+        fields = sorted(t['fields'].values(), key=lambda f: f['index'])
+        for j, f in enumerate(fields):
+            if name.startswith('a_') and re.match(r'(?:Raw|Derived) Spectral Data File', f['header']):
+                for row in t['data']:
+                    m = _ISA_IN_VENDOR_FOLDER.fullmatch(str(row[j]))
+                    if m:
+                        row[j] = m.group(1)
+        return t
+    details = _record_from_isa(study_id, inv_text, table)
+    details['content']['source'] = 'ISA-Tab files (EBI FTP)'
+    return details
+
+
+def _source_usable(name):
+    """Whether to try a source for this study (always while up; one probe every
+    REPROBE_EVERY studies while down), and the number of attempts."""
+    s = _SOURCE_STATE[name]
+    if not s['down']:
+        return True, 3
+    s['since_probe'] += 1
+    if s['since_probe'] >= REPROBE_EVERY:
+        s['since_probe'] = 0
+        return True, 1
+    return False, 0
+
+
+def _source_result(name, ok):
+    s = _SOURCE_STATE[name]
+    if ok:
+        if s['down']:
+            print(f'MetaboLights {name} answers again; using it for the next studies')
+        s.update(consecutive_failures=0, down=False, since_probe=0)
+        return
+    s['consecutive_failures'] += 1
+    if not s['down'] and s['consecutive_failures'] >= SOURCE_DOWN_AFTER:
+        s['down'] = True
+        print(f'MetaboLights {name} failed for {SOURCE_DOWN_AFTER} studies in a row; skipping it '
+              f'(probed again every {REPROBE_EVERY} studies)')
+
+
+def get_study_details(study_id):
+    """The study record from the per-study API; when it fails with server errors / timeouts
+    (not for 401/403/404: private or unknown studies), from the API's working copy of the
+    ISA-Tab files, else from the public FTP ISA-Tab files. A source that fails for
+    SOURCE_DOWN_AFTER studies in a row is skipped (one probe every REPROBE_EVERY studies),
+    so a down API does not cost 30 s per study. Requests are sequential, on one session."""
+    use, retries = _source_usable('api')
+    if use:
+        details = safe_api_request(METABOLIGHTS_WS + 'public/study/' + study_id, retries=retries)
+        _source_result('api', details is not None)
+        if details is not None:
+            return details
+    use, retries = _source_usable('workcopy')
+    if use:
+        try:
+            details = study_details_from_workcopy(study_id)
+            _source_result('workcopy', True)
+            if details is not None:
+                print(f'{study_id}: study record from the API working copy of the ISA-Tab files')
+                return details
+        except SourceUnavailable as e:
+            _source_result('workcopy', False)
+            print(f'{study_id}: working copy not available ({e})')
+    print(f'{study_id}: study record from the ISA-Tab files on the EBI FTP server')
+    try:
+        return study_details_from_isa(study_id)
+    except SourceUnavailable as e:
+        raise RuntimeError(f'Could not retrieve study details for {study_id}: {e}')
+
 
 def rename_duplicated_column_names(df):
     # We need this to get rid of duplicated columns
@@ -654,7 +972,7 @@ def _investigation_submission_year(study_id):
     API has no submissionYear. Returns None if it cannot be read."""
     url = f"https://ftp.ebi.ac.uk/pub/databases/metabolights/studies/public/{study_id}/i_Investigation.txt"
     try:
-        response = requests.get(url, timeout=(10, 120))
+        response = EBI_SESSION.get(url, timeout=(10, 120))
         if response.status_code != 200:
             return None
     except requests.RequestException:
@@ -1499,6 +1817,332 @@ def _study_disease_labels(idx, df, colkind, descriptors, factor_names, title, te
     return doid, health, info
 
 
+# ---------------------------------------------------------------------------
+# TimePointHoursRelativeToEvent, FastingStatus, SampleGroupFreeText
+# ---------------------------------------------------------------------------
+# The rules are those of the Workbench converter (MWB_to_REDU.py), applied to the
+# Characteristics / Factor Value columns of the ISA sample table. ISA-Tab keeps the unit
+# of a value in the 'Unit' column right after it ('24' + 'hour').
+# time-like sample columns that are no sampling time relative to an event: light / dark
+# periods and other growth conditions, symptom counts, plant / embryo ages (days after
+# sowing, flowering, fertilisation), birth months, urine collection periods, ...
+_ML_TP_KEY_EXCLUDE_RE = re.compile(
+    r'\b(?:light|dark|photoperiod|dawn|dusk|temperature|humidity|salt|quantity|watering|container|medium|'
+    r'sonication|partition|active|average|mean|total|fever|diarrh\w*|allergy|birth|sowing|sown|planting|'
+    r'germination|anthesis|pollination|flowering|fertili[sz]ation|urine|sputter|coating|hospitali[sz]\w*|disease|illness|'
+    r'smok\w*|month of)\b'
+    # keys that hold a time themselves ('4 day post-exposure sampling', 'Salt_Quantity_after_08d'):
+    # their values are no time ('0' / '1', concentrations)
+    r'|\d\s*-?\s*(?:s|sec|min|mins|minutes?|h|hr|hrs|hours?|d|days?|w|wk|wks|weeks?|mo|months?|y|yrs?|years?)\b')
+# keys that name the reference event ('Time post intervention', 'Timepoint postpartum')
+_ML_TP_EVENT_KEY_RE = re.compile(r'\bpost\w*|\b(?:after|since|from|following|intervention|treatment|treated|therapy|'
+                                 r'surgery|transplant\w*|infection|inoculation|injury|exposure|dosing|supplement\w*|'
+                                 r'diet|baseline|follow)\b')
+# an ISA unit that is one time unit ('hour', 'Days', 'hour post inoculation')
+_ML_TIME_UNIT_RE = re.compile(r'(' + '|'.join(sorted(_TP_UNIT_WORDS, key=len, reverse=True)) + r')'
+                              r'(?:\s+(?:post|after|following)\b.*)?')
+_ML_BARE_NUMBER_RE = re.compile(r'[-+]?\d+(?:\.\d+)?')
+_ML_GROUP_NA_VALUES = set(_GROUP_NA_VALUES) | {'not applicable', 'not available', 'missing value'}
+# subject identifiers under other names than the Workbench ones ('Identification Number', 'Patient')
+_ML_GROUP_ID_KEY_RE = re.compile(r'identification|identifier|^(?:patients?|animals?|individuals?|donors?|mice|mouse|rats?|'
+                                 r'pigs?|participants?|persons?|volunteers?|subject (?:no|number|code))$')
+# technical sample attributes that are no groups of the study design (identifiers, analysis
+# and preparation settings)
+_ML_GROUP_TECH_KEY_RE = re.compile(r'\b(?:barcodes?|urls?|uri|accessions?|operators?|dilutions?|aliquots?|volumes?|'
+                                   r'evaporation|dda|dia|analysis|analyses|sample roles?|storage|freezer|tubes?|box)\b')
+
+
+def _ml_unit_column(df, column):
+    """The ISA 'Unit' column directly after a value column, else None."""
+    i = df.columns.get_loc(column)
+    if isinstance(i, (int, np.integer)) and i + 1 < len(df.columns) and str(df.columns[i + 1]).startswith('Samples_Unit'):
+        return df.columns[i + 1]
+    return None
+
+
+def _ml_time_unit(unit):
+    """'hour' for the ISA unit 'hour' / 'Hours' / 'hour post inoculation', '' for an
+    empty unit, None for any other unit."""
+    u = ' '.join(str(unit).strip().lower().split())
+    if u in _MISSING_VALUES or u == '-':
+        return ''
+    m = _ML_TIME_UNIT_RE.fullmatch(u)
+    return m.group(1) if m else None
+
+
+def _ml_key(column):
+    """Factor / characteristic name of a sample column ('Samples_Time point_1' -> 'Time point')."""
+    return re.sub(r'_\d+$', '', str(column)[len('Samples_'):] if str(column).startswith('Samples_') else str(column))
+
+
+def _ml_long_values(df, columns, unit_in_key=False):
+    """The sample columns as a long table (row position as 'filename', Key, Value), as the
+    Workbench functions read them. A bare number gets the time unit of its 'Unit' column
+    ('24' + 'hour' -> '24 hour', or the key 'Fasting (hour)' with unit_in_key); a number
+    with another unit ('10' + 'millimolar') is no time."""
+    parts = []
+    pos = np.arange(len(df))
+    for c in columns:
+        v = df[c].astype(str).str.strip().where(~_is_missing(df[c]), '')
+        key = pd.Series(_ml_key(c), index=df.index)
+        uc = _ml_unit_column(df, c)
+        if uc is not None:
+            unit = df[uc].map(_ml_time_unit)
+            bare = v.str.fullmatch(_ML_BARE_NUMBER_RE)
+            if unit_in_key:
+                key = key.where(~(bare & unit.fillna('').ne('')), key + ' (' + unit.fillna('') + ')')
+            else:
+                v = v.where(~(bare & unit.fillna('').ne('')), v + ' ' + unit.fillna(''))
+            v = v.where(~(bare & unit.isna()), '')
+        parts.append(pd.DataFrame({'filename': pos, 'Key': key.values, 'Value': v.values}))
+    if not parts:
+        return pd.DataFrame(columns=['filename', 'Key', 'Value'])
+    long = pd.concat(parts, ignore_index=True)
+    return long[long['Value'] != ''].reset_index(drop=True)
+
+
+def ml_sample_timepoints(df, columns, study_text=''):
+    """Per-row TimePointHoursRelativeToEvent (Series on df's index) from the time-point
+    columns (Workbench rules: explicit number and time unit, in the value or its 'Unit'
+    column; ages, storage / incubation times, clock times, dates, ranges excluded)."""
+    columns = [c for c in columns if timepoint_key_tier(_ml_key(c)) is not None
+               and not _ML_TP_KEY_EXCLUDE_RE.search(_norm_key(_ml_key(c)))]
+    # months / years without a named event and without a baseline 0 are mostly ages
+    # ('Collection time' 6 / 24 / 36 / 48 months in a longitudinal animal study)
+    keep = []
+    for c in columns:
+        part = _ml_long_values(df, [c])
+        key = _ml_key(c)
+        long_unit = _timepoint_key_unit(key) in ('mo', 'y') or \
+            part['Value'].str.lower().str.contains(r'\b(?:mo|months?|y|yrs?|years?)\b', regex=True).any()
+        hours = {timepoint_hours(v, key) for v in part['Value']} - {None}
+        if long_unit and 0 not in hours and not _ML_TP_EVENT_KEY_RE.search(_norm_key(key)):
+            print(f"[TimePointHoursRelativeToEvent] column {key!r} not used: months / years without an event or baseline")
+            continue
+        keep.append(c)
+    columns = keep
+    out = pd.Series(np.nan, index=df.index, dtype=object)
+    long = _ml_long_values(df, columns)
+    if len(long) == 0:
+        return out
+    hours = sample_timepoint_hours(long, study_text)
+    per_row = hours.groupby(long['filename']).first().dropna()
+    out.iloc[per_row.index.to_numpy()] = per_row.values
+    return out
+
+
+def ml_sample_fasting(df, columns):
+    """Per-row FastingStatus (Series on df's index) from fasting / feeding columns and
+    fasting-state values of design columns (Workbench rules)."""
+    out = pd.Series(np.nan, index=df.index, dtype=object)
+    long = _ml_long_values(df, columns, unit_in_key=True)
+    if len(long) == 0:
+        return out
+    # 'Non-fasting' / 'not fasting' as the Workbench words 'non-fasted' / 'not fasted'
+    long['Value'] = long['Value'].str.replace(r'(?i)\bnon[- ]?fasting\b', 'non-fasted', regex=True) \
+        .str.replace(r'(?i)\bnot fasting\b', 'not fasted', regex=True)
+    status = sample_fasting_status(long)
+    per_row = status.groupby(long['filename']).first().dropna()
+    out.iloc[per_row.index.to_numpy()] = per_row.values
+    return out
+
+
+# ---- study-level fasting statement in the protocols ----
+# protocols that do not describe the subjects
+_FAST_PROTOCOL_SKIP_RE = re.compile(r'chromatograph|mass spec|data transformation|metabolite identification|nmr|'
+                                    r'flow injection|histolog|magnetic resonance|assay|normali[sz]ation', re.I)
+# fasting words (a bare 'fast' only in 'an overnight fast', 'a 12-h fast', 'to fast')
+_FAST_WORD_RE = re.compile(r'\b(?:non-?|un)?fast(?:ed|ing)\b|\bto fast\b|\bfast overnight\b|'
+                           r'\b(?:an?|overnight|h|hr|hrs|hours?|\d+)[- ]fast(?![\w-])(?!\s*,)(?!\s+(?:and|gas|gc|lc|liquid|'
+                           r'polarity|switching|filtration|scan|untargeted|lipid|screening|robust|sampling|isolation|data|'
+                           r'fourier|spin|heating|way|mode|growing|growth|prep|method|protocol|freezing|cooling)\b)')
+# fasting values as measurement names ('fasting blood glucose', 'impaired fasting glucose')
+_FAST_MEASURE_RE = re.compile(r'(?:impaired )?fasting (?:blood |plasma |serum |venous )?(?:glucose|insulin|sugar|'
+                              r'blood sugar|plasma glucose|lipids?|lipid profiles?|triglycerides?|tg|cholesterol|hdl|'
+                              r'ldl|c-?peptide|levels?|values?)\b(?: \([a-z]+\))?|\b(?:fbg|fpg|fbs)\b')
+# the statement is not about one fasting condition of all sampled subjects
+_FAST_UNCLEAR_RE = re.compile(
+    r'intermittent|ramadan|re-?fe(?:d|eding)|\b(?:fed|fasted|fasting|fast)\s+or\b|\bor\s+(?:fed|fasted|fasting|non)|'
+    r'\b(?:fed|fasted|fasting)\s+and\s+(?:fed|fasted|fasting|non)|\bvs\b|versus|\beither\b|\bsome\b|subset|\bhalf\b|'
+    r'majority|\bmost\b|\bgroups?\b|\bexcept|\bunless\b|\bif\b|possible|not specified|not required|restriction|'
+    r'regardless|optional|respective|durations|different|various|varied|fasting experiment|challeng|\bdose|administ|'
+    r'received|inject|infus|gavage|weigh|larva|starv|pre-?fasting|post-?fasting|before (?:the )?fasting|baseline|'
+    r'infect|inocul|tolerance|\bgtt|\bogtt|\bipgtt|\bitt\b|clamp|meal|breakfast|lunch|postprandial|post-prandial|'
+    r'ingest|\bdrink|caffein|\bwithout water\b')
+_FAST_H = r'(?:h|hr|hrs|hours?)'
+_FAST_NUM = r'\d+(?:\.\d+)?(?:\s*(?:-|–|to)\s*\d+(?:\.\d+)?)?'
+_FAST_DUR = r'(?:at least |minimum (?:of )?|more than |over |≥\s*)?' + _FAST_NUM + r'\s*-?\s*' + _FAST_H
+_FASTED_STATEMENT_RE = re.compile('|'.join([
+    # 'after an overnight fast', 'following a 12-hour overnight fast', 'after a 20-h fasting period'
+    r'\b(?:after|following|under|with)\s+(?:an?\s+|the\s+)?(?:(?:overnight|' + _FAST_DUR + r')\s*-?\s*)+'
+    r'(?:\(\s*' + _FAST_DUR + r'\s*\)\s*)?(?:fast|fasting)\b',
+    # 'after 12 hours of fasting', 'after fasting for at least 8 h', 'after overnight fasting (8 h)'
+    r'\b(?:after|following|under|with)\s+' + _FAST_DUR + r'\s+of\s+fasting\b',
+    r'\b(?:after|following|under)\s+(?:a\s+)?fasting\s+(?:period\s+of\s+)?(?:for\s+)?(?:overnight|' + _FAST_DUR + r')',
+    r'\b(?:after|following|under|underwent)\s+(?:overnight\s+)?fasting\s+overnight',
+    # 'mice were fasted overnight', 'fasted for 12 h', 'birds were fasted 12 h'
+    r'(?<![-\w])fasted\s+(?:overnight|(?:for\s+)?' + _FAST_DUR + r'|for\s+(?:at least\s+)?\d+\s+days?)',
+    # 'overnight fasted animals', '12 h-fasted', 'from fasted individuals', 'from fasting participants'
+    r'\b(?:overnight|\d+\s*-?\s*' + _FAST_H + r')[- ]?fasted\b',
+    r'\b(?:from|in|of)\s+(?:the\s+)?(?:fasted|fasting)\s+(?:individuals|patients|subjects|participants|animals|mice|'
+    r'rats|donors|volunteers|pigs|dogs|cats)\b',
+    # 'in the fasting state', 'under fasting conditions', 'while they were fasting'
+    r'\b(?:in|at|under|during)\s+(?:a\s+|the\s+)?(?:early morning\s+)?(?:fasting|fasted)\s+(?:state|states|condition|'
+    r'conditions|status)\b',
+    r'\bwhile\s+(?:they\s+were\s+|subjects\s+were\s+|participants\s+were\s+)?fasting\b',
+    # 'fasting blood samples were collected', 'fasting peripheral venous blood was drawn'
+    r'(?<![-\w])fasting\s+(?:\(\s*' + _FAST_DUR + r'\s*\)\s+)?(?:[a-z0-9]+\s+){0,2}?(?:blood|plasma|serum|sera|urine)\s*'
+    r'(?:samples?|specimens?)?\s+(?:were|was)\s+(?:\w+\s+)?(?:collected|drawn|obtained|taken|withdrawn)',
+    # 'instructed to fast overnight', 'required to fast for more than 8 h', 'to ensure overnight fasting'
+    r'\bto\s+fast\s+(?:overnight|for\s+' + _FAST_DUR + r')',
+    r'\bto\s+ensure\s+(?:at least\s+\d+\s*' + _FAST_H + r'\s+of\s+|overnight\s+)fasting\b',
+    r'\b(?:subjects|participants|patients|volunteers|individuals)\s+fasted\s+overnight\b',
+]))
+_NONFASTED_STATEMENT_RE = re.compile('|'.join([
+    r'\bnon-?fasting\s+(?:\w+\s+)?(?:blood\s+|plasma\s+|serum\s+)?samples?\b',
+    r'\b(?:were|was)\s+not\s+fasting\b',
+    r'\bwithout\s+(?:prior\s+)?fasting\b',
+    r'\bnon-?fasted\s+(?:male\s+|female\s+)?(?:\S+\s+)?(?:mice|rats|animals|subjects|participants|patients)\b',
+    r'\b(?:during|under|in)\s+(?:a\s+|the\s+)?non-?fasting\s+(?:conditions?|state)\b',
+    r'\bfrom\s+(?:\S+\s+){0,3}non-?fasting\s+(?:\S+\s+){0,2}(?:volunteers|participants|subjects|donors|individuals)\b',
+]))
+# specimens a statement may be limited to
+_FAST_SPECIMENS = {'blood': re.compile(r'\b(?:blood|plasma|serum|sera|venipuncture|phlebotomy|venous)\b'),
+                   'urine': re.compile(r'\burin(?:e|ary)\b'),
+                   'feces': re.compile(r'\b(?:feces|faeces|fecal|faecal|stool|stools)\b'),
+                   'saliva': re.compile(r'\bsaliva\b')}
+
+
+def _fasting_hours_in(text):
+    """Hours of the fasting durations in a statement (minimum of a range); [] if none."""
+    hours = [float(a) for a in re.findall(r'(\d+(?:\.\d+)?)\s*(?:(?:-|–|to)\s*\d+(?:\.\d+)?\s*)?-?\s*' + _FAST_H + r'\b', text)]
+    hours += [24 * float(a) for a in re.findall(r'(\d+(?:\.\d+)?)\s*days?\b', text)]
+    words = {'six': 6, 'eight': 8, 'ten': 10, 'twelve': 12, 'sixteen': 16, 'four': 4, 'five': 5}
+    hours += [words[w] for w in re.findall(r'\b(' + '|'.join(words) + r')[- ]?' + _FAST_H + r'\b', text)]
+    return hours
+
+
+def protocol_fasting_status(protocols):
+    """One FastingStatus for all subjects of a study from its protocol texts, with the
+    specimens it is limited to (None: all) and the statements, or None.
+
+    Every sentence that speaks about the subjects' fasting must be an explicit statement
+    of one condition ('after an overnight fast', 'fasted for 12 h', 'in the fasting state',
+    'non-fasting blood samples'); a sentence with a fasting word that is no such statement,
+    or that names groups, conditions, doses, tests or meals, leaves the study open. A
+    fasting time shorter than 8 h is not 'fasted'. Fasting values as measurement names
+    ('fasting blood glucose') are ignored."""
+    found, specimens, statements = set(), set(), []
+    all_specimens = False
+    for name, description in protocols:
+        if _FAST_PROTOCOL_SKIP_RE.search(str(name)):
+            continue
+        text = html.unescape(re.sub(r'<[^>]+>', ' ', str(description or ''))).replace('\xa0', ' ')
+        # (no split after 'approx. 55%' or 'e.g. (...)')
+        for sentence in re.split(r'(?<=[.!?])\s+(?=[A-Z])', text):
+            s = ' '.join(sentence.lower().split())
+            s2 = _FAST_MEASURE_RE.sub(' ', s)
+            if not _FAST_WORD_RE.search(s2):
+                continue
+            if _FAST_UNCLEAR_RE.search(s2):
+                return None
+            fasted = list(_FASTED_STATEMENT_RE.finditer(s2))
+            nonfasted = _NONFASTED_STATEMENT_RE.search(s2)
+            if bool(fasted) == bool(nonfasted):
+                return None  # no explicit statement, or both
+            if fasted:
+                # durations given with the statement (in it or right after it)
+                hours = [h for m in fasted for h in _fasting_hours_in(s2[m.start():m.end() + 30])]
+                if hours and min(hours) < 8:
+                    return None
+                found.add('fasted')
+            else:
+                found.add('non-fasted')
+            # specimens named in the statement itself ('urine and fasting serum samples':
+            # serum), else in the sentence
+            named = {k for k, rx in _FAST_SPECIMENS.items() for m in fasted if rx.search(m.group(0))} \
+                or {k for k, rx in _FAST_SPECIMENS.items() if rx.search(s2)}
+            if named:
+                specimens |= named
+            else:
+                all_specimens = True
+            statements.append(' '.join(sentence.split()))
+    if len(found) != 1:
+        return None
+    return found.pop(), (None if all_specimens else specimens), statements
+
+
+def _specimen_family(body_part):
+    b = str(body_part).lower()
+    if re.search(r'blood|plasma|serum', b):
+        return 'blood'
+    if 'urine' in b:
+        return 'urine'
+    if re.search(r'feces|faeces|stool', b):
+        return 'feces'
+    if 'saliva' in b:
+        return 'saliva'
+    return None
+
+
+# ---- SampleGroupFreeText ----
+def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Samples_Sample Name', study_id=''):
+    """Per-row sample group in the internal form of finalize_sample_groups (sample ID,
+    then 'factor -> value' parts) from the Factor Value columns, in the study's factor
+    order and wording (values with their unit). Factors that have a ReDU column of their
+    own or are no groups (Workbench rules), and factors with a different value for nearly
+    every sample, are left out. ';' inside a name or value becomes ','."""
+    out = pd.Series(np.nan, index=df.index, dtype=object)
+    if not factor_columns or sample_column not in df.columns:
+        return out
+    order = {str(n).strip().lower(): i for i, n in enumerate(factor_order)}
+    columns = sorted(factor_columns, key=lambda c: (order.get(_ml_key(c).strip().lower(), len(order)),
+                                                    list(df.columns).index(c)))
+    clean = lambda x: ' '.join(str(x).replace(';', ',').replace(_GROUP_SID, ' ').replace(_GROUP_KV, ' ')
+                               .replace(_GROUP_PART, ' ').split())
+    sid = df[sample_column].astype(str).str.strip()
+    n = sid.nunique()
+    values, drop = {}, []
+    for c in columns:
+        key = clean(_ml_key(c))
+        nk = _norm_key(key)
+        v = df[c].map(clean)
+        uc = _ml_unit_column(df, c)
+        if uc is not None:
+            unit = df[uc].map(clean).where(~_is_missing(df[uc]), '')
+            v = v.where(unit == '', v + ' ' + unit)
+        v = v.where(~v.str.lower().isin(_ML_GROUP_NA_VALUES) & ~_is_missing(df[c]))
+        if not nk or _GROUP_KEY_EXCLUDE_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) or _ML_GROUP_ID_KEY_RE.search(nk) \
+                or _ML_GROUP_TECH_KEY_RE.search(nk):
+            drop.append(key)
+            continue
+        # the recorded subject identifier under another name
+        if 'SubjectIdentifierAsRecorded' in df.columns:
+            subject = df['SubjectIdentifierAsRecorded'].map(clean).where(~_is_missing(df['SubjectIdentifierAsRecorded']))
+            both = v.notna() & subject.notna()
+            if both.sum() >= 3 and (v[both] == subject[both]).mean() >= 0.9:
+                drop.append(key)
+                continue
+        per_sample = pd.DataFrame({'sid': sid, 'v': v}).dropna().drop_duplicates()
+        if n >= 8 and per_sample['v'].nunique() >= 0.9 * n:
+            drop.append(key)
+            continue
+        values[key] = v
+    if drop:
+        print(f"[SampleGroupFreeText] {study_id}: factors not used (ReDU column or no groups): {drop}")
+    if not values:
+        print(f"[SampleGroupFreeText] {study_id}: no grouping factors left")
+        return out
+    text = pd.Series('', index=df.index, dtype=object)
+    for key, v in values.items():
+        part = (key + _GROUP_KV + v).where(v.notna(), '')
+        text = text.where(part == '', text.where(text == '', text + _GROUP_PART) + part)
+    # one sample listed with different factors gets none
+    ok = pd.DataFrame({'sid': sid, 't': text}).groupby('sid')['t'].transform('nunique') == 1
+    text = text.where(ok & (text != ''))
+    return (sid.map(clean) + _GROUP_SID + text).where(text.notna())
+
+
 def Metabolights2REDU(study_id, **kwargs):
     """
     Converts Metabolights study data to a REDU table format.
@@ -1510,8 +2154,8 @@ def Metabolights2REDU(study_id, **kwargs):
     A DataFrame in the REDU table format with processed and aligned data from the Metabolights study,
     or an empty DataFrame if no applicable data is found.
     """
-    study_url = "https://www.ebi.ac.uk:443/metabolights/ws/studies/public/study/" + study_id
-    study_details = safe_api_request(study_url)
+    # the per-study API, or the study's ISA-Tab files when the API is down
+    study_details = get_study_details(study_id)
     if study_details is None:
         raise RuntimeError(f"Could not retrieve study details for {study_id}")
     if study_details.get('content') is None:
@@ -1576,6 +2220,12 @@ def Metabolights2REDU(study_id, **kwargs):
         _sample_kind = {'Samples_' + f['header']: f.get('fieldType')
                         for f in study_details['content']['sampleTable']['fields'].values()}
         factor_columns = [c for c, k in _sample_kind.items() if k == 'Factor Value']
+        # the kind of every sample column by position (a characteristic and a factor can
+        # have the same header, e.g. 'Sample type' and 'Sample type_1')
+        _sample_table = study_details['content']['sampleTable']
+        _sample_kind_pos = dict(zip(df_samples.columns, _table_headers(
+            {'fields': {k: dict(f, header=str(f.get('fieldType'))) for k, f in _sample_table['fields'].items()},
+             'data': _sample_table['data']}, '')))
     
         # Sample names are typed by hand in both sheets; ignore surrounding whitespace
         df_assays['Assay_Sample Name'] = df_assays['Assay_Sample Name'].astype(str).str.strip()
@@ -1678,7 +2328,9 @@ def Metabolights2REDU(study_id, **kwargs):
                         processed_organisms[_org] = _org_alias[str(_org).strip().lower()]
 
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
-                df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace(to_replace=r'^.*None.*$', value='missing value', regex=True)
+                # 'None' is the name lookup without a match; taxa whose name contains 'None'
+                # ('203745|Nonea', '1068978|Nonomuraea ...') are allowed terms
+                df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace('None', 'missing value')
 
                 # The curator-chosen NCBITaxon accession is more reliable than resolving the
                 # free-text organism name, so it is used whenever it is a valid taxon
@@ -1692,15 +2344,15 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
                                     for taxonomy in df_study['NCBITaxonomy'].unique()
-                                    if '|' in taxonomy and 'None' not in taxonomy}
+                                    if '|' in taxonomy}
                 
                 print(f'Found {len(processed_taxonomy)} unique taxonomy IDs.')
 
 
                 df_study.loc[:,'SampleType'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[0] 
-                                                                    if '|' in x and 'None' not in x else pd.NA)
+                                                                    if '|' in x else pd.NA)
                 df_study.loc[:,'SampleTypeSub1'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[1]
-                                                                        if '|' in x and 'None' not in x else pd.NA)
+                                                                        if '|' in x else pd.NA)
 
                 df_study[['SampleType', 'SampleTypeSub1']] = df_study.apply(
                     lambda row: get_blanks(row.Samples_Organism) 
@@ -2598,6 +3250,56 @@ def Metabolights2REDU(study_id, **kwargs):
                                            'e': df_study['Exposure'].where(~_is_missing(df_study['Exposure']), _ev).fillna('missing value').astype(str)})
                     _fill('Exposure', _ev.where(_final.groupby('f')['e'].transform('nunique') == 1))
 
+            #add TimePointHoursRelativeToEvent / FastingStatus / SampleGroupFreeText
+            #######
+            # Workbench rules on the Characteristics / Factor Value columns. Time point and
+            # fasting only for samples of the study's subjects (no QC / blanks), fasting only
+            # for whole animals and humans (no cultured or isolated cells, plants, microbes).
+            _value_cols = [c for c in df_study.columns if _sample_kind_pos.get(c) in ('Characteristics', 'Factor Value')]
+            try:
+                _tp_text = re.sub(r'<[^>]+>', ' ', ' \n '.join(str(p) for p in (_content.get('title'), _content.get('description') or _content.get('studyDescription')) if p))
+                _tp = ml_sample_timepoints(df_study, _value_cols, _tp_text)
+                if _tp.notna().any():
+                    _fill('TimePointHoursRelativeToEvent', _tp.where(_real_sample))
+            except Exception as e:
+                print(f"Could not derive time points: {type(e).__name__}: {e}")
+            try:
+                _animal = _not_cells & (df_study['SampleType'] == 'animal') if 'SampleType' in df_study.columns \
+                    else pd.Series(False, index=df_study.index)
+                for _c in ('Samples_Organism part', 'UBERONBodyPartName'):
+                    if _c in df_study.columns:
+                        _animal &= ~df_study[_c].astype(str).str.contains(r'derived|\bcultured?\b', case=False)
+                _fs = ml_sample_fasting(df_study, _value_cols)
+                if _fs.notna().any():
+                    _fill('FastingStatus', _fs.where(_animal))
+                elif _animal.any():
+                    # one fasting statement in the protocols, only for studies without
+                    # per-sample values and without fasting / feeding design columns
+                    _design = any(re.search(r'fast|feed|\bfed\b|prandial', _ml_key(c), re.I)
+                                  or df_study[c].astype(str).str.contains(r'fast|\bfed\b|prandial', case=False).any()
+                                  for c in _value_cols)
+                    _st = None if _design else protocol_fasting_status(protocols)
+                    if _st:
+                        _status, _spec, _stmts = _st
+                        _use = _animal.copy()
+                        if _spec is not None:
+                            # a statement about some specimens ('fasting blood samples') only for these
+                            _fam = df_study['UBERONBodyPartName'].map(_specimen_family) if 'UBERONBodyPartName' in df_study.columns \
+                                else pd.Series(None, index=df_study.index, dtype=object)
+                            _use &= _fam.isin(_spec)
+                        if _use.any():
+                            print(f"[FastingStatus] {study_id}: study level '{_status}' for {int(_use.sum())} rows from: {' | '.join(_stmts)[:500]}")
+                            _fill('FastingStatus', pd.Series(_status, index=df_study.index).where(_use))
+            except Exception as e:
+                print(f"Could not derive fasting states: {type(e).__name__}: {e}")
+            try:
+                _groups = ml_sample_group_texts(df_study, [c for c in df_study.columns if _sample_kind_pos.get(c) == 'Factor Value'],
+                                                [f.get('name') for f in _content.get('factors') or []], study_id=study_id)
+                if _groups.notna().any():
+                    df_study['SampleGroupFreeText'] = _groups.fillna('missing value')
+            except Exception as e:
+                print(f"Could not derive sample groups: {type(e).__name__}: {e}")
+
             #refine NCBITaxonomy from the Variant/Strain column
             #######
             # Only an NCBI name that starts with the recorded species name ('Saccharomyces
@@ -2646,6 +3348,15 @@ def Metabolights2REDU(study_id, **kwargs):
             df_study['count'] = df_study.groupby('USI')['USI'].transform('size')
             df_study = df_study[df_study['count'] == 1]
             df_study = df_study.drop(columns=['count'])
+
+            # sample groups: factors whose groups the final ReDU columns tell apart are dropped;
+            # filled only for at least 2 groups and on average at least 2 samples per group
+            if 'SampleGroupFreeText' in df_study.columns:
+                try:
+                    df_study = finalize_sample_groups(df_study, study_id=study_id)
+                except Exception as e:
+                    print(f"Could not finalize sample groups: {type(e).__name__}: {e}")
+                    df_study['SampleGroupFreeText'] = 'missing value'
 
             print(f'We are adding {len(df_study)} samples to the REDU table for study {study_id}.')
 
