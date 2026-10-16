@@ -12,7 +12,8 @@ import traceback
 import weakref
 from io import StringIO
 from REDU_conversion_functions import age_category, normalize_redu_datetime
-from blank_qc_names import apply_filename_blank_qc
+from blank_qc_names import apply_filename_blank_qc, blank_qc_type_from_filename
+import reference_materials
 
 def _canonical_term(value):
     """Case-, space- and separator-insensitive form used to match submitted values to
@@ -164,6 +165,58 @@ def normalize_doid_list(value, doid_ids, missing_value='missing value'):
         if doid in doid_ids and doid not in ids:
             ids.append(doid)
     return '|'.join(ids) if ids else missing_value
+
+
+# Rows that are no samples of the study's subjects (blanks, pooled QCs, reference materials, standards,
+# products) lose the subject fields (STRIP_FOR_NOT_SUBJECT). Pooled QCs (a pool of the study's samples)
+# and reference materials keep their organism and body part (STRIP_ORGANISM): a pooled QC its own
+# row's (not one whose file is named as a blank), a reference material the one of the material
+# (reference_materials.py, rows it placed), every other reference material none. Blanks, standards and
+# products keep none.
+STRIP_FOR_NOT_SUBJECT = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName',
+                         'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome',
+                         'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus',
+                         'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex', 'ColonizationStatus']
+STRIP_ORGANISM = ['NCBITaxonomy', 'UBERONBodyPartName']
+# the full list as it was (blanks): both
+strip_for_blank = STRIP_ORGANISM + STRIP_FOR_NOT_SUBJECT
+
+
+def _not_subject_rows(df):
+    """(rows that are no samples of the study's subjects, those of them that keep NCBITaxonomy and
+    UBERONBodyPartName: pooled QCs and the reference materials reference_materials.py placed)"""
+    sample_type = df['SampleType'].fillna('').astype(str)
+    mask = sample_type.str.contains('blank', case=False) | \
+        sample_type.isin(['pool_QC', 'reference material', 'personal care product', 'molecular_standards'])
+    placed = df[reference_materials.PLACED_COLUMN].astype(str).str.lower().eq('true') \
+        if reference_materials.PLACED_COLUMN in df.columns else pd.Series(False, index=df.index)
+    # (a pooled QC whose file is named as a blank, e.g. a blank file listed for a QC sample, keeps none)
+    blank_file = df['filename'].map(lambda f: (blank_qc_type_from_filename(f) or '').startswith('blank')) \
+        if 'filename' in df.columns and (sample_type == 'pool_QC').any() else pd.Series(False, index=df.index)
+    keep = ((sample_type == 'pool_QC') & ~blank_file) | ((sample_type == 'reference material') & placed)
+    return mask, keep & mask
+
+
+def _reference_materials_and_pools(df, kwargs):
+    """reference_materials.annotate on the rows (dataset column MassiveID): the rows' ReDU text columns
+    plus the source's native sample fields (column reference_materials.EVIDENCE_COLUMN, if the converter
+    adds it) and the catalog numbers its study-level text names (kwargs['refmat_study_text']: a list,
+    or {dataset: list}). A problem here never costs the rows."""
+    try:
+        stats = collections.Counter()
+        df, changed = reference_materials.annotate(
+            df, dataset_column='MassiveID', evidence=reference_materials.EVIDENCE_COLUMN,
+            study_text=kwargs.get('refmat_study_text'), stats=stats)
+        df = reference_materials.place_labelled(df, stats=stats)
+        if stats:
+            # one line per call: what was decided, applied and kept (guards), by dataset
+            datasets = sorted(set(df['MassiveID'].astype(str))) if 'MassiveID' in df.columns else []
+            print(f"REFMAT {len(changed)} rows changed; datasets {','.join(datasets[:5])}{' ...' if len(datasets) > 5 else ''}; "
+                  f"{json.dumps(dict(sorted(stats.items())))}")
+    except Exception as e:
+        print(f"WARNING: reference materials not checked: {type(e).__name__}: {e}")
+        traceback.print_exc()
+    return df
 
 
 def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi = False, other_allowed_file_extensions = [], attempt_adding_file_extensions = False, case_insensitive_terms = False, **kwargs):
@@ -326,13 +379,15 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     df = df.drop(columns=columns_to_remove)
 
 
+    # reference materials and in-house pools named in the rows' own fields (reference_materials.py)
+    df = _reference_materials_and_pools(df, kwargs)
+
     #Resolve contradictory fields
     if 'SampleType' in df.columns:
-        # blanks, pooled QCs, standards and products are not samples of the study's subjects/organisms
-        mask = df['SampleType'].str.contains('blank', case=False) | \
-            df['SampleType'].isin(['pool_QC', 'reference material', 'personal care product', 'molecular_standards'])
-        strip_for_blank = ['NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex', 'ColonizationStatus']
-        df.loc[mask, [c for c in strip_for_blank if c in df.columns]] = ''
+        mask, keep_organism = _not_subject_rows(df)
+        df.loc[mask, [c for c in STRIP_FOR_NOT_SUBJECT if c in df.columns]] = ''
+        clear_organism = mask & ~keep_organism
+        df.loc[clear_organism, [c for c in STRIP_ORGANISM if c in df.columns]] = ''
         if '_recorded_LifeStage' in df.columns:
             df.loc[mask, '_recorded_LifeStage'] = ''
 
@@ -1363,6 +1418,41 @@ def _ncbi_names_in_files(paths, allowedTerm_dict):
     return names
 
 
+# sheet columns that are no sample-level evidence of a reference material: ReDU's sample type vocabulary
+# (a GNPS 'reference material' is any standard or product) and the file name (its directory may name a
+# material; the base name is read from 'filename' itself)
+_GNPS_NOT_EVIDENCE = re.compile(r'(?i)^(?:attribute_|curated_)*(?:sample_?type(?:_?sub1)?|study_sampletypeasrecorded|'
+                                r'file_?name|filepath|usi)$')
+
+
+def gnps_refmat_evidence(df):
+    """The cells of a GNPS metadata file that can name a reference material, as one
+    reference_materials.EVIDENCE_COLUMN cell per row (columns other than the sample type and file name
+    columns; reference_materials skips protocol columns), or None on an error."""
+    try:
+        cols = [c for c in df.columns if not _GNPS_NOT_EVIDENCE.match(str(c).strip())]
+        if not cols:
+            return pd.Series('', index=df.index, dtype=object)
+        values = df[cols].astype(object).where(df[cols].notna(), '').astype(str)
+        out = pd.Series('', index=df.index, dtype=object)
+        # only the columns and rows with a candidate word
+        hits = {c: values[c].str.contains(reference_materials.CANDIDATE_RE, regex=True) for c in cols}
+        # (also the rows whose file name has a candidate word: reference_materials reads the name from 'filename')
+        name_hit = df['filename'].astype(str).str.contains(reference_materials.CANDIDATE_RE, regex=True) \
+            if 'filename' in df.columns else pd.Series(False, index=df.index)
+        if not any(h.any() for h in hits.values()) and not name_hit.any():
+            return out
+        rows = pd.concat([hits[c] for c in cols if hits[c].any()] + [name_hit], axis=1).any(axis=1)
+        # (all columns of these rows: encode_evidence keeps the cells with a candidate word and those that only
+        # name a matrix, e.g. UBERONBodyPartName 'blood plasma', the row's own matrix)
+        out[rows] = [reference_materials.encode_evidence(zip(cols, row))
+                     for row in values.loc[rows, cols].itertuples(index=False, name=None)]
+        return out
+    except Exception as e:
+        print(f"WARNING: no reference-material evidence from the sheet: {type(e).__name__}: {e}")
+        return None
+
+
 def process_filename(filename):
     path_parts = filename.split('/')
     for part in path_parts:
@@ -1465,6 +1555,8 @@ if __name__ == '__main__':
             if 'ATTRIBUTE_DatasetAccession' in df.columns:
                 df.rename(columns={'ATTRIBUTE_DatasetAccession': 'MassiveID'}, inplace=True)
 
+            # the sheet's own sample fields, for the reference materials (complete_and_fill_REDU_table)
+            refmat_evidence = gnps_refmat_evidence(df)
             # GitHub files are named <MSV>.tsv, MassIVE downloads <MSV>_<n>_gnps_metadata.tsv
             accession = re.match(r'(MSV\d+)', os.path.basename(file_path))
             df = normalize_gnps_metadata(df, allowed_terms,
@@ -1474,6 +1566,8 @@ if __name__ == '__main__':
                                          NCBIRankDivision_table=NCBIRankDivision_table)
             # files named as blanks / pooled QCs (BLANK_5_9_B, PoolQC_03) that are labelled as samples
             df, _ = apply_filename_blank_qc(df)
+            if refmat_evidence is not None:
+                df[reference_materials.EVIDENCE_COLUMN] = refmat_evidence.reindex(df.index)
 
             #generate extra columns, add missing columns and remove values which are not in allowed terms
             df = complete_and_fill_REDU_table(df, 

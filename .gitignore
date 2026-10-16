@@ -11,3 +11,9 @@ nextflow_output.log
 bin/__pycache__
 Metabolights2REDU_*.tsv
 bin/allowed_terms
+# left in the checkout by a plain run (nextflow run ./nf_workflow.nf -c nextflow.config): the conda
+# environments (conda.cacheDir of nextflow.config) and its trace / report / timeline files
+/conda/
+/trace.txt
+/report.html
+/timeline.html

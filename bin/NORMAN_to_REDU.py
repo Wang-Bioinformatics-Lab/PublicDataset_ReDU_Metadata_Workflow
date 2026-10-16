@@ -170,6 +170,60 @@ def _comparable_values(series, column, allowedTerm_dict):
     return out
 
 
+# The record a file belongs to, among the records that name it (file_owner_record): the DSFP sample sheets'
+# short name of a record, and a polarity word of a file name
+SHORT_NAME_COLUMN = 'Short name for contribution'
+_FILE_NAME_POLARITY = {'pos': 'positive', 'positive': 'positive', 'neg': 'negative', 'negative': 'negative'}
+
+
+def _name_words(text):
+    """lower case, every non-alphanumeric run -> one space ('pre-EMPT 66' -> 'pre empt 66')"""
+    return ' '.join(re.sub(r'[^a-z0-9]+', ' ', str(text).lower()).split())
+
+
+def _file_name_polarity(filename):
+    """'positive' / 'negative' when the file name has polarity words of one polarity only ('..._pos_9_1_19657.mzml',
+    'UoA_POS_25_...'), else None; a word followed by 'control' / 'ctrl' is no polarity ('negative_control_1.mzml',
+    as gnps_name_matcher._POLARITY_WORD)"""
+    words = _name_words(filename).split()
+    found = {_FILE_NAME_POLARITY[w] for i, w in enumerate(words) if w in _FILE_NAME_POLARITY
+             and not (i + 1 < len(words) and re.fullmatch(r'controls?|ctrls?|ctls?', words[i + 1]))}
+    return found.pop() if len(found) == 1 else None
+
+
+def _term_polarity(value):
+    """'positive' / 'negative' of an IonizationSourceAndPolarity value, None if missing or of no single polarity"""
+    if not isinstance(value, str):
+        return None
+    v = value.lower()
+    if ('positive' in v) == ('negative' in v):
+        return None
+    return 'positive' if 'positive' in v else 'negative'
+
+
+def file_owner_record(filename, records):
+    """records: [(sample_id, polarity term or None, short name or '')] of the records that name one file.
+    The sample_id of the one record the file name agrees with, else None:
+    - polarity: the file name has a polarity word of one polarity, exactly one record has that polarity and
+      every other record the other one (cfd3a5a5 'sample_2a_pasef_pos_...': records 'LC Positive' and
+      'LC Negative');
+    - short name: exactly one record's short name is contained in the file name (as whole words, case and
+      punctuation ignored; 1dcb6e7d '..._helcom_pre-empt_66_...': 'HELCOM pre-EMPT 66', not 'pre-EMPT 65').
+    If both decide they must name the same record."""
+    picks = []
+    polarity = _file_name_polarity(filename)
+    if polarity is not None:
+        own = [sid for sid, pol, _ in records if _term_polarity(pol) == polarity]
+        other = [sid for sid, pol, _ in records if _term_polarity(pol) not in (None, polarity)]
+        if len(set(own)) == 1 and len(own) + len(other) == len(records):
+            picks.append(own[0])
+    words = ' ' + _name_words(filename) + ' '
+    named = {sid for sid, _, name in records if _name_words(name) and ' ' + _name_words(name) + ' ' in words}
+    if len(named) == 1:
+        picks.append(named.pop())
+    return picks[0] if picks and len(set(picks)) == 1 else None
+
+
 def blank_conflicting_copies(df, columns, allowedTerm_dict, key=('MassiveID', 'filename')):
     """One uploaded file named by several sample records: submitters attach the same file to
     several DSFP samples (a pos and a neg record, groundwater and wastewater, two matrices), and a
@@ -183,6 +237,9 @@ def blank_conflicting_copies(df, columns, allowedTerm_dict, key=('MassiveID', 'f
     When the records disagree on SampleType and one of them is a blank or QC (NON_SAMPLE_TYPES), the
     file may be a blank: the columns complete_and_fill_REDU_table empties on blanks
     (BLANK_STRIPPED_COLUMNS) are set to missing on all rows of the file too.
+    Where the file name agrees with exactly one of the records (file_owner_record: its polarity word, or
+    the record's short name in the file name), nothing is set to missing: every row of the file gets that
+    record's values of `columns` (report column 'values' starts with 'kept <sample_id>:').
     Columns complete_and_fill_REDU_table generates (ontology indexes, NCBI rank) are not compared:
     they are made again from the compared ones. Returns the frame and a table of the blanked fields
     (dataset, filename, rows, sample_ids, column, values)."""
@@ -200,18 +257,32 @@ def blank_conflicting_copies(df, columns, allowedTerm_dict, key=('MassiveID', 'f
         sub[c] = _comparable_values(df.loc[repeated, c], c, allowedTerm_dict)
     records = []
     blank = {c: [] for c in columns}
+    owner_values = []
     for (dataset, filename), group in sub.groupby(key, sort=True):
         samples = ','.join(sorted(set(group['sample_id'].astype(str)))) if 'sample_id' in group.columns else ''
         types = set(group['SampleType'].dropna()) if 'SampleType' in group.columns else set()
         maybe_blank = len(types) > 1 and any(re.search(NON_SAMPLE_TYPES, t, flags=re.IGNORECASE) for t in types)
+        conflicting = []
         for c in columns:
             distinct = _distinct_values(group[c], c)
             if len(distinct) > 1 or (maybe_blank and distinct and c in BLANK_STRIPPED_COLUMNS):
+                conflicting.append((c, distinct))
+        if not conflicting:
+            continue
+        owner = _owner_of_copies(df, group, filename)
+        for c, distinct in conflicting:
+            if owner is None:
                 blank[c].extend(group.index)
-                records.append((dataset, filename, len(group), samples, c, ' || '.join(distinct)))
+            records.append((dataset, filename, len(group), samples, c,
+                            (f'kept {owner}: ' if owner is not None else '') + ' || '.join(distinct)))
+        if owner is not None:
+            owner_values.append((group.index, df.loc[_owner_rows(group, owner)[0], columns]))
     for c, index in blank.items():
         if index:
             df.loc[index, c] = np.nan
+    for index, values in owner_values:
+        for c, v in values.items():
+            df.loc[index, c] = v
     report = pd.DataFrame(records, columns=report_columns)
     n_files = report[['dataset', 'filename']].drop_duplicates().shape[0] if len(report) else 0
     print(f"Files named by several rows (same dataset and file name): {sub.groupby(key).ngroups} files, "
@@ -223,6 +294,33 @@ def blank_conflicting_copies(df, columns, allowedTerm_dict, key=('MassiveID', 'f
         print(per_dataset.to_string())
         print("Files with the column set to missing: " + str(report.groupby('column').size().sort_index().to_dict()), flush=True)
     return df, report
+
+
+def _owner_rows(group, owner):
+    """the rows (index) of a file's group of one record"""
+    return [i for i, sid in zip(group.index, group['sample_id'].astype(str)) if sid == owner]
+
+
+def _owner_of_copies(df, group, filename):
+    """file_owner_record for the rows of one file (blank_conflicting_copies), where the rows of the owner
+    agree with each other in every column (else None)"""
+    if 'sample_id' not in group.columns:
+        return None
+    sids = group['sample_id'].astype(str)
+    polarity = df.loc[group.index, 'IonizationSourceAndPolarity'] if 'IonizationSourceAndPolarity' in df.columns \
+        else pd.Series(np.nan, index=group.index)
+    names = df.loc[group.index, SHORT_NAME_COLUMN].fillna('').astype(str) if SHORT_NAME_COLUMN in df.columns \
+        else pd.Series('', index=group.index)
+    records = {}
+    for sid, pol, name in zip(sids, polarity, names):
+        records.setdefault(sid, (sid, pol, name))
+    owner = file_owner_record(filename, list(records.values()))
+    if owner is None:
+        return None
+    rows = group.loc[_owner_rows(group, owner)].drop(columns=[c for c in ('sample_id',) if c in group.columns])
+    if len(rows) > 1 and (rows.nunique(dropna=False) > 1).any():
+        return None
+    return owner
 
 
 def clean(series):

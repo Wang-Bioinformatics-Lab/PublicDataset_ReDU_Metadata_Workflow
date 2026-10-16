@@ -1,0 +1,24 @@
+# Reference materials ReDU names (reference_materials.py). One row per catalog number; SampleTypeSub1 is
+# 'reference material_<label>'. NCBITaxonomy / UBERONBodyPartName are those of the material itself (empty: none,
+# e.g. foods); a row of such a material gets these values and no others. Only materials named in public
+# metabolomics metadata (survey 2026-10-16) are listed; a number not listed here is not read as a material.
+number	label	material	NCBITaxonomy	UBERONBodyPartName
+1950	NIST SRM 1950	Metabolites in Frozen Human Plasma	9606|Homo sapiens	blood plasma
+8231	NIST RM 8231	Frozen Human Plasma Suite for Metabolomics	9606|Homo sapiens	blood plasma
+1951	NIST SRM 1951	Lipids in Frozen Human Serum	9606|Homo sapiens	blood serum
+1957	NIST SRM 1957	Organic Contaminants in Non-Fortified Human Serum	9606|Homo sapiens	blood serum
+1958	NIST SRM 1958	Organic Contaminants in Fortified Human Serum	9606|Homo sapiens	blood serum
+909	NIST SRM 909	Human Serum	9606|Homo sapiens	blood serum
+2378	NIST SRM 2378	Fatty Acids in Frozen Human Serum	9606|Homo sapiens	blood serum
+1953	NIST SRM 1953	Organic Contaminants in Non-Fortified Human Milk	9606|Homo sapiens	milk
+1954	NIST SRM 1954	Organic Contaminants in Fortified Human Milk	9606|Homo sapiens	milk
+3667	NIST SRM 3667	Creatinine in Frozen Human Urine	9606|Homo sapiens	urine
+3672	NIST SRM 3672	Organic Contaminants in Smokers' Urine	9606|Homo sapiens	urine
+3673	NIST SRM 3673	Organic Contaminants in Non-Smokers' Urine	9606|Homo sapiens	urine
+8048	NIST RM 8048	Human Fecal Material	9606|Homo sapiens	feces
+10162	NIST RGTM 10162	Human Fecal Material (research grade test material)	9606|Homo sapiens	feces
+1946	NIST SRM 1946	Lake Superior Fish Tissue
+8256	NIST RM 8256	Wild-Caught Salmon
+8257	NIST RM 8257	Aquacultured Salmon
+8258	NIST RM 8258	Wild-Caught Shrimp
+8259	NIST RM 8259	Aquacultured Shrimp

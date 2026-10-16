@@ -138,16 +138,32 @@ def microbe_sample_type(taxid, division_by_taxid, parents):
 
 
 def apply_blank_qc_flags(df):
-    """Blank/QC files carry no organism: label them as blank/QC and drop the taxonomy"""
+    """Blank/QC files: label them as blank/QC. Blanks carry no organism (the taxonomy is dropped);
+    a pooled QC keeps the organism of its row (a pool of the study's samples)"""
     blank = df['Blank'].astype(str).str.strip().str.lower().eq('yes')
     qc = df['QC'].astype(str).str.strip().str.lower().eq('yes') & ~blank
     df.loc[blank, 'SampleType'] = 'blank_analysis'
     df.loc[blank, 'SampleTypeSub1'] = 'blank_analysis'
     df.loc[qc, 'SampleType'] = 'pool_QC'
     df.loc[qc, 'SampleTypeSub1'] = 'pool_QC'
-    df.loc[blank | qc, 'NCBITaxonomy'] = ''
+    df.loc[blank, 'NCBITaxonomy'] = ''
     print(f"Blank/QC files: {blank.sum()} blanks, {qc.sum()} QCs")
     return df
+
+
+def write_refmat_evidence(df_massts, path):
+    """The reference-material evidence (reference_materials.EVIDENCE_COLUMN) of the MASST rows of
+    GNPS-described files (USI of the GNPS row), for final_table_rules.reference_materials_pass: the merge
+    keeps the GNPS row of such a file, which may call a reference material a sample."""
+    from reference_materials import EVIDENCE_COLUMN
+    out = pd.DataFrame(columns=['USI', 'evidence'])
+    if EVIDENCE_COLUMN in df_massts.columns and 'USI' in df_massts.columns:
+        usi = df_massts['USI'].fillna('').astype(str)
+        ev = df_massts[EVIDENCE_COLUMN].fillna('').astype(str)
+        keep = usi.str.startswith('mzspec:') & (ev != '')
+        out = pd.DataFrame({'USI': usi[keep], 'evidence': ev[keep]}).drop_duplicates('USI').sort_values('USI')
+    out.to_csv(path, sep='\t', index=False)
+    print(f"Reference-material evidence for GNPS-described files: {len(out)} USIs")
 
 
 def _stem(filename):
@@ -198,9 +214,15 @@ def main():
     parser.add_argument('--supplement_output', default=None,
                         help='TSV for the MASST rows of files that GNPS metadata already describes (with the '
                              'USI of the GNPS row); merge_metadata.py fills only their missing fields from it')
+    parser.add_argument('--refmat_evidence_output', default=None,
+                        help='TSV (USI, evidence) of the GNPS-described files whose MASST rows name a reference '
+                             'material (e.g. microbiomeMASST "human reference material"); final_table_rules.py reads '
+                             'it for the GNPS rows of these files')
     args = parser.parse_args()
     if args.supplement_output:
         open(args.supplement_output, 'w').close()
+    if args.refmat_evidence_output:
+        pd.DataFrame(columns=['USI', 'evidence']).to_csv(args.refmat_evidence_output, sep='\t', index=False)
 
     df_redu = pd.read_csv(args.path_REDUtable, sep='\t', dtype=str)
     df_redu['filename'] = df_redu['filename'].str.slice(2)
@@ -366,6 +388,8 @@ def main():
         df_massts['NCBITaxonomy'] = follow_merged_taxa(df_massts['NCBITaxonomy'], merged_taxa, resolves, stats)
         print(f"NCBI taxids merged into another taxon: {stats.get('ncbi_merged_taxid_followed', 0)} rows take the current "
               f"taxid, {stats.get('ncbi_merged_taxid_name_resolves_(left_as_is)', 0)} rows keep it (their name resolves)")
+    if args.refmat_evidence_output:
+        write_refmat_evidence(df_massts, args.refmat_evidence_output)
     kwargs = {}
     if uberon_table is not None:
         kwargs['UBERONOntologyIndex_table'] = uberon_table

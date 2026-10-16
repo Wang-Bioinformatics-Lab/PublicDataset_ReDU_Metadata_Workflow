@@ -5,7 +5,9 @@ the factors those columns hold, and the group-consistency rule (the last edit of
 final_text_columns.py).
 
 A text is 'Factor: value' parts joined by '; '. On GNPS rows the texts come from microbiomeMASST
-('Intervention: <type>: <value>'); there each intervention type is a factor of its own.
+('Intervention: <type>: <value>'); there each intervention type is a factor of its own. A factor name that
+is a template placeholder ('<enter factor name>') is no name: strip_placeholder_factor_names (called by
+final_table_rules.py, before the passes of final_text_columns.py) writes such a part as its value alone.
 
 Removal of moved factors (remove_held_factors), per dataset (ATTRIBUTE_DatasetAccession) and
 factor: a factor is removed from all rows of the dataset only if on every real sample carrying it
@@ -75,6 +77,41 @@ def parts_of(text, masst=False):
         else:
             out.append((name, value, None, part))
     return out
+
+
+# A factor name that is a template placeholder or a missing name ('<enter factor name>', with the
+# numbering the converters add to repeated names, '<enter factor name>_1'; 'enter ...'; the MetaboLights
+# column 'Factor name'; 'NA'): the part has no factor name. Generic names ('Factor', 'Factor 1') are names.
+# ('NA' / 'N/A' in capitals only: 'Na' is sodium; not 'none', 'nan', 'null', which are no template words)
+_PLACEHOLDER_FACTOR_NAME = re.compile(
+    r'^\s*(?:<[^<>]*>|(?i:(?:please\s+)?enter)\b[^:]*|(?i:factor\s*name)|NA|N/A|n/a|-+)(?:[\s_-]*\d+)?\s*$')
+# a value that is only a number (with no name it says nothing)
+_NUMBER_ONLY = re.compile(r'^[\d\s.,+-]*$')
+
+
+def strip_placeholder_factor_names(texts):
+    """SampleGroupFreeText texts ('Factor: value; Factor: value') with the parts whose factor name is a
+    placeholder (_PLACEHOLDER_FACTOR_NAME) written as their value alone ('<enter factor name>: no drug' ->
+    'no drug'); such a part whose value is only a number is left out ('<enter factor name>_1: 1': the
+    number of an unnamed factor); a text left empty becomes 'missing value'. Other texts are returned as
+    they are (a second pass changes nothing)."""
+    def fix(text):
+        if not isinstance(text, str) or ': ' not in text:
+            return text
+        parts, changed = [], False
+        for part in text.split('; '):
+            name, sep, value = part.partition(': ')
+            if sep and _PLACEHOLDER_FACTOR_NAME.match(name):
+                changed = True
+                if value.strip() and not _NUMBER_ONLY.match(value):
+                    parts.append(value.strip())
+            else:
+                parts.append(part)
+        if not changed:
+            return text
+        return '; '.join(parts) if parts else MISSING
+    values = pd.Series(texts)
+    return values.map({v: fix(v) for v in pd.unique(values)})
 
 
 def remove_held_factors(texts, fac):

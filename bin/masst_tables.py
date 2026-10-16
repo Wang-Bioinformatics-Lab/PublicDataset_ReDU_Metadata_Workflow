@@ -17,6 +17,7 @@ import pandas as pd
 
 import diet_columns
 from blank_qc_names import blank_qc_type_from_filename, name_tokens
+from reference_materials import EVIDENCE_COLUMN as REFMAT_EVIDENCE_COLUMN, encode_evidence as refmat_encode_evidence
 
 _MISSING = {'', 'nan', 'na', 'n/a', 'none', 'null', 'unknown', 'not applicable', 'not_applicable', 'not entered',
             'not collected', 'not provided', 'not specified', 'not_specified', 'not available', 'missing value',
@@ -299,6 +300,8 @@ _MB_QC_TYPES = {'qc_pool_monoculture', 'qc_pool_community', 'qc_pool_bsh', 'skin
                 'human cell lines qc pool'}
 _MB_MEDIA_TYPES = {'media_control_community', 'media_control_monoculture', 'skin_media_control', 'colon_simulator_medium'}
 _MB_REFERENCE_TYPES = {'food reference material', 'human reference material'}
+# kept on the files of pooled QCs and reference materials (the other subject fields are cleared)
+MB_KEEP_ON_QC_AND_REFERENCE = ('NCBITaxonomy', 'UBERONBodyPartName')
 # Taxaname_file values that are tree categories, not organisms
 MB_CATEGORIES = {'bacteria', 'space', 'animal', 'food', 'human cell lines', 'protein screening', 'environment'}
 _TAXON = re.compile(r'^\s*(\d+)\s*\|\s*(\S.*)$')
@@ -475,12 +478,25 @@ def microbiome_rows(df, vocab, division_by_taxid, microbe_sample_type=None, stat
             interventions.append((itype, value, spec if spec else sub))
         rec['ColonizationStatus'] = one(colonization, 'ColonizationStatus')
         if kind:
-            # blanks, QCs, media and reference material carry no subject metadata
+            # blanks, QCs, media and reference material carry no subject metadata; pooled QCs and
+            # reference materials keep the organism and body part (complete_and_fill_REDU_table: a
+            # reference material then takes those of the material, reference_materials.py)
             for c in ('NCBITaxonomy', 'UBERONBodyPartName', 'DOIDCommonName', 'HealthStatus', 'BiologicalSex',
                       'AgeInYears', 'TimePointHoursRelativeToEvent', 'ColonizationStatus'):
+                if c in MB_KEEP_ON_QC_AND_REFERENCE and kind in ('pool_QC', 'reference material'):
+                    continue
                 if rec.get(c):
                     stats[f'microbiome_blank_qc_stripped_{c}'] += 1
                 rec[c] = ''
+        # the intervention types (e.g. 'human reference material'), for reference_materials.py
+        # (and, where they name one, the file's body part, which encode_evidence keeps if it only names a matrix: the
+        # material's matrix)
+        _rm = refmat_encode_evidence(
+            ('Intervention_type', t) for t in dict.fromkeys(str(x).strip() for x in g['Intervention_type']) if t)
+        if _rm and rec.get('UBERONBodyPartName'):
+            _rm = refmat_encode_evidence([('Intervention_type', t) for t in dict.fromkeys(
+                str(x).strip() for x in g['Intervention_type']) if t] + [('UBERONBodyPartName', rec['UBERONBodyPartName'])])
+        rec[REFMAT_EVIDENCE_COLUMN] = _rm
         rec['_interventions'] = list(dict.fromkeys(interventions))
         rec['_control_name'] = any(_CONTROL_TOKEN.match(t) for t in name_tokens(fname))
         for c in conflicts:

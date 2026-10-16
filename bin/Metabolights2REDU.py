@@ -27,6 +27,8 @@ from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
 import diet_columns
 from blank_qc_names import blank_qc_type_from_filename
+import reference_materials
+from water_kind import water_kind_of_unstated_water
 # time point, fasting and sample group rules shared with the Workbench converter
 from MWB_to_REDU import (_norm_key, _TP_UNIT_WORDS, timepoint_key_tier, timepoint_hours, _timepoint_key_unit,
                          sample_timepoint_hours, sample_fasting_status,
@@ -85,7 +87,7 @@ def _prefer_extension_rows(df):
     return out
 
 
-def get_enviromental_water(x):
+def get_enviromental_water(x, study_text=''):
     x = x.lower()
 
     if 'water' in x or 'sewerage' in x:
@@ -99,6 +101,11 @@ def get_enviromental_water(x):
             return ['environmental', 'water_storm']
         if 'sea' in x or 'ocean' in x or 'coast' in x:
             return ['environmental', 'water_seawater']
+        # a water sample of no stated kind: surface water when the sample text ('river water') or the
+        # study's title / description names lakes, rivers, ponds ... and no other kind of water (water_kind.py)
+        kind = water_kind_of_unstated_water(x, study_text)
+        if kind:
+            return ['environmental', kind]
         else:
             return [None, None]
     else:
@@ -199,9 +206,74 @@ _BODY_PART_ALIASES = {
 }
 
 
+# sample-level fields of a MetaboLights row that can name a reference material (reference_materials.py):
+# the sample sheet's names, characteristics and factor values, and the assay's sample / extract / assay
+# names; not the protocol parameters (instrument, column, ...), where 'NIST' is a library and 'SRM'
+# selected reaction monitoring. The file's base name is read by complete_and_fill_REDU_table itself.
+_REFMAT_SAMPLE_KINDS = {'Characteristics', 'Factor Value'}
+# the sample sheet's name columns (field type 'basic', as its Term Source REF / Unit columns)
+_REFMAT_SAMPLE_NAMES = re.compile(r'Samples_(?:Source Name|Sample Name)(?:[._]\d+)?')
+_REFMAT_ASSAY_COLUMNS = re.compile(r'Assay_(?:Sample Name|Extract Name|MS Assay Name|Normalization Name|'
+                                   r'Data Transformation Name)(?:_\d+)?')
+
+
+def ml_refmat_evidence(df_study, sample_kind_pos):
+    """reference_materials.EVIDENCE_COLUMN cells of the rows of df_study ('' where no field has a
+    candidate word); field names are the columns'; also the fields of these rows that only name a matrix"""
+    out = pd.Series('', index=df_study.index, dtype=object)
+    try:
+        cols = [c for c in df_study.columns
+                if (str(c).startswith('Samples_') and sample_kind_pos.get(c) in _REFMAT_SAMPLE_KINDS)
+                or _REFMAT_SAMPLE_NAMES.fullmatch(str(c)) or _REFMAT_ASSAY_COLUMNS.fullmatch(str(c))]
+        if not cols:
+            return out
+        values = df_study[cols].astype(object).where(df_study[cols].notna(), '').astype(str)
+        hits = {c: values[c].str.contains(reference_materials.CANDIDATE_RE, regex=True) for c in cols}
+        # (also the rows whose data file name has a candidate word: reference_materials reads the name from 'filename')
+        name_hit = df_study['filename'].astype(str).str.contains(reference_materials.CANDIDATE_RE, regex=True) \
+            if 'filename' in df_study.columns else pd.Series(False, index=df_study.index)
+        if not any(h.any() for h in hits.values()) and not name_hit.any():
+            return out
+        rows = pd.concat([hits[c] for c in cols if hits[c].any()] + [name_hit], axis=1).any(axis=1)
+        # (all the rows' sample-level fields: encode_evidence keeps those with a candidate word and those that only
+        # name a matrix, 'Organism part: blood plasma', the row's own matrix)
+        names = [re.sub(r'^(?:Samples|Assay)_', '', c) for c in cols]
+        out[rows] = [reference_materials.encode_evidence(zip(names, r))
+                     for r in values.loc[rows, cols].itertuples(index=False, name=None)]
+    except Exception as e:
+        print(f"WARNING: no reference-material evidence: {type(e).__name__}: {e}")
+    return out
+
+
+def ml_refmat_study_text(study_details, protocols):
+    """catalog numbers of reference materials the study's title, description and protocols name"""
+    try:
+        return reference_materials.study_text_materials(_study_text(study_details['content'], protocols))
+    except Exception as e:
+        print(f"WARNING: study text not read for reference materials: {type(e).__name__}: {e}")
+        return []
+
+
 def _qc_blank_term(value):
     """ReDU SampleType for an exact MetaboLights QC/blank/standard label, else None."""
     return _QC_BLANK_LABELS.get(_label(value))
+
+
+# Culture-medium blanks recorded with the organism of the culture they are the blank of: the
+# Organism part says the sample is a medium blank ('media blank', 'blank medium' ...: the
+# blank_culturemedia labels of _QC_BLANK_LABELS, also in the plural) while the organism column names
+# the culture's organism (MTBLS12895: 'Synechococcus sp. WH 8102' / 'media blank' / Sample type
+# 'Scientific Control'). Such rows are blank_culturemedia whatever the organism. Not from other
+# columns: 'Scientific Control' is any control (untreated samples too), and sample names / factor
+# values like 'blank medium' also name real samples (MTBLS2716 'ZEN_blank_medium_lysate_1_control':
+# cells grown in medium without the compound).
+_MEDIA_BLANK_PARTS = {l for l, t in _QC_BLANK_LABELS.items() if t == 'blank_culturemedia'}
+_MEDIA_BLANK_PARTS |= {l + 's' for l in _MEDIA_BLANK_PARTS if l.endswith('blank')}
+
+
+def culture_media_blank_rows(organism_part):
+    """Rows (bool Series) whose Organism part names a culture-medium blank (_MEDIA_BLANK_PARTS)."""
+    return organism_part.map(lambda v: _label(v) in _MEDIA_BLANK_PARTS if isinstance(v, str) else False).astype(bool)
 
 
 # Columns holding the country where the sample was taken. 'Country of origin' and 'Country
@@ -1139,6 +1211,191 @@ def assay_sample_pairing(sample_names, extract_names, file_names, study_samples,
     return keys, drop, decision
 
 
+# ---------------------------------------------------------------------------------------------
+# Data files named after another sample
+#
+# The data file column of an assay sheet can be out of line with its sample rows while Sample Name
+# and Extract Name agree (assay_sample_pairing then sees nothing): sorted on its own or shifted by
+# some rows (MTBLS13957 row 'QC1' with file 'plasma_young_1.wiff' and row 'plasma_young_6' with
+# 'QC1.wiff'; MTBLS3909 'I07' with 'C01.raw'; MTBLS9021 '1ul-033' with '1ul-001.raw'; MTBLS14377
+# 'Blank1' with 'CAE_07a_RP_pos.raw.zip'; MTBLS14374 'Batch_1_NCE19' with 'Batch_1_NCE11_pos.raw').
+# _file_named_pairing() joins a row whose data files are named after another sample of the study to
+# that sample: the file name without folder, compression and MS file extensions (else also without a
+# leading or trailing polarity word, 'NEG_DE1.mzML', 'Batch_1_NCE11_pos.raw', 'P11neg.mzXML') is the Sample Name of
+# exactly one sample (_pair_name_key: compared as its runs of letters and runs of digits, so 'QC-1' is
+# 'QC1', 'E_18h3' is 'E_18h-3', but '6284a22_1' is not sample '6284a221' of MTBLS8056; sample names
+# also without MS file extensions, 'D015_1.D'), all MS data files of the row name that sample, and the
+# name has a letter and at least 2 characters. Only whole
+# names: a sample name inside a longer file name is not used ('global_positive_Batch1_A10.mzXML' is
+# plate well A10, not sample 'A10' of MTBLS146). It acts only in an assay whose data files are named
+# after samples: at least half of its rows with MS data files have files named after a sample (theirs
+# or another's) by such names; where the files follow another code (MTBLS14124 '1A_1.d.zip' for sample
+# '1CK_1') a few codes that equal sample names are no evidence. In such an assay names of digits only
+# count too ('156.mzML' next to 'B14T.mzML', MTBLS13554); elsewhere a file '12.mzML' can be run 12 of
+# samples numbered otherwise. When at least _PAIR_MIN_ROWS rows of such an assay move and they are at
+# least as many as the rows whose files are named after their own sample, the file column is out of
+# line with the sample rows as a whole: rows whose files are named after no sample keep only their
+# assay fields (pairing withheld, as in assay_sample_pairing; MTBLS12789 'Huh7-ko-CHML-1_POS.wiff' on
+# the row of sample 'Huh7-4', whose own file 'Huh7-4_POS.wiff' is three rows up).
+# ---------------------------------------------------------------------------------------------
+_PAIR_POLARITY_WORDS = {'pos', 'neg', 'positive', 'negative'}
+
+
+def _pair_name_tokens(value):
+    """Runs of letters and runs of digits of a name, lower case ('RP_NEG-QC-1' -> rp neg qc 1)."""
+    return re.findall(r'[a-z]+|[0-9]+', str(value).lower())
+
+
+def _pair_name_key(value):
+    """A sample / file name for exact comparison: its runs of letters and of digits ('QC-1' = 'QC1' = 'qc_1';
+    '6284a22_1' is not '6284a221')."""
+    return '_'.join(_pair_name_tokens(value))
+
+
+def _pair_file_keys(path):
+    """Name keys of a data file: the file name without folder, compression and MS file extensions, then the
+    same without a leading or trailing polarity word."""
+    tokens = _pair_name_tokens(_pair_base(path))
+    keys = ['_'.join(tokens)]
+    if len(tokens) > 1 and tokens[0] in _PAIR_POLARITY_WORDS:
+        keys.append('_'.join(tokens[1:]))
+    if len(tokens) > 1 and tokens[-1] in _PAIR_POLARITY_WORDS:
+        keys.append('_'.join(tokens[:-1]))
+    return keys
+
+
+def _pair_file_names_sample(files, by_name, digits=False):
+    """The sample all MS data files (paths) of an assay row are named after (by_name: _pair_name_key ->
+    Sample Names), or None (no MS file, a file names no single sample, or the files name different samples).
+    Names need a letter and 2 characters; digits=True: names of digits only instead."""
+    named = set()
+    for f in [f for f in files if _MS_FILE_RE.search(str(f).strip().lower())]:
+        hit = None
+        for key in _pair_file_keys(f):
+            bare = key.replace('_', '')
+            usable = bare.isdigit() if digits else (len(bare) >= 2 and re.search(r'[a-z]', bare))
+            if usable and len(by_name.get(key, ())) == 1:
+                hit = next(iter(by_name[key]))
+                break
+        if hit is None:
+            return None
+        named.add(hit)
+    return named.pop() if len(named) == 1 else None
+
+
+def _file_named_pairing(keys, drop, sample_names, file_names, study_samples):
+    """keys / drop of assay_sample_pairing with the rows whose data files are named after another sample
+    joined to that sample, and, in an assay whose file column is out of line as a whole, the rows whose files
+    are named after no sample dropped (see the block comment above). Returns (keys, drop, moved, dropped)."""
+    by_name = {}
+    for sample in study_samples:
+        if sample != '':
+            # the name, and the name without MS file extensions ('D015_1.D')
+            for key in dict.fromkeys((_pair_name_key(sample), _pair_name_key(_pair_base(sample)))):
+                if key:
+                    by_name.setdefault(key, set()).add(sample)
+    keys, drop = list(keys), list(drop)
+    named = [_pair_file_names_sample([f for f in files if str(f).strip()], by_name) if files else None
+             for files in file_names]
+    with_ms_file = [any(_MS_FILE_RE.search(str(f).strip().lower()) for f in files) for files in file_names]
+    # only in an assay whose data files are named after samples; there names of digits only count too
+    if 2 * sum(n is not None for n in named) < sum(with_ms_file):
+        return keys, drop, 0, 0
+    named = [n if n is not None or not files else _pair_file_names_sample([f for f in files if str(f).strip()], by_name, digits=True)
+             for n, files in zip(named, file_names)]
+    moved = [i for i, n in enumerate(named) if n is not None and n != keys[i]]
+    own = sum(n is not None and n == keys[i] for i, n in enumerate(named))
+    for i, n in enumerate(named):
+        if n is not None:
+            keys[i], drop[i] = n, False
+    dropped = 0
+    if len(moved) >= _PAIR_MIN_ROWS and len(moved) >= own:
+        for i, n in enumerate(named):
+            if n is None and not drop[i] and sample_names[i] != '' and with_ms_file[i]:
+                drop[i] = True
+                dropped += 1
+    return keys, drop, len(moved), dropped
+
+
+# ---------------------------------------------------------------------------------------------
+# Sample Name column sorted on its own, data file column not
+#
+# An assay sheet whose Sample Name (and Extract Name, so Sample Name = Extract Name) column was sorted on
+# its own while the MS Assay Name and data file columns kept another order pairs (nearly) every file with
+# another sample (MTBLS13855: rows Control_1, Control_10, Control_11 ... QC1, QC10, QC2 with files sWT002,
+# sWT004 ... QC1, QC2, QC3; MTBLS14573: D015_1 with D01_1.raw, QC1 with QC1-1.raw). assay_sample_pairing
+# sees nothing (Sample Name = Extract Name), and _file_named_pairing stays off when fewer than half of the
+# files are named after samples (codes or run numbers: sWT002, 1.raw). _sorted_column_pairing() acts in
+# such an assay when
+#   * assay_sample_pairing left it alone and _file_named_pairing withheld no row (it may have joined a few
+#     rows to the samples their files are named after: fewer than _PAIR_MIN_ROWS); the rows are compared
+#     with their Sample Name as the sheet gives it;
+#   * every row with a Sample Name names a sample of the sample sheet, at least _PAIR_MIN_ROWS rows;
+#   * the Sample Name column is sorted (_pair_sorted) and does not follow the sample sheet's order;
+#   * at least _PAIR_SORTED_MIN_EVIDENCE rows have MS data files named after another sample
+#     (_pair_file_names_sample: the whole file name, letters and at least 2 characters);
+# and either
+#   (a) the hypothesis "the file column follows the sample sheet" (row i holds the file of the i-th of
+#       the assay's Sample Names in sample-sheet order) explains every file named after a sample: a row
+#       whose Sample Name the sorted and the sheet order both give keeps it; or
+#   (b) no row's file is named after its own Sample Name (exactly), and fewer than half of the rows have
+#       files whose name contains their Sample Name or the reverse (_pair_names): a code that derives the
+#       file names from the Sample Names (MTBLS13495: file 'FD1.raw' of sample 'FFD1', while 'FD1' is also a
+#       sample) is no evidence (MTBLS13690: QC-01 with WT_1_4W_neg.raw, Tg-* rows with KI_* files).
+# Then a row whose files are named after a sample is joined to it, and every other row with MS data files
+# keeps only its assay fields (pairing withheld, side table of withheld files; its file names no sample,
+# so which sample it belongs to is not verified).
+# ---------------------------------------------------------------------------------------------
+_PAIR_SORTED_MIN_EVIDENCE = 3
+
+
+def _sorted_column_pairing(keys, drop, sample_names, file_names, study_samples, sheet_positions):
+    """keys / drop with the rows of an assay whose Sample Name column was sorted on its own re-paired (see the
+    block comment above). Returns (keys, drop, moved, dropped, case) with case 'sheet_order', 'named' or ''."""
+    keys, drop = list(keys), list(drop)
+    rows = [i for i, s in enumerate(sample_names) if s != '']
+    if len(rows) < _PAIR_MIN_ROWS or not sheet_positions or any(sample_names[i] not in sheet_positions for i in rows):
+        return keys, drop, 0, 0, ''
+    column = [sample_names[i] for i in rows]
+    if not _pair_sorted(column) or _pair_follows_sheet(column, sheet_positions):
+        return keys, drop, 0, 0, ''
+    by_name = {}
+    for sample in study_samples:
+        if sample != '':
+            for key in dict.fromkeys((_pair_name_key(sample), _pair_name_key(_pair_base(sample)))):
+                if key:
+                    by_name.setdefault(key, set()).add(sample)
+    files = {i: [f for f in file_names[i] if str(f).strip()] for i in rows}
+    named = {i: (_pair_file_names_sample(files[i], by_name) if files[i] else None) for i in rows}
+    if sum(n is not None and n != sample_names[i] for i, n in named.items()) < _PAIR_SORTED_MIN_EVIDENCE:
+        return keys, drop, 0, 0, ''
+    expected = dict(zip(rows, sorted(column, key=lambda s: sheet_positions[s])))
+    if all(n is None or n == expected[i] for i, n in named.items()):
+        case, keep = 'sheet_order', {i for i in rows if expected[i] == sample_names[i]}
+    else:
+        if any(n is not None and n == sample_names[i] for i, n in named.items()):
+            return keys, drop, 0, 0, ''
+        own = sum(any(_pair_names(sample_names[i], f) for f in files[i]) for i in rows)
+        if 2 * own >= len(rows):
+            return keys, drop, 0, 0, ''
+        case, keep = 'named', set()
+    moved = dropped = 0
+    for i in rows:
+        if i in keep:
+            continue
+        if named[i] is not None:
+            if named[i] != keys[i]:
+                moved += 1
+            keys[i], drop[i] = named[i], False
+        elif keys[i] != sample_names[i]:
+            # joined to another sample by an earlier rule (not by its file name): left as it is
+            continue
+        elif not drop[i] and any(_MS_FILE_RE.search(str(f).strip().lower()) for f in files[i]):
+            drop[i] = True
+            dropped += 1
+    return keys, drop, moved, dropped, case
+
+
 def _sample_sheet_positions(sample_table):
     """{stripped Sample Name: row of its first occurrence} of a sample table record (empty if it has none)."""
     try:
@@ -1186,7 +1443,88 @@ def _assay_pairing(df, study_samples, label='', sheet_positions=None):
                   'sorted_extract': 'neither (Sample Name column sorted on its own, Extract Name column in row order)'}[decision]
         print(f'{label}: Sample Name differs from Extract Name in most rows; data files follow {follow}: '
               f'{moved} rows joined to another sample, {sum(drop)} rows without sample fields')
+    # data files named after another sample (_file_named_pairing)
+    keys, drop, n_named, n_unnamed = _file_named_pairing(keys, drop, sample_names, files, study_samples)
+    if n_named:
+        print(f'{label}: {n_named} rows have data files named after another sample and are joined to it'
+              + (f'; the file column is out of line with the samples: {n_unnamed} rows with files named after no sample '
+                 f'keep only their assay fields' if n_unnamed else ''))
+    # Sample Name column sorted on its own, data file column not (_sorted_column_pairing)
+    if decision == 'consistent' and not n_unnamed:
+        keys, drop, n_sorted, n_unverified, case = _sorted_column_pairing(keys, drop, sample_names, files, study_samples,
+                                                                          sheet_positions)
+        if n_sorted or n_unverified:
+            how = 'in sample-sheet order' if case == 'sheet_order' else 'named after other samples'
+            print(f'{label}: Sample Name column sorted on its own, data files {how}: {n_sorted} rows joined to the sample '
+                  f'their files are named after, {n_unverified} rows with files named after no sample keep only their '
+                  f'assay fields')
     return [k if k != s else j for k, s, j in zip(keys, sample_names, join)], drop
+
+
+# ---------------------------------------------------------------------------------------------
+# Side table of withheld files
+#
+# Files whose sample pairing the converter withheld or changed, so that saveOlderData (save_older_data.py
+# --withheld_files) does not bring back their rows from earlier runs, which paired them on the Sample
+# Name column (MTBLS718, MTBLS13295; MTBLS14505, whose data files are no longer listed, so that its
+# re-paired rows get no row this run), and counts them as files of the rebuilt study (shrink guard,
+# 'no rows of its own'): the data files of assay rows whose pairing a pairing rule withheld (sample
+# fields dropped: 'sample_pairing_withheld') or changed (joined to another sample than their Sample
+# Name: 'sample_pairing_changed'), with or without a row of their own this run (saveOlderData drops an
+# earlier row of such a file only where this run has no row of it). Only for studies converted
+# successfully. Columns USI, dataset, reason (WITHHELD_COLUMNS); USIs as the converter builds them
+# (mzspec:<study>:<file as the assay sheet names it>). Written with --withheld_output, also when empty
+# (header only).
+# ---------------------------------------------------------------------------------------------
+WITHHELD_COLUMNS = ['USI', 'dataset', 'reason']
+WITHHELD_FILES = []
+
+
+def _pair_dropped_files(df, file_columns, column='_pair_dropped'):
+    """Supported MS data files (as the assay sheet names them) of the rows of df whose sample fields
+    assay_sample_pairing dropped ('_pair_dropped'; column='_pair_moved': the rows joined to another
+    sample), in row order, each once."""
+    if column not in df.columns or not df[column].astype(bool).any():
+        return []
+    dropped = df.loc[df[column].astype(bool), [c for c in file_columns if c in df.columns]]
+    files = [str(v).strip() for row in dropped.itertuples(index=False) for v in row
+             if isinstance(v, str) and _MS_FILE_RE.search(v.strip().lower())]
+    return list(dict.fromkeys(files))
+
+
+def withheld_file_rows(study_id, files, output_usis, reason):
+    """Side table rows (WITHHELD_COLUMNS) of the files of a study that are not among its output USIs
+    (compared without MS file / compression extension, as saveOlderData compares files) and whose file name
+    (without extensions) no output USI of the study has: a raw file whose derived twin in another folder is a
+    row of the study is not listed (FILES/RAW_FILES/x.d.zip next to the row of FILES/DERIVED_FILES/x.mzML;
+    saveOlderData links the earlier rows of either to that row, merge_metadata.link_same_files)."""
+    def noext(usi):
+        return re.sub(r'(\.(mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|d|gz|zip|lzma|bz2|7z|xz|rar))+$', '', usi, flags=re.I)
+    def usi_path(path):
+        # as process_filename (read_and_validate_redu_from_github.py): a file inside a .d folder is the folder
+        parts = path.split('/')
+        for i, part in enumerate(parts):
+            if part.endswith('.d'):
+                return '/'.join(parts[:i + 1])
+        return path
+    def stem(usi):
+        return noext(str(usi)).rsplit('/', 1)[-1].rsplit(':', 1)[-1].lower()
+    produced = {noext(str(u)) for u in output_usis}
+    produced_stems = {stem(u) for u in output_usis}
+    rows = []
+    for f in files:
+        usi = f'mzspec:{study_id}:{usi_path(f)}'
+        if noext(usi) not in produced and stem(usi) not in produced_stems:
+            rows.append({'USI': usi, 'dataset': study_id, 'reason': reason})
+    return list({r['USI']: r for r in rows}.values())
+
+
+def write_withheld_files(path, rows):
+    """The side table of withheld files (header only when there are none), sorted by USI."""
+    table = pd.DataFrame(rows, columns=WITHHELD_COLUMNS).drop_duplicates(subset=['USI'])
+    table.sort_values('USI', kind='mergesort').to_csv(path, sep='\t', index=False)
+    print(f'Withheld files (sample pairing withheld or changed): {len(table)} of {table["dataset"].nunique()} studies '
+          f'{table["reason"].value_counts().to_dict()} -> {path}')
 
 
 def _table_headers(table, prefix):
@@ -1268,7 +1606,15 @@ def _ncbi_term_by_id(allowedTerm_dict):
 #       - accession A == T, or A's own name is the text (another taxon of that name): A
 #       - A below T in the pinned NCBI taxonomy (a strain or subspecies of T) and not part of a
 #         drag-fill series: A
-#       - otherwise (A above T, unrelated, or drag-filled): T, the text wins
+#       - otherwise (A above T, unrelated, or drag-filled): T, the text wins, except for microbes
+#         (_microbe_accession_wins): T and A both in Bacteria, Archaea, Fungi or Viruses (the same one;
+#         pinned NCBI taxonomy), A unrelated to T (not above it), not part of a drag-fill series, the
+#         only accession of this text in the study and used with no other organism text of the study:
+#         A (microbiology curators pick the strain / species ID with care; a text that carries several
+#         accessions, or an accession shared with another organism, is a copy-paste: MTBLS5462
+#         'Synechococcus' with the 'Prochlorococcus marinus' ID 1219, MTBLS10328 'Acinetobacter pittii'
+#         with the 'Acinetobacter junii' ID 40215, MTBLS12808 one 'ATCC 31822' row with the ID of the
+#         Variant column)
 #   * the text names no taxon: A, unless the text lists several organisms ('a; b', 'a, b',
 #     'a and b', 'a/b' ...), the text carries several different accessions in the study, or A
 #     is part of a drag-fill series: then 'missing value'
@@ -1348,7 +1694,51 @@ def _ncbi_is_ancestor(ancestor, taxon):
     return False
 
 
-def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_ncbi_is_ancestor, pairs=None):
+# NCBI taxa whose descendants count as microbes for _microbe_accession_wins
+_MICROBE_GROUPS = {2: 'Bacteria', 2157: 'Archaea', 4751: 'Fungi', 10239: 'Viruses'}
+
+
+def _ncbi_microbe_group(taxon):
+    """'Bacteria', 'Archaea', 'Fungi' or 'Viruses' when taxon ID `taxon` is that group or below it in the
+    pinned NCBI taxonomy (merged IDs followed), else None (also without the pinned taxonomy)."""
+    import REDU_conversion_functions
+    pinned = REDU_conversion_functions._PINNED_LINEAGE
+    if pinned is None:
+        return None
+    try:
+        node = pinned.taxonomy.resolve(int(taxon))
+    except (TypeError, ValueError):
+        return None
+    if node is None:
+        return None
+    parent = pinned.taxonomy.parent
+    for _ in range(1000):
+        if node in _MICROBE_GROUPS:
+            return _MICROBE_GROUPS[node]
+        up = parent[node]
+        if up == node or up < 0:
+            return None
+        node = up
+    return None
+
+
+def _microbe_accession_wins(key, acc, t_id, a_id, in_series, ids_of_text, texts_of_id, is_ancestor, microbe_group):
+    """Whether accession `acc` (taxon a_id) wins over the organism text `key` (taxon t_id) it contradicts:
+    both are microbes of the same group (microbe_group), A is not above T, A is not part of a drag-fill
+    series, A is the only accession of the text in the study and no other organism text of the study
+    carries A (see the block comment above)."""
+    if in_series:
+        return False
+    group = microbe_group(t_id)
+    if group is None or microbe_group(a_id) != group:
+        return False
+    if is_ancestor(a_id, t_id):
+        return False
+    return ids_of_text.get(key) == {acc} and texts_of_id.get(acc) == {key}
+
+
+def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_ncbi_is_ancestor, pairs=None,
+                             microbe_group=_ncbi_microbe_group):
     """NCBITaxonomy term of each (organism text, NCBITaxon accession ID) pair with a valid
     accession, by the rules of the block comment above.
 
@@ -1356,11 +1746,13 @@ def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_nc
     evidence for drag-fills; accession IDs without the 'NCBITaxon:' prefix, '' if none); pairs:
     the pairs to decide (default: those of samples); text_term(text): the allowed term the text
     names, or None; accession_term(ID): the allowed term of the ID, or None; is_ancestor(a, b):
-    whether taxon ID a is a proper ancestor of b. Returns {(text, ID): term or 'missing value'}."""
-    ids_of_text = {}
+    whether taxon ID a is a proper ancestor of b; microbe_group(ID): 'Bacteria', 'Archaea', 'Fungi',
+    'Viruses' or None. Returns {(text, ID): term or 'missing value'}."""
+    ids_of_text, texts_of_id = {}, {}
     for text, acc in samples:
         if acc:
             ids_of_text.setdefault(_organism_key(text), set()).add(acc)
+            texts_of_id.setdefault(acc, set()).add(_organism_key(text))
     runs_of_text = {key: _consecutive_runs([int(a) for a in ids if a.isdigit()]) for key, ids in ids_of_text.items()}
     dragged = _drag_filled(samples)
     out = {}
@@ -1379,6 +1771,9 @@ def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_nc
             if a_term == t_term or a_name.strip().lower() == key:
                 out[(text, acc)] = a_term
             elif not in_series and is_ancestor(t_id, a_id):
+                out[(text, acc)] = a_term
+            elif _microbe_accession_wins(key, acc, t_id, a_id, in_series, ids_of_text, texts_of_id, is_ancestor,
+                                         microbe_group):
                 out[(text, acc)] = a_term
             else:
                 out[(text, acc)] = t_term
@@ -1428,7 +1823,8 @@ def _ncbi_term_by_name(allowedTerm_dict):
 
 def _investigation_submission_year(study_id):
     """Submission year from the study's public ISA investigation file, used when the
-    API has no submissionYear. Returns None if it cannot be read."""
+    API has no submissionYear. Returns None if it cannot be read (or holds no date after
+    1970-01-01, _year_after_epoch)."""
     url = f"https://ftp.ebi.ac.uk/pub/databases/metabolights/studies/public/{study_id}/i_Investigation.txt"
     try:
         response = EBI_SESSION.get(url, timeout=(10, 120))
@@ -1440,9 +1836,53 @@ def _investigation_submission_year(study_id):
         for key in ('Study Submission Date', 'Study Public Release Date'):
             if line.startswith(key):
                 match = re.search(r'(19|20)\d{2}', line)
-                if match:
+                if match and _year_after_epoch(match.group(0)) is not None:
                     return int(match.group(0))
     return None
+
+
+# ---------------------------------------------------------------------------------------------
+# YearOfAnalysis (submission year) of a study
+#
+# The study record's derivedData.submissionYear, else the year of the i_Investigation file's
+# 'Study Submission Date' (or 'Study Public Release Date'). The MetaboLights API gives some
+# studies studySubmissionDate 0 (milliseconds since 1970-01-01), i.e. derivedData submissionYear
+# 1970 / submissionMonth '1970-01' (2026-10: MTBLS17, MTBLS127, MTBLS210, MTBLS2273, MTBLS13066,
+# MTBLS15110), whose i_Investigation files have the real dates (MTBLS17: 2013-06-11). MetaboLights
+# started in 2012, so a date at or before 1970-01-01 is no date (_year_after_epoch).
+# ---------------------------------------------------------------------------------------------
+def _year_after_epoch(value):
+    """The year of a date value (a year 2013 / '2013', a date '2013-06-11', or milliseconds since
+    1970-01-01 as the API's studySubmissionDate), None when missing or not after 1970 (epoch zero:
+    0, '0', 1970, '1970-01-01')."""
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if re.fullmatch(r'\d+(?:\.0*)?', text):
+        number = int(float(text))
+        # a year, else milliseconds since 1970-01-01 (0 and the first day: no date)
+        year = None
+        if 1000 <= number <= 9999:
+            year = number
+        elif number > 86_400_000:
+            try:
+                year = time.gmtime(number / 1000).tm_year
+            except (OverflowError, OSError, ValueError):
+                year = None
+    else:
+        match = re.search(r'(?<!\d)((?:19|20)\d{2})(?!\d)', text)
+        year = int(match.group(1)) if match else None
+    return year if year is not None and year > 1970 else None
+
+
+def _study_submission_year(content, study_id):
+    """YearOfAnalysis of a study record's content (see the block comment above): derivedData
+    submissionYear, else the i_Investigation file's year (_investigation_submission_year); None if neither
+    has a date after 1970-01-01."""
+    year = _year_after_epoch((content.get('derivedData') or {}).get('submissionYear'))
+    if year is None:
+        year = _investigation_submission_year(study_id)
+    return year
 
 
 
@@ -2679,9 +3119,7 @@ def Metabolights2REDU(study_id, **kwargs):
     protocols = [(str(p.get('name') or ''), str(p.get('description') or ''))
                  for p in (study_details['content'].get('protocols') or [])]
 
-    submissionYear = (study_details['content'].get('derivedData') or {}).get('submissionYear')
-    if submissionYear in (None, '', 0):
-        submissionYear = _investigation_submission_year(study_id)
+    submissionYear = _study_submission_year(study_details['content'], study_id)
 
     df_assays = pd.DataFrame()
     ms_study_assays = []
@@ -2767,6 +3205,8 @@ def Metabolights2REDU(study_id, **kwargs):
             df_study.iloc[np.flatnonzero(_pair_drop.to_numpy()),
                           [i for i, c in enumerate(df_study.columns) if c in _sample_columns]] = ''
         df_study['_pair_dropped'] = _pair_drop
+        # rows joined to another sample than their Sample Name (side table of withheld files)
+        df_study['_pair_moved'] = (df_study['Assay__pair_key'].astype(str) != df_study['Assay_Sample Name'].astype(str)) & ~_pair_drop
         df_study = df_study.drop(columns=['Assay__pair_key', 'Assay__pair_drop'])
         df_study['row_id'] = range(1, len(df_study) + 1)
 
@@ -2777,6 +3217,10 @@ def Metabolights2REDU(study_id, **kwargs):
         # holding the .wiff), so every such column contributes rows; derived (mzML) files come first
         file_columns = [col for prefix in ['Assay_Derived Spectral Data File', 'Assay_Raw Spectral Data File']
                         for col in df_study.columns if re.fullmatch(re.escape(prefix) + r'(\.\d+)?', col)]
+        # data files of the rows whose sample pairing was withheld (side table of withheld files)
+        _withheld_files = _pair_dropped_files(df_study, file_columns)
+        _changed_files = [f for f in _pair_dropped_files(df_study, file_columns, '_pair_moved') if f not in set(_withheld_files)]
+        df_study = df_study.drop(columns=['_pair_moved'])
         file_dfs = []
         for col in file_columns:
             df_files = df_study[df_study[col].str.contains(r'\.', regex=True, na=False)].copy()
@@ -2914,7 +3358,8 @@ def Metabolights2REDU(study_id, **kwargs):
 
                 # the row-wise rule on the three columns it reads (a row-wise apply builds a
                 # Series of all ~300 columns per row), expanded into two columns as .apply(pd.Series) did
-                _st = [get_enviromental_water(_o) if (pd.isna(_t) or _t == 'missing value') else [_t, _t1]
+                _water_text = ' '.join(str(study_details['content'].get(_k) or '') for _k in ('title', 'description'))
+                _st = [get_enviromental_water(_o, _water_text) if (pd.isna(_t) or _t == 'missing value') else [_t, _t1]
                        for _o, _t, _t1 in zip(df_study['Samples_Organism'], df_study['SampleType'], df_study['SampleTypeSub1'])]
                 df_study[['SampleType', 'SampleTypeSub1']] = pd.DataFrame(_st, index=df_study.index)
 
@@ -2962,6 +3407,15 @@ def Metabolights2REDU(study_id, **kwargs):
                     df_study.loc[_set, 'SampleTypeSub1'] = qc_label[_set].map(lambda t: _SUBTYPE.get(t, t))
                 # kept as a column: the index is reset by the ontology merges below
                 df_study['_qc_label'] = qc_label
+                # culture-medium blanks named by the organism part, also where the organism column names the
+                # culture's organism (culture_media_blank_rows); a generic blank label is refined, other QC labels stay
+                if 'Samples_Organism part' in df_study.columns:
+                    _media_blank = culture_media_blank_rows(df_study['Samples_Organism part']) & \
+                        (df_study['_qc_label'].isna() | (df_study['_qc_label'] == 'blank_analysis'))
+                    if _media_blank.any():
+                        df_study.loc[_media_blank, ['SampleType', 'SampleTypeSub1', '_qc_label']] = 'blank_culturemedia'
+                # the sample-level fields that can name a reference material (complete_and_fill_REDU_table)
+                df_study[reference_materials.EVIDENCE_COLUMN] = ml_refmat_evidence(df_study, _sample_kind_pos)
 
 
                 # df_biofluid_vs_tissue = pd.read_csv(os.path.join(transSheet_dir, 'biofluid_vs_tissue_Metabolights.csv'))
@@ -3939,6 +4393,8 @@ def Metabolights2REDU(study_id, **kwargs):
                 if _tab is not None and len(_tab):
                     # the exposure table also carries the exposure agent (OrganismExposureAgent / Index)
                     _index_tables[_arg] = _tab.drop_duplicates(subset=['Label'])[['Label', _id] + [c for c in ('OrganismExposureAgentIndex', 'OrganismExposureAgent') if c in _tab.columns]].copy()
+            # reference materials the study text (title, description, protocols) names by number
+            _index_tables['refmat_study_text'] = ml_refmat_study_text(study_details, protocols)
             df_study = complete_and_fill_REDU_table(df_study, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                     ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,NCBIRankDivision_table=NCBIRankDivision_table, add_usi = True, 
                                                     other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'] + COMPRESSED_MS_FILE_EXTENSIONS, **_index_tables)
@@ -3962,6 +4418,13 @@ def Metabolights2REDU(study_id, **kwargs):
                     df_study['SampleGroupFreeText'] = 'missing value'
 
             print(f'We are adding {len(df_study)} samples to the REDU table for study {study_id}.')
+            # files of withheld and changed pairings (side table of withheld files)
+            if _withheld_files or _changed_files:
+                _w = (withheld_file_rows(study_id, _withheld_files, [], 'sample_pairing_withheld')
+                      + withheld_file_rows(study_id, _changed_files, [], 'sample_pairing_changed'))
+                if _w:
+                    print(f'{study_id}: {len(_w)} data files of withheld or changed sample pairings (side table)')
+                    WITHHELD_FILES.extend(_w)
 
             return df_study
 
@@ -3985,6 +4448,9 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_ncbi_nodes_dmp", type=str, required=True, help="nodes.dmp of the pinned NCBI taxdump (fetchReferenceData); NCBI lineages for SampleType")
     parser.add_argument("--path_to_ncbi_names_dmp", type=str, required=True, help="names.dmp of the pinned NCBI taxdump")
     parser.add_argument("--path_to_ncbi_merged_dmp", type=str, required=True, help="merged.dmp of the pinned NCBI taxdump")
+    parser.add_argument("--withheld_output", type=str, default="none",
+                        help="Writes the side table of files that get no row on purpose (USI, dataset, reason; header only "
+                             "when none) for save_older_data.py --withheld_files")
             
     args = parser.parse_args()
 
@@ -4079,6 +4545,9 @@ if __name__ == "__main__":
           f'not public: {len(not_public_studies)}, failed: {len(failed_studies)} (of {len(public_metabolights_studies)})')
     if failed_studies:
         print('Failed studies: ' + ' '.join(failed_studies))
+
+    if args.withheld_output != 'none':
+        write_withheld_files(args.withheld_output, WITHHELD_FILES)
 
     if len(REDU_dataframes) > 0:
         redu_tables_all = pd.concat(REDU_dataframes, ignore_index=True)

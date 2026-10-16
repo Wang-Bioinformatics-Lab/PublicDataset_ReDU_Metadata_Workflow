@@ -9,7 +9,8 @@ from urllib.parse import urlparse, parse_qs
 import json
 from tqdm import tqdm
 from collections import Counter
-from blank_qc_names import blank_qc_type_from_filename, name_tokens
+from blank_qc_names import blank_qc_type_from_filename, name_tokens, not_a_pool_by_name, not_a_pool_by_value, NOT_POOL_QC_NAME_WORDS
+import reference_materials
 import traceback
 import time
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
@@ -21,6 +22,7 @@ from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
 from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
+from water_kind import water_kind_of_unstated_water
 import REDU_conversion_functions as _rcf
 from getAllWorkbench_file_paths import fetch_archive_listing, listing_query, ArchiveListingError, collapse_vendor_folder
 from requests.adapters import HTTPAdapter
@@ -173,6 +175,28 @@ def listing_contexts(raw_file_name_df, path_col='filename', archive_col='archive
     return {p: file_context(p, a, dims) for p, a in zip(paths, archives)}
 
 
+def same_name_copy_context(path, archives=None, dims=(0, 1)):
+    """(polarity, chromatography) that tells a same-name copy of a matched file apart from it
+    (propagate_to_same_name_files: Method_2/x.raw, a copy of the sample matched as Method_1/x.raw).
+    Chromatography: what the copy's folders state, with the dimension taken from its archive name(s)
+    where they leave it open, as in file_context; a column word in the file name says nothing about
+    which acquisition the copy is ('08C8.mzML', the well C8 of a HILIC study, in a POS and a NEG
+    folder). Polarity: the whole path, as for any listed file (file_context): a polarity word in the
+    copy's own file name is evidence ('lcqtof_t3_neg_1.mzML' is no positive acquisition)."""
+    p = str(path).replace('\\', '/')
+    folder = p.rsplit('/', 1)[0] + '/' if '/' in p else ''
+    return file_context(p, archives, dims)[0], file_context(folder, archives, dims)[1]
+
+
+def listing_copy_contexts(raw_file_name_df, path_col='filename', archive_col='archive'):
+    """{listed path: same_name_copy_context} of a study's file listing (archive names in
+    archive_col, used in the study's archive_dimensions as in listing_contexts)."""
+    paths = raw_file_name_df[path_col].astype(str).tolist()
+    archives = raw_file_name_df[archive_col].tolist() if archive_col in raw_file_name_df.columns else [None] * len(paths)
+    dims = archive_dimensions(archives)
+    return {p: same_name_copy_context(p, a, dims) for p, a in zip(paths, archives)}
+
+
 def _context_contradicts(context, hints):
     """True if a file path's (polarity, chromatography) names another polarity or
     chromatography than the analysis hints ({'polarity': .., 'chrom': ..})."""
@@ -270,6 +294,52 @@ def acquisition_contexts(stems, paths, hints=None, ranks=None, archives=None):
     return group
 
 
+def contexts_told_apart_by_listed_folders(stems, paths, groups, listed_names):
+    """Acquisition groups (acquisition_contexts) with the files of one stem and group that the samples' listed raw
+    file names with folders tell apart ('Seed_check/49.D/' and 'Leaf_check/49.D/' of two samples) in groups of their
+    own: they are files of different samples, not copies of one file of which one is kept. A file of such a stem
+    whose folders none or several of those listed names give is left out (-1: a copy of one of them, which one is
+    not known). listed_names: the raw file names the samples list. Other files keep their group."""
+    by_last = {}
+    for n in listed_names:
+        parts = [p for p in re.split(r'[\\/]+', str(n).strip()) if p]
+        if len(parts) < 2:
+            continue
+        last, folder = _match_tokens(parts[-1].split('.')[0]), _match_tokens(' '.join(parts[:-1]))
+        if last and folder:
+            by_last.setdefault(last, set()).add(folder)
+    groups = list(groups)
+    if not by_last:
+        return groups
+    by_key, top = {}, {}
+    for i, (st, g) in enumerate(zip(stems, groups)):
+        if g >= 0:
+            by_key.setdefault((st, g), []).append(i)
+            top[st] = max(top.get(st, 0), g)
+    for (st, g), idx in sorted(by_key.items(), key=lambda x: (str(x[0][0]), x[0][1])):
+        folders = by_last.get(_match_tokens(st))
+        if len(idx) < 2 or not folders or len(folders) < 2:
+            continue
+        named, loose = {}, []
+        for i in idx:
+            f = _path_folder_tokens(paths[i])[0]
+            hit = [x for x in sorted(folders) if _token_run_in(x, f)]
+            if len(hit) == 1:
+                named.setdefault(hit[0], []).append(i)
+            else:
+                loose.append(i)
+        if len(named) < 2:
+            continue
+        for n, x in enumerate(sorted(named)):
+            if n:
+                top[st] += 1
+            for i in named[x]:
+                groups[i] = g if n == 0 else top[st]
+        for i in loose:
+            groups[i] = -1
+    return groups
+
+
 # --- ChromatographyAndPhase from CHROMATOGRAPHY_TYPE + COLUMN_NAME ---------------------
 # Column names are compared after lower-casing and replacing every non-alphanumeric
 # character (hyphens of any kind, '(', '™', '_') by a space.
@@ -304,6 +374,42 @@ def _reverse_phase_subtype(col):
     if 'polar-C18' in hits:
         hits.remove('C18')
     return hits[0] if len(hits) == 1 else 'NOS'
+
+
+_REST_BLANK = {'', 'na', 'n/a', 'nan', 'none', 'null', '-', 'not applicable'}
+
+
+def _rest_blank(value):
+    return value is None or (isinstance(value, float) and np.isnan(value)) or str(value).strip().lower() in _REST_BLANK
+
+
+def chromatography_from_rest_analysis(mwtab, rest_analysis):
+    """The mwTab of an analysis whose CHROMATOGRAPHY section states neither a CHROMATOGRAPHY_TYPE
+    nor a COLUMN_NAME (an empty section: ST004691 AN007923), with the CHROMATOGRAPHY_TYPE of the
+    study's REST analysis record of the same analysis (/rest/study/study_id/<ST>/analysis:
+    'chromatography_type'), where that record has one ('Reversed phase' -> reverse phase (NOS)).
+    Not the record's 'column_name': it can be that of another setup of the study's series
+    (AN007923 of the nano-flow upload names the column of the high-flow sister studies). Only
+    fills: a mwTab stating either field is returned as it is, also where the REST record says
+    otherwise. The mwTab passed in is not modified."""
+    if not isinstance(mwtab, dict) or not isinstance(rest_analysis, dict):
+        return mwtab
+    # the REST record must be the one of this mwTab's analysis
+    an = _section(mwtab, 'METABOLOMICS WORKBENCH').get('ANALYSIS_ID')
+    if _rest_blank(rest_analysis.get('analysis_id')) or (not _rest_blank(an) and str(an) != str(rest_analysis.get('analysis_id'))):
+        return mwtab
+    ch = _section(mwtab, 'CHROMATOGRAPHY')
+    if not (_rest_blank(ch.get('CHROMATOGRAPHY_TYPE')) and _rest_blank(ch.get('COLUMN_NAME'))):
+        return mwtab
+    fill = {k: str(rest_analysis.get(r)).strip() for k, r in (('CHROMATOGRAPHY_TYPE', 'chromatography_type'),)
+            if not _rest_blank(rest_analysis.get(r))}
+    if not fill:
+        return mwtab
+    out = dict(mwtab)
+    out['CHROMATOGRAPHY'] = {**ch, **fill}
+    print(f"Chromatography of {rest_analysis.get('analysis_id')} from the REST analysis record "
+          f"(the mwTab states none): {fill}")
+    return out
 
 
 def chromatography_and_phase(chrom_type, column_name):
@@ -541,6 +647,101 @@ def clear_polarity_contradicted_by_sibling(df, raw_file_name_df, polarity_table=
     return df
 
 
+def _file_name_polarities(path):
+    """The polarities the file name (last path part) of a listed path states (_path_tokens)."""
+    return _path_tokens(str(path).replace('\\', '/').rsplit('/', 1)[-1])[0]
+
+
+def _scan_polarities(df, polarity_table):
+    """{USI: 'positive' / 'negative'} of the rows' files whose scans (polarity_table) are of one polarity"""
+    scans = {}
+    if polarity_table is not None and len(polarity_table) and 'USI' in df.columns:
+        _pt = polarity_table[polarity_table['USI'].isin(set(df['USI'].astype(str)))]
+        for u, n_neg, n_pos in zip(_pt['USI'], pd.to_numeric(_pt['negative_polarity_count'], errors='coerce'),
+                                   pd.to_numeric(_pt['positive_polarity_count'], errors='coerce')):
+            if n_neg > 0 and not n_pos > 0:
+                scans[u] = 'negative'
+            elif n_pos > 0 and not n_neg > 0:
+                scans[u] = 'positive'
+    return scans
+
+
+def clear_polarity_contradicted_by_all_file_names(df, min_rows=3, polarity_table=None):
+    """IonizationSourceAndPolarity of an analysis that the file name of every one of its files
+    contradicts is cleared to 'missing value': when all (at least min_rows) rows of a study with
+    the positive (negative) value have a file name stating only the other polarity, the mwTab's
+    ION_MODE does not describe these files (ST004626: ION_MODE POSITIVE, title '... TOF MS
+    (Negative)', every file 'lcqtof_t3_neg_*'; its positive twin study names its files
+    'lcqtof_t3_pos_*'). Only the file name counts: a folder word can describe the samples of a
+    whole study ('triple negative breast cancer cells/' in a positive-mode study). Values are
+    only cleared, never set from the file name. Polarity-switching ('alternating') values and
+    rows without a polarity are left alone. A file name word can also be a sample word ('Gram-negative_1',
+    'HIV_neg_2', 'ER-negative_3'): the group is left alone when the scans of any of its files
+    (polarity_table) agree with the value, and when its files are all blanks / QCs by their name."""
+    if df is None or len(df) == 0 or 'IonizationSourceAndPolarity' not in df.columns or 'filename' not in df.columns:
+        return df
+    values = df['IonizationSourceAndPolarity'].astype(str).str.lower()
+    names = df['filename'].astype(str).map(_file_name_polarities)
+    scans = _scan_polarities(df, polarity_table)
+    usis = df['USI'].astype(str) if 'USI' in df.columns else pd.Series('', index=df.index)
+    clear = pd.Series(False, index=df.index)
+    for pol, other in (('positive', 'negative'), ('negative', 'positive')):
+        rows = values.str.contains(f'({pol})', regex=False) & ~values.str.contains(f'({other})', regex=False)
+        if rows.sum() >= min_rows and all(n == {other} for n in names[rows]) \
+                and not any(scans.get(u) == pol for u in usis[rows]) \
+                and not all(blank_qc_type_from_filename(f) for f in df.loc[rows, 'filename'].astype(str)):
+            clear |= rows
+    if clear.any():
+        print(f"{int(clear.sum())} polarity values cleared: the file name of every file with that polarity "
+              f"names the other one")
+        df = df.copy()
+        df.loc[clear, 'IonizationSourceAndPolarity'] = 'missing value'
+    return df
+
+
+def clear_polarity_contradicted_by_folder_and_file_name(df, polarity_table=None):
+    """IonizationSourceAndPolarity that both the folders and the file name of the file's path
+    contradict (each states only the other polarity: 'Experiment 1 FA Positive/x_RW1_Pos.mzXML'
+    with the negative mode of a study's only analysis, whose mwTab names the _Pos sample too) is
+    cleared to 'missing value', also where the study lists no counterpart of the other polarity
+    (clear_polarity_contradicted_by_sibling needs one: x_RW1_Neg is listed under another date).
+    One word alone may be a sample or folder name ('Negative control1', 'triple negative breast
+    cancer cells/'); two independent ones are not. A value the file's scans (polarity_table)
+    agree with stays."""
+    if df is None or len(df) == 0 or 'IonizationSourceAndPolarity' not in df.columns or 'filename' not in df.columns:
+        return df
+    scans = {}
+    if polarity_table is not None and len(polarity_table) and 'USI' in df.columns:
+        _pt = polarity_table[polarity_table['USI'].isin(set(df['USI'].astype(str)))]
+        for u, n_neg, n_pos in zip(_pt['USI'], pd.to_numeric(_pt['negative_polarity_count'], errors='coerce'),
+                                   pd.to_numeric(_pt['positive_polarity_count'], errors='coerce')):
+            if n_neg > 0 and not n_pos > 0:
+                scans[u] = 'negative'
+            elif n_pos > 0 and not n_neg > 0:
+                scans[u] = 'positive'
+    usis = df['USI'].astype(str) if 'USI' in df.columns else pd.Series('', index=df.index)
+    values = df['IonizationSourceAndPolarity'].copy()
+    n = 0
+    for i, (path, usi, v) in enumerate(zip(df['filename'].astype(str), usis, values.astype(str).str.lower())):
+        p = path.replace('\\', '/')
+        if '/' not in p:
+            continue
+        folder, name = p.rsplit('/', 1)
+        f_pols, n_pols = _path_tokens(folder)[0], _path_tokens(name)[0]
+        if len(f_pols) != 1 or f_pols != n_pols:
+            continue
+        stated = next(iter(f_pols))
+        other = 'negative' if stated == 'positive' else 'positive'
+        if f'({other})' in v and f'({stated})' not in v and scans.get(usi) != other:
+            values.iat[i] = 'missing value'
+            n += 1
+    if n:
+        print(f"{n} polarity values cleared: the file's folders and file name both name the other polarity")
+        df = df.copy()
+        df['IonizationSourceAndPolarity'] = values.values
+    return df
+
+
 def clear_chromatography_contradicted_by_path(df, raw_file_name_df):
     """ChromatographyAndPhase that the file's own path contradicts (a reverse-phase value on
     'C18/x.mzML', HILIC on 'HILIC_pos/x.raw' given a reverse phase) is cleared to 'missing
@@ -581,10 +782,11 @@ def propagate_to_same_name_files(redu_df, raw_file_name_df, polarity_table=None)
     extension) the sample's metadata, when the basename belongs to exactly one sample.
     Analysis-level fields are copied only if the study has a single analysis setup;
     otherwise they come from the file path tokens, or stay missing. A polarity /
-    chromatography that the copy's own path (Negative/..., rp_neg/...) or its scans
+    chromatography that the copy's own folders (Negative/..., rp_neg/...) or its scans
     (polarity_table) contradict is never copied: such a file is another acquisition of
-    the sample. A copy's path context takes a dimension its path leaves open from the
-    copy's archive name(s) (file_context)."""
+    the sample. A copy's context takes a dimension its folders leave open from the
+    copy's archive name(s) (file_context); its file name, the same as the matched file's,
+    is not read (same_name_copy_context)."""
     if redu_df is None or len(redu_df) == 0 or raw_file_name_df is None or len(raw_file_name_df) == 0:
         return redu_df
     out = redu_df.copy()
@@ -652,8 +854,11 @@ def propagate_to_same_name_files(redu_df, raw_file_name_df, polarity_table=None)
                 scans[u] = 'negative'
             elif n_pos > 0 and not n_neg > 0:
                 scans[u] = 'positive'
+    # a copy is told apart from the matched file by its folders / archive only: both have the
+    # same file name (same_name_copy_context)
+    copy_contexts = listing_copy_contexts(raw_file_name_df)
     for i, path in enumerate(copies['filename']):
-        context = contexts.get(path) or _path_indicates(path)
+        context = copy_contexts.get(path) or same_name_copy_context(path)
         for c in ('IonizationSourceAndPolarity', 'ChromatographyAndPhase'):
             if c not in copies.columns:
                 continue
@@ -1015,6 +1220,57 @@ def collapse_d_folder(path):
 # studies left out because the Workbench gave no file list, with the reason
 DROPPED_STUDIES = {}
 
+# ---- files the converter withholds on purpose (side table for saveOlderData --withheld_files) -----------------
+# Files whose sample the name matching does not pair (substring_file_matches: named after another or several
+# samples, several names fit equally, no whole-token match, a blank / QC file, only a placeholder name; same-name
+# copies of the files of several samples: contexts_told_apart_by_listed_folders) get no row; their rows of earlier
+# runs (paired by the earlier rules, also copies of them in other folders) must not come back through saveOlderData.
+# Per study, the withheld files and the study's other files of their names without a row of the same file (USI
+# without extension) this run, for studies read without an error. Columns USI, dataset, reason.
+WITHHELD_COLUMNS = ['USI', 'dataset', 'reason']
+WITHHELD_FILES = []
+_STUDY_WITHHELD = {}
+_WITHHELD_REASONS = {'named after another sample', 'named after several samples', 'several names fit equally',
+                     'no whole-token match', 'blank / QC file, study sample name', 'only a placeholder name'}
+_STUDY_LISTING = []
+_MS_EXT_RE = re.compile(r'\.(?:mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|scan|d)$', re.I)
+
+
+def note_withheld(usi, reason='sample_pairing_withheld'):
+    if isinstance(usi, str) and usi.strip():
+        _STUDY_WITHHELD.setdefault(usi.strip(), reason)
+
+
+def _file_stem(usi):
+    """file name without folders and extensions, lower case ('mzspec:ST1:a/X.mzML' -> 'x')"""
+    return re.split(r'[\\/:]', str(usi))[-1].split('.')[0].lower()
+
+
+def flush_study_withheld(study_id, result):
+    """The study's withheld files, and the other listed files of their names (copies in other folders or formats,
+    which the matching leaves out as copies: _STUDY_LISTING), without a row of the same file in result (USI without
+    extension), to WITHHELD_FILES"""
+    out = set()
+    if result is not None and len(result) and 'USI' in result.columns:
+        out = {_MS_EXT_RE.sub('', str(u)).lower() for u in result['USI'].dropna()}
+    withheld = dict(_STUDY_WITHHELD)
+    stems = {_file_stem(u): r for u, r in withheld.items()}
+    for u in _STUDY_LISTING:
+        if isinstance(u, str) and u.strip() and _file_stem(u) in stems:
+            withheld.setdefault(u.strip(), stems[_file_stem(u)])
+    for usi, reason in sorted(withheld.items()):
+        if _MS_EXT_RE.sub('', usi).lower() not in out:
+            WITHHELD_FILES.append({'USI': usi, 'dataset': str(study_id), 'reason': reason})
+    _STUDY_WITHHELD.clear()
+    del _STUDY_LISTING[:]
+
+
+def write_withheld_files(path, rows):
+    """The side table of withheld files (header only when there are none), sorted by USI."""
+    table = pd.DataFrame(rows, columns=WITHHELD_COLUMNS).drop_duplicates(subset=['USI'])
+    table.sort_values('USI', kind='mergesort').to_csv(path, sep='\t', index=False)
+    print(f'Withheld files (sample pairing withheld): {len(table)} of {table["dataset"].nunique()} studies -> {path}')
+
 
 def _get_metabolomicsworkbench_files(dataset_accession):
     try:
@@ -1092,6 +1348,11 @@ def get_enviromental_water(x):
         # is about the sea and names no fresh water
         if _MARINE_TEXT_RE.search(_STUDY_TEXT_REST or '') and not _FRESHWATER_TEXT_RE.search(_STUDY_TEXT_REST or ''):
             return ['environmental', 'water_seawater']
+        # surface water when the sample's text or the study's title / summary names lakes, rivers,
+        # ponds ... and no other kind of water (water_kind.py)
+        kind = water_kind_of_unstated_water(x, _STUDY_TEXT_REST)
+        if kind:
+            return ['environmental', kind]
         else:
             return [None, None]
     else:
@@ -1152,6 +1413,140 @@ def qc_sample_type(key, value):
     if _REFERENCE_RE.fullmatch(v):
         return 'reference material'
     return None
+
+
+# Workbench sample sources of QC samples ('_QC_', '_POOLED_', lower case here): pooled QCs
+QC_SAMPLE_SOURCES = ('_qc_', '_pooled_')
+# reference materials (reference_materials.py): the sample-level items of the files of the study being
+# converted (raw file path -> evidence cell) and the catalog numbers its mwTab sections name; set per
+# analysis (create_dataframe_from_SUBJECT_SAMPLE_FACTORS, MWB_to_REDU_wrapper), reset per study
+_REFMAT_EVIDENCE = {}
+_REFMAT_STUDY_NUMBERS = set()
+# mwTab sections that hold no study text (sample factors, data)
+_REFMAT_NOT_TEXT_SECTIONS = re.compile(r'(?i)^(?:SUBJECT_SAMPLE_FACTORS|MS_METABOLITE_DATA|NMR_.*DATA|METABOLITES|'
+                                       r'.*_DATA|.*METABOLITE.*)$')
+# raw-file keys (their values are file names: the file itself is read by reference_materials.py)
+_REFMAT_RAW_KEY = re.compile(r'(?i)raw[ _]?(?:file|data)|data ?file|filename|^rpm_|^zhp_')
+
+
+def mwb_mixture_design_samples(df):
+    """rows of samples (column filename: the Sample ID here) whose factor / additional-data items are amount
+    factors of a reference material ('SRM 1950: 500', 'SRM 8231: 0'): a mixture design"""
+    try:
+        if not {'filename', 'Key', 'Value'} <= set(df.columns):
+            return pd.Series(False, index=df.index)
+        item = df['Key'].fillna('').astype(str) + ': ' + df['Value'].fillna('').astype(str)
+        hit = item.map(reference_materials.is_amount_factor)
+        samples = set(df.loc[hit, 'filename'])
+        return df['filename'].isin(samples)
+    except Exception as e:
+        print(f"WARNING: mixture designs not checked: {type(e).__name__}: {e}")
+        return pd.Series(False, index=df.index)
+
+
+def mwb_qc_source_not_pool(df):
+    """rows of samples (column filename: the Sample ID here) of the QC sample sources '_QC_' / '_POOLED_' that are no
+    pool of the study's samples: a value of the sample says blank (qc_sample_type: 'Sample Type: Blank',
+    'Class: Water_blank', 'Group: QC-Blank'), its Sample ID or raw file name says blank, standard, calibration or
+    solvent (blank_qc_names.not_a_pool_by_name with NOT_POOL_QC_NAME_WORDS: 'ISTD_QAQC', 'p1Std'; not 'QC mix',
+    'Tech-Mix', 'Pool_QC_Media': pools of the study's samples), or a value of a sample-type key
+    names a standard, calibration, solvent or blank (blank_qc_names.not_a_pool_by_value: 'Sample source: Standard',
+    'Solvent Mixture', 'QC(Internal Standard)'). These stay blank_QC (no organism)."""
+    try:
+        if not {'filename', 'Key', 'Value'} <= set(df.columns):
+            return pd.Series(False, index=df.index)
+        sid = df['filename'].fillna('').astype(str)
+        blank = pd.Series([qc_sample_type(k, v) in ('blank_analysis', 'blank_extraction', 'blank_culturemedia')
+                           for k, v in zip(df['Key'], df['Value'])], index=df.index)
+        type_key = df['Key'].map(lambda k: _norm_value(k) in _QC_TYPE_KEYS)
+        by_value = type_key & df['Value'].map(lambda v: not_a_pool_by_value(v) if isinstance(v, str) else False)
+        samples = set(sid[blank | by_value])
+        words = NOT_POOL_QC_NAME_WORDS
+        samples |= {s_ for s_ in set(sid) if s_ and not_a_pool_by_name(s_, words)}
+        if 'filename_raw_path' in df.columns:
+            raw = df['filename_raw_path'].fillna('').astype(str)
+            samples |= set(sid[raw.map(lambda r: bool(r) and not_a_pool_by_name(r, words))])
+        return sid.isin(samples)
+    except Exception as e:
+        print(f"WARNING: QC samples not checked for blanks / standards: {type(e).__name__}: {e}")
+        return pd.Series(False, index=df.index)
+
+
+def mwb_reset_refmat():
+    _REFMAT_EVIDENCE.clear()
+    _REFMAT_STUDY_NUMBERS.clear()
+
+
+def mwb_note_refmat_study_text(mwtab):
+    """catalog numbers of reference materials named in an analysis' mwTab sections (all but the
+    sample factors and data), added to the study's (_REFMAT_STUDY_NUMBERS)"""
+    try:
+        parts = []
+        if isinstance(mwtab, dict):
+            for sec, body in mwtab.items():
+                if _REFMAT_NOT_TEXT_SECTIONS.match(str(sec)):
+                    continue
+                if isinstance(body, dict):
+                    parts += [str(v) for v in body.values() if isinstance(v, (str, int, float))]
+                elif isinstance(body, str):
+                    parts.append(body)
+        _REFMAT_STUDY_NUMBERS.update(reference_materials.study_text_materials(*parts))
+    except Exception as e:
+        print(f"WARNING: mwTab text not read for reference materials: {type(e).__name__}: {e}")
+
+
+def mwb_note_refmat_evidence(df):
+    """Per sample (column filename: the Sample ID here) its factor and additional-data items
+    ('key: value', not the raw-file keys; those with a candidate word or only a matrix) and its Sample ID, as one
+    reference_materials.EVIDENCE_COLUMN
+    cell, stored for each of its raw files (filename_raw_path) in _REFMAT_EVIDENCE; a file of samples
+    with different items gets none."""
+    try:
+        if not {'filename', 'Key', 'Value'} <= set(df.columns):
+            return
+        raw = df['filename_raw_path'] if 'filename_raw_path' in df.columns else df['filename']
+        key = df['Key'].fillna('').astype(str)
+        item = key + ': ' + df['Value'].fillna('').astype(str)
+        # items with a candidate word, items that only name a matrix ('Sample type: plasma': the sample's own matrix;
+        # not the REST record's 'Sample Source', the Workbench's sample source of the study, which a QC sample of
+        # another matrix shares: ST001335 'blood (serum)' on NIST plasma) and species items saying human ('Species: Human')
+        use = ~key.str.contains(_REFMAT_RAW_KEY, regex=True) & (
+            item.str.contains(reference_materials.CANDIDATE_RE, regex=True)
+            | (item.map(reference_materials.is_matrix_value) & (key != 'Sample Source'))
+            | pd.Series([reference_materials.is_human_species_item(k, v) for k, v in zip(key, item)], index=df.index))
+        sid = df['filename'].fillna('').astype(str)
+        per_sample = {}
+        for s_, k, it in zip(sid[use], key[use], item[use]):
+            per_sample.setdefault(s_, []).append((k, it))
+        for s_ in set(sid):
+            if reference_materials.CANDIDATE_RE.search(s_):
+                per_sample.setdefault(s_, []).append(('sample_id', s_))
+        by_file = {}
+        for s_, r in zip(sid, raw.fillna('').astype(str)):
+            if not r:
+                continue
+            by_file.setdefault(r, set()).add(reference_materials.encode_evidence(per_sample.get(s_, [])))
+        for r, evs in by_file.items():
+            prev = _REFMAT_EVIDENCE.get(r)
+            evs = evs | ({prev} if prev is not None else set())
+            _REFMAT_EVIDENCE[r] = next(iter(evs)) if len(evs) == 1 else ''
+    except Exception as e:
+        print(f"WARNING: no reference-material evidence: {type(e).__name__}: {e}")
+
+
+def mwb_refmat_evidence_column(filenames):
+    """reference_materials.EVIDENCE_COLUMN cells for the study's rows: by raw file path, else by a base
+    name that only one recorded file has (the copies propagate_to_same_name_files adds)"""
+    by_base = {}
+    for r, e in _REFMAT_EVIDENCE.items():
+        by_base.setdefault(os.path.basename(r), set()).add(e)
+    def one(f):
+        f = str(f)
+        if f in _REFMAT_EVIDENCE:
+            return _REFMAT_EVIDENCE[f]
+        evs = by_base.get(os.path.basename(f), set())
+        return next(iter(evs)) if len(evs) == 1 else ''
+    return [one(f) for f in filenames]
 
 
 def get_blanks(x):
@@ -3926,8 +4321,9 @@ def match_unmatched_names_by_prefix(df, raw_file_name_df):
     'x-N;x-P;20160915_S1;20160913_S1', whose lipidomics names lack the '_N' / '_P' suffix)
     gets the one file nothing else matched whose name starts with the listed name and a
     separator ('20160915_S1' -> NEG/BATCH1/20160915_S1_N.wiff). Names with a file extension,
-    names that fit no such file or several files, and names fitting a file another name also
-    fits stay unmatched."""
+    names that fit no such file or several files, names fitting a file another name also
+    fits, and names fitting a file named after another sample of the analysis (its Sample ID or
+    listed name is the file name, compared as in substring_file_matches) stay unmatched."""
     if 'USI' not in df.columns:
         return df
     todo = df['USI'].isna()
@@ -3950,6 +4346,18 @@ def match_unmatched_names_by_prefix(df, raw_file_name_df):
             hits[n] = lbls[0]
     used = Counter(hits.values())
     hits = {n: l for n, l in hits.items() if used[l] == 1}
+    # never a file named after another sample of the analysis (its Sample ID or listed name is the file name)
+    if hits and '_sample_id' in df.columns:
+        named = {}
+        for r, s in zip(df['filename_raw'].astype(str), df['_sample_id'].astype(str)):
+            for t in (_match_tokens(_name_stem(r)), _match_tokens(s)):
+                if t:
+                    named.setdefault(t, set()).add(s)
+        own = {}
+        for r, s in zip(df.loc[todo, 'filename_raw'].astype(str), df.loc[todo, '_sample_id'].astype(str)):
+            own.setdefault(r, set()).add(s)
+        hits = {n: l for n, l in hits.items()
+                if not (named.get(_match_tokens(_name_stem(raw_file_name_df.loc[l, 'filename_base']))) or set()) - own.get(n, set())}
     if not hits:
         return df
     df = df.copy()
@@ -4019,6 +4427,316 @@ def filter_unresolved_contradictions(potential_matches):
             potential_matches[key] = set()
     
     return potential_matches
+
+# a trailing format word of a listed raw file name: 'L32650_MzML' is the file L32650.mzML
+_LISTED_FORMAT_WORD_RE = re.compile(r'[\s._-]+(?:mzml|mzxml|mzdata|raw|wiff|cdf|mgf)$', re.I)
+# listed raw file names that name no file (fillna('NA'), placeholders)
+_NO_LISTED_NAME = {'', 'na', 'nan', 'none', 'null', 'n/a', '-', '--'}
+_NAME_TOKEN_RE = re.compile(r'[a-z]+|[0-9]+')
+# word boundaries inside a name written in camel case: 'fooBar', 'CSHneg'
+_CAMEL_RE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z]{2})(?=[a-z])')
+
+
+def _match_tokens(text):
+    """letter and digit runs of a name, lower case ('QC-1' and 'qc1' -> ('qc', '1'); 'KPF_1_1' is not 'KPF_11')"""
+    return tuple(_NAME_TOKEN_RE.findall(str(text).lower()))
+
+
+def _listed_name_tokens(name):
+    """tokens of a listed raw file name (before the first '.') without a trailing format word"""
+    s = str(name)
+    return _match_tokens(_LISTED_FORMAT_WORD_RE.sub('', s) or s)
+
+
+def _token_run_in(short, long):
+    n = len(short)
+    return n > 0 and any(long[i:i + n] == short for i in range(len(long) - n + 1))
+
+
+def _run_positions(short, long):
+    n = len(short)
+    return [i for i in range(len(long) - n + 1) if n and long[i:i + n] == short]
+
+
+def _camel_tokens(text):
+    """letter and digit runs of a name as written, also split at 'fooBar' and 'CSHneg' (lower case)"""
+    s = _LISTED_FORMAT_WORD_RE.sub('', str(text)) or str(text)
+    return _match_tokens(_CAMEL_RE.sub(' ', s))
+
+
+_POLARITY_WORDS = {'pos', 'neg', 'positive', 'negative'}
+
+
+def _camel_words(text):
+    """(tokens, word start flags, word end flags) of a name as written: its letter and digit runs (lower case) and
+    whether each starts / ends a word; words are split at non-alphanumerics, at 'fooBar' / 'CSHneg', and around a
+    polarity word ('1NEG' is 1 + neg)"""
+    s = _LISTED_FORMAT_WORD_RE.sub('', str(text)) or str(text)
+    toks, starts, ends = [], [], []
+    for w in re.findall(r'[A-Za-z0-9]+', _CAMEL_RE.sub(' ', s)):
+        t = _NAME_TOKEN_RE.findall(w.lower())
+        for i, x in enumerate(t):
+            toks.append(x)
+            starts.append(i == 0 or x in _POLARITY_WORDS or t[i - 1] in _POLARITY_WORDS)
+            ends.append(i == len(t) - 1 or x in _POLARITY_WORDS or t[i + 1] in _POLARITY_WORDS)
+    return tuple(toks), starts, ends
+
+
+def _weak_name(tokens):
+    """a name that pairs a file by containment only as whole words ('T1' in 'T1_Neg', not '1' in '1ppmCoc'):
+    shorter than 3 characters, or fewer than 4 digits only"""
+    j = ''.join(tokens)
+    return len(j) < 3 or (j.isdigit() and len(j) < 4)
+
+
+SUBSTRING_MATCH_REASONS = ('named after the sample', 'folder named after the sample',
+                           'named after the sample without the common part', 'listed name is the folders and the file name',
+                           'closest name', 'named after another sample', 'named after several samples',
+                           'several names fit equally', 'no whole-token match', 'blank / QC file, study sample name',
+                           'only a placeholder name')
+
+
+def _path_folder_tokens(path):
+    """tokens of the folders of a path ('a/B_1/x.mzML' -> a b 1) and of the parent folder alone (b 1)"""
+    parts = [p for p in re.split(r'[\\/]+', str(path)) if p][:-1]
+    return _match_tokens(' '.join(parts)), (_match_tokens(parts[-1]) if parts else ())
+
+
+def _common_affix(token_lists):
+    """the leading and the trailing tokens every name has (() when one name is all of it)"""
+    lists = [t for t in token_lists if t]
+    if len(lists) < 2:
+        return (), ()
+    pre = lists[0]
+    for t in lists[1:]:
+        n = 0
+        while n < min(len(pre), len(t)) and pre[n] == t[n]:
+            n += 1
+        pre = pre[:n]
+    suf = lists[0][len(pre):]
+    for t in lists[1:]:
+        t = t[len(pre):]
+        n = 0
+        while n < min(len(suf), len(t)) and suf[len(suf) - 1 - n] == t[len(t) - 1 - n]:
+            n += 1
+        suf = suf[len(suf) - n:] if n else ()
+    if any(len(t) <= len(pre) + len(suf) for t in lists):
+        return (), ()
+    return pre, suf
+
+
+def _folder_key(path):
+    """the folders of a path, lower case ('Raw Data/Pos/S1.d' -> 'raw data/pos')"""
+    parts = [p for p in re.split(r'[\\/]+', str(path).lower()) if p]
+    return '/'.join(parts[:-1])
+
+
+def substring_file_matches(potential_matches, sample_ids_of, files, listed_names=None, reasons=None):
+    """The samples of each listing row in the substring matching of listed raw file names (map_potential_matches: a
+    listed name and a file name, lower case without extension, of which one contains the other), one sample per file.
+
+    potential_matches: {listed name: set of file names}; sample_ids_of: {listed name: Sample IDs whose rows list it};
+    files: (row label, file name, path) of the listing rows the matching uses; listed_names: {listed name: the name as
+    listed (letter case)}; reasons: a dict that gets {row label: reason}. Names are equal when their runs of letters
+    and digits are ('QC-1' = 'qc1'; 'Sample1' is not 'Sample10'), a listed name without a trailing format word
+    ('L32650_MzML' = 'L32650'), a listed name with folders ('Seed/49.D/') also by its last part, its folders telling
+    apart samples of one name. Per file, the first rule that names samples decides:
+      1. the file is named after samples (a listed name or a Sample ID is the file name): it goes to that sample
+         ('32650.mzML' is sample '32650', not 'L32650');
+      2. its folder is named after samples ('FB0001/FB000101.CDF');
+      3. it is named after samples once the leading / trailing parts all file names (of the analysis, or of the
+         file's folder) share are left out ('23M034_M002' is 'M002' where every file starts with '23M034_');
+      4. else, of the listed names that are the file's folders and its name ('Supernatant_neg13_G_t2_1' for
+         Supernatant/neg/13_G_t2_1.raw) or that contain the file name or are contained in it as a run of whole tokens
+         ('Batch1_S1_pos': 'S1', not 'S11'; not 'S1' in 'MAS1'; also in camel-case words: 'BruinCSH' in
+         'BruinCSHneg'), the one all of whose tokens the file's path has, else the longest name in the file name,
+         else the one listed name the file name is in. A name shorter than 3 characters or of fewer than 4 digits
+         only pairs as whole words ('T1' in 'T1_Neg', '1' in '1NEG', not '1' in 'Inj01' or '1ppmCoc'); never by a
+         name inside the part all files of the analysis or of the folder share where those files are named after
+         other samples ('M034' in 'GC-23M034-M168' where every file of the folder starts with 'GC-23M034-M'); never a
+         file named as a blank or QC (blank_qc_names) to samples that are none (not_a_study_sample, nor a blank / QC
+         listed name).
+    Rules 1-3 give the file to the named sample alone (also where other samples list the same name); rule 4 to every
+    sample listing the name. The file goes to nobody when the samples a rule names are several, or none of them has a
+    listed name that matched the file, or (rule 4) several names fit equally or none in whole tokens. Placeholders
+    ('NA', '', '-') match nothing (a file only they contain: 'only a placeholder name'). Returns ({(listed name, Sample ID): [row labels]}, Counter of reasons: how files
+    were paired, and why the others were not)."""
+    listed_names = listed_names or {}
+    names, last, folders, samples_of = {}, {}, {}, {}
+    for v in potential_matches:
+        s = str(v)
+        parts = [p for p in re.split(r'[\\/]+', s) if p]
+        names[v] = _listed_name_tokens(s)
+        last[v] = _listed_name_tokens(parts[-1]) if parts else ()
+        folders[v] = _match_tokens(' '.join(parts[:-1]))
+        samples_of[v] = frozenset(str(x) for x in (sample_ids_of or {}).get(v, ()) if str(x).strip()) or frozenset([str(v)])
+
+    def placeholder(v):
+        return str(v).strip().lower() in _NO_LISTED_NAME or not names[v]
+
+    # samples by the names that name them: listed names (whole, and their last part) and Sample IDs
+    named_by = {}
+    for v in sorted(potential_matches, key=str):
+        if not placeholder(v):
+            for t in {names[v], last[v]}:
+                if t:
+                    named_by.setdefault(t, set()).update(samples_of[v])
+        for x in samples_of[v] if (sample_ids_of or {}).get(v) else ():
+            t = _match_tokens(x)
+            if t:
+                named_by.setdefault(t, set()).add(x)
+    claims, placeholder_claims = {}, set()
+    for v in sorted(potential_matches, key=str):
+        for t in potential_matches[v]:
+            if placeholder(v):
+                placeholder_claims.add(t)
+            else:
+                claims.setdefault(t, []).append(v)
+    pre, suf = _common_affix([_match_tokens(t) for _, t, _ in files])
+    by_folder = {}
+    for _, t, path in files:
+        by_folder.setdefault(_folder_key(path), []).append(_match_tokens(t))
+    folder_affix = {k: _common_affix(v) for k, v in by_folder.items()}
+    words = {label: _camel_words(re.split(r'[\\/]+', str(path).rstrip('/\\'))[-1].split('.')[0]) for label, _, path in files}
+    camel = {label: w[0] for label, w in words.items()}
+    by_folder_c = {}
+    for label, _, path in files:
+        by_folder_c.setdefault(_folder_key(path), []).append(camel[label])
+    pre_c, suf_c = _common_affix(list(camel.values()))
+    folder_affix_c = {k: _common_affix(v) for k, v in by_folder_c.items()}
+    listed_w = {v: _camel_words(str(listed_names.get(v, v)).replace('\\', '/').split('/')[-1]) for v in potential_matches}
+    listed_c = {v: w[0] for v, w in listed_w.items()}
+
+    def cores(pre_, suf_):
+        return [(i, j) for i in range(len(pre_) + 1) for j in range(len(suf_) + 1) if i or j]
+    out, why = {}, Counter()
+
+    def note(label, reason):
+        why[reason] += 1
+        if reasons is not None:
+            reasons[label] = reason
+
+    assigned = {}
+
+    def give(pairs, label, reason):
+        for p in sorted(pairs):
+            out.setdefault(p, []).append(label)
+            assigned.setdefault(label, set()).add(p[1])
+        note(label, reason)
+
+    def decide(owners, cands, label, reason, path_folders=None):
+        """True when the samples a name names decide the file (paired or withheld)"""
+        if not owners:
+            return False
+        fit = [v for v in cands if samples_of[v] & owners]
+        if len(owners) > 1 and path_folders is not None:
+            # samples of one name told apart by the folders their listed names give
+            told = [v for v in fit if folders[v] and _token_run_in(folders[v], path_folders)]
+            if told:
+                owners = owners & set().union(*(samples_of[v] for v in told))
+                fit = told
+        if len(owners) == 1 and fit:
+            sid = next(iter(owners))
+            give({(v, sid) for v in fit}, label, reason)
+        else:
+            note(label, 'named after several samples' if len(owners) > 1 else 'named after another sample')
+        return True
+
+    # rules 1-3 first: which samples the files of each folder (and of the analysis) are named after
+    later, named_in = [], {}
+    for label, t, path in files:
+        cands = claims.get(t, [])
+        if not cands:
+            if t in placeholder_claims:
+                note(label, 'only a placeholder name')
+            continue
+        tt = _match_tokens(t)
+        path_folders, parent = _path_folder_tokens(path)
+        if decide(named_by.get(tt), cands, label, 'named after the sample', path_folders) or \
+                (parent and decide(named_by.get(parent), cands, label, 'folder named after the sample')):
+            pass
+        else:
+            # the leading / trailing tokens all files (of the analysis, or of the folder) share left out, fewest
+            # first (the shared part may end in a token the sample names start with: '23M034_M002', '23M034_M040'
+            # share '23 m 034 m')
+            strips = sorted(set(cores(pre, suf)) | set(cores(*folder_affix.get(_folder_key(path), ((), ())))),
+                            key=lambda x: (x[0] + x[1], x))
+            core = next((tt[i:len(tt) - j] for i, j in strips if tt[i:len(tt) - j] and named_by.get(tt[i:len(tt) - j])), None)
+            if not (core and decide(named_by.get(core), cands, label, 'named after the sample without the common part')):
+                later.append((label, t, path, cands, tt, path_folders))
+                continue
+        for sid in assigned.get(label, ()):
+            named_in.setdefault(_folder_key(path), set()).add(sid)
+            named_in.setdefault(None, set()).add(sid)
+    for label, t, path, cands, tt, path_folders in later:
+        path_tokens = set(path_folders) | set(tt)
+        in_folders = [v for v in cands if len(names[v]) > len(tt) and names[v][len(names[v]) - len(tt):] == tt
+                      and set(names[v][:len(names[v]) - len(tt)]) <= set(path_folders)]
+        if in_folders:
+            reason, top = 'listed name is the folders and the file name', in_folders
+        else:
+            key = _folder_key(path)
+            fpre, fsuf = folder_affix.get(key, ((), ()))
+            tc = camel[label]
+            fpre_c, fsuf_c = folder_affix_c.get(key, ((), ()))
+
+            def run_inside(n, t_, affixes, v, flags=None):
+                """n a run of whole tokens of t_ (of whole words, flags: word start / end flags of t_), not inside
+                the part all files (of the analysis / of the folder) share where those files are named after other
+                samples ('M034' in 'GC-23M034-M168')"""
+                if not n or len(n) > len(t_):
+                    return False
+                sh = [(len(p_), len(t_) - len(s_)) for (p_, s_), k in affixes if named_in.get(k, set()) - samples_of[v]]
+                return any(not any(i + len(n) <= a_ or i >= b_ for a_, b_ in sh)
+                           and (flags is None or (flags[0][i] and flags[1][i + len(n) - 1])) for i in _run_positions(n, t_))
+
+            def inside(v):
+                """the listed name in the file name, as a run of whole tokens (also as written in camel case:
+                'BruinCSH' in 'BruinCSHneg'); a short name ('T1', '706') as whole words"""
+                c_aff = [((pre_c, suf_c), None), ((fpre_c, fsuf_c), key)]
+                if _weak_name(names[v]):
+                    return run_inside(listed_c[v], tc, c_aff, v, words[label][1:])
+                return run_inside(names[v], tt, [((pre, suf), None), ((fpre, fsuf), key)], v) or \
+                    run_inside(listed_c[v], tc, c_aff, v)
+
+            def around(v):
+                """the file name in the listed name, as a run of whole tokens (a short file name as whole words)"""
+                if len(names[v]) <= len(tt):
+                    return False
+                if not _weak_name(tt):
+                    return _token_run_in(tt, names[v])
+                lc, ls, le = listed_w[v]
+                return any(ls[i] and le[i + len(tc) - 1] for i in _run_positions(tc, lc))
+
+            whole = [v for v in cands if inside(v) or around(v)]
+            if not whole:
+                note(label, 'no whole-token match')
+                continue
+            explained = [v for v in whole if set(names[v]) <= path_tokens]
+            if explained and len(explained) < len(whole):
+                whole = explained
+            if any(inside(v) for v in whole):
+                # several listed names in the file name: the longest ('S11', not 'S1', in 'Batch1_S11_pos')
+                whole = [v for v in whole if inside(v)]
+                best = max(len(_LISTED_FORMAT_WORD_RE.sub('', str(v)) or str(v)) for v in whole)
+                top = [v for v in whole if len(_LISTED_FORMAT_WORD_RE.sub('', str(v)) or str(v)) == best]
+            else:
+                # the file name in several listed names (with other words each): only one sample's
+                top = whole
+            reason = 'closest name'
+            # a file named as a blank or QC is not given to study samples by a part of its name
+            if blank_qc_type_from_filename(path) and not any(
+                    blank_qc_type_from_filename(str(listed_names.get(v, v))) or not_a_study_sample(x) for v in top for x in samples_of[v]):
+                note(label, 'blank / QC file, study sample name')
+                continue
+        if len({samples_of[v] for v in top}) == 1:
+            give({(v, s) for v in top for s in samples_of[v]}, label, reason)
+        else:
+            note(label, 'several names fit equally')
+    # each name's files in the order of the listing rows given
+    order = {label: i for i, (label, _, _) in enumerate(files)}
+    return {k: sorted(v, key=order.get) for k, v in out.items()}, why
+
 
 def resolve_contradictions(contradictions, potential_matches):
     for raw_value, conflicting_values in contradictions.items():
@@ -4281,6 +4999,20 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         tmp["_ctx"] = acquisition_contexts(tmp["_stem"].tolist(), tmp["filename_raw_path"].astype(str).tolist(), hints,
                                            tmp["_rank"].tolist(),
                                            tmp["_ctx_archive"].tolist() if "_ctx_archive" in tmp.columns else None)
+        # same-name files of different samples, told apart by the folders of the listed raw file names
+        _raw_key = df['Key'].isin(expected_raw_file_keys) | df['Key'].map(is_variant_raw_file_key)
+        _listed_paths = sorted({n for v in df.loc[_raw_key, 'Value'].dropna().astype(str)
+                                for n in split_raw_file_names(v, False) if '/' in n or '\\' in n})
+        if _listed_paths:
+            _before = tmp["_ctx"].tolist()
+            tmp["_ctx"] = contexts_told_apart_by_listed_folders(tmp["_stem"].tolist(), tmp["filename_raw_path"].astype(str).tolist(),
+                                                                _before, _listed_paths)
+            for _u, _a, _b in zip(tmp['USI'], _before, tmp["_ctx"]):
+                if _a >= 0 and _b < 0:
+                    note_withheld(_u)
+            _n_apart = sum(1 for a, b in zip(_before, tmp["_ctx"]) if a != b)
+            if _n_apart:
+                print(f"[rawfile pref] {_n_apart} same-name files told apart by the folders of listed raw file names")
         # (polarity, chromatography) of every listed file, with the study's archive names
         _file_contexts = listing_contexts(tmp, 'filename_raw_path', '_ctx_archive')
         n_ctx_out = int((tmp["_ctx"] < 0).sum())
@@ -4462,34 +5194,36 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
                 print('getting substring matches,..')
                 potential_matches = map_potential_matches(df, raw_file_name_df, target_column='filename_base_wo_extension', source_columns = ['filename_base_wo_extension', ''])
-                print('analyzing contradictions,..')
-                contradictions = analyze_for_contradictions(potential_matches)
+                # one sample per file: a file named after a sample goes to that sample only, else to the one closest
+                # whole-token match; ambiguous files to nobody (substring_file_matches; the longest listed name used
+                # to win, which gave '32650.mzML' to sample 'L32650' and '1.mzML' to sample '11641')
                 print('resolving contradictions,..')
-                potential_matches = resolve_contradictions(contradictions, potential_matches)
-                print('filtering contradictions,..')
-                potential_matches = filter_unresolved_contradictions(potential_matches)
-                
-                #create dict to assign matches
-                match_indices = {}
-                # first row label of each file stem (the column was scanned once per match),
-                # per acquisition context (one stem kept in pos and neg folders: both)
+                _ids_of = {}
+                for _v, _s in zip(df['filename_base_wo_extension'], df['_sample_id']):
+                    if pd.notna(_s):
+                        _ids_of.setdefault(_v, set()).add(str(_s))
+                # the listing rows used: the first row of each file stem per acquisition context (one stem kept in
+                # pos and neg folders: both)
                 _first_label = {}
                 for _lbl, _stem_value, _c in zip(raw_file_name_df.index, raw_file_name_df['filename_base_wo_extension'],
                                                  raw_file_name_df['_ctx']):
                     _first_label.setdefault(_stem_value, {}).setdefault(_c, _lbl)
+                _files = [(_lbl, _stem_value, raw_file_name_df.at[_lbl, 'filename_raw_path'])
+                          for _stem_value in sorted(_first_label, key=str) for _lbl in _first_label[_stem_value].values()]
+                # the listed names as listed (letter case: word boundaries 'BruinCSHneg')
+                _listed = {}
+                for _v, _r in zip(df['filename_base_wo_extension'], df['filename_raw'].astype(str)):
+                    _listed.setdefault(_v, set()).add(_r.split('.')[0])
+                _listed = {_v: sorted(_rs)[0] for _v, _rs in _listed.items()}
+                _reasons = {}
+                _pairs, _why = substring_file_matches(potential_matches, _ids_of, _files, _listed, reasons=_reasons)
+                for _lbl, _r in _reasons.items():
+                    if _r in _WITHHELD_REASONS:
+                        note_withheld(raw_file_name_df.at[_lbl, 'USI'])
+                print("[rawfile] substring matches: " + ', '.join(f"{r}: {_why[r]}" for r in SUBSTRING_MATCH_REASONS if _why[r]))
 
-                # sorted: the order of a set of strings changes with PYTHONHASHSEED
-                for df_value, matches in potential_matches.items():
-                    if matches:
-                        for match_value in sorted(matches):
-                            for match_index in _first_label[match_value].values():
-                                if df_value not in match_indices:
-                                    match_indices[df_value] = [match_index]
-                                else:
-                                    match_indices[df_value].append(match_index)
-
-                
-                df['match_index'] = df['filename_base_wo_extension'].map(match_indices)
+                df['match_index'] = [_pairs.get((_v, str(_s) if pd.notna(_s) else str(_v)))
+                                     for _v, _s in zip(df['filename_base_wo_extension'], df['_sample_id'])]
                 df = df.explode('match_index')
                 
                 df = pd.merge(df, raw_file_name_df, left_on='match_index', right_index=True, how='left', suffixes=('', '_matched'))
@@ -4955,8 +5689,16 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
 
     
     df.loc[df['MWB_sampleSource'] == '_blank_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_analysis', 'blank_analysis']
-    df.loc[df['MWB_sampleSource'] == '_qc_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
-    df.loc[df['MWB_sampleSource'] == '_pooled_', ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
+    # the Workbench's QC sample sources '_QC_' and '_POOLED_' are pooled QCs (pools of the study's samples, which
+    # keep the study's organism), not blanks; samples of a mixture design (amount factors of reference materials,
+    # 'SRM 1950: 500') stay as they were (blank_QC)
+    # (nor are QC samples whose own values or names say blank, standard, solvent: mwb_qc_source_not_pool)
+    _qc_source = df['MWB_sampleSource'].isin(QC_SAMPLE_SOURCES)
+    _not_pool = mwb_mixture_design_samples(df)
+    if _qc_source.any():
+        _not_pool = _not_pool | mwb_qc_source_not_pool(df)
+    df.loc[_qc_source & ~_not_pool, ['SampleType_inner', 'SampleTypeSub1_inner']] = ['pool_QC', 'pool_QC']
+    df.loc[_qc_source & _not_pool, ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_QC', 'blank_QC']
     df.loc[(df['MWB_sampleSource'] == 'culture media') | 
            (df['MWB_sampleSource'] == 'bacterial media') | 
            (df['MWB_sampleSource'] == 'adipocyte media') |
@@ -4983,6 +5725,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             print(f"QC/blank/reference samples from their values: {df.loc[_set, 'filename'].nunique()}")
     except Exception as e:
         print(f"Could not detect QC/blank samples: {type(e).__name__}: {e}")
+    # the sample-level items that can name a reference material, by raw file (MWB_to_REDU_study_wrapper)
+    mwb_note_refmat_evidence(df)
    
    #add environemntal columns
     
@@ -5234,7 +5978,7 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
 
 
     df_outer[['SampleType', 'SampleTypeSub1']] = df_outer.apply(
-        lambda x: get_enviromental_water(str(x['SAMPLE_TYPE'] or '') + str(x['SUBJECT_TYPE'] or '')) 
+        lambda x: get_enviromental_water(str(x['SAMPLE_TYPE'] or '') + ' ' + str(x['SUBJECT_TYPE'] or ''))
         if pd.isnull(x['SampleType']) and pd.isnull(x['SampleTypeSub1']) 
         else (x['SampleType'], x['SampleTypeSub1']), axis=1, result_type='expand'
     )
@@ -5940,6 +6684,26 @@ def apply_sex_distribution_guard(redu_df_final, rest_response, study_id=''):
     return redu_df_final
 
 
+# subject fields of the rows that are no samples of the study's subjects (blanks, pooled QCs, reference
+# materials); blanks also lose the organism and body part, pooled QCs keep the study's species and their
+# body part (a pool of the study's samples), reference materials get those of the material
+# (reference_materials.py, in complete_and_fill_REDU_table)
+_MWB_SUBJECT_COLUMNS = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'DOIDOntologyIndex',
+                        'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet',
+                        'LifeStage', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'CellLine']
+_MWB_ORGANISM_COLUMNS = ['NCBITaxonomy', 'UBERONBodyPartName', 'UBERONOntologyIndex']
+
+
+def mwb_clear_not_subject_rows(redu_df_final):
+    sample_type = redu_df_final['SampleType'].astype(str)
+    blank = sample_type.str.contains('blank', case=False)
+    not_subject = sample_type.isin(['pool_QC', 'reference material']) | blank
+    if not_subject.any():
+        redu_df_final.loc[not_subject, [c for c in _MWB_SUBJECT_COLUMNS if c in redu_df_final.columns]] = 'missing value'
+        redu_df_final.loc[blank, [c for c in _MWB_ORGANISM_COLUMNS if c in redu_df_final.columns]] = 'missing value'
+    return redu_df_final
+
+
 def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
                               duplicate_raw_file_handling='remove_duplicates', export_to_tsv = False, **kwargs):
 
@@ -5952,7 +6716,12 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     _ENVO_MATERIAL_TABLE = ENVOEnvironmentMaterialIndex_table
     NCBIRankDivision_table = kwargs['NCBIRankDivision_table']
 
+    mwb_reset_refmat()
+    _STUDY_WITHHELD.clear()
+    del _STUDY_LISTING[:]
     raw_file_name_df = _get_metabolomicsworkbench_files(study_id)
+    if len(raw_file_name_df) and 'USI' in raw_file_name_df.columns:
+        _STUDY_LISTING.extend(raw_file_name_df['USI'].astype(str))
     if len(raw_file_name_df) == 0:
         print('No raw data detected. Ignoring {}'.format(str(study_id)))
         return None
@@ -6050,6 +6819,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
                                       raw_file_name_df=raw_file_name_df[['filename', 'filename_base', 'USI', 'archive']],
                                       path_to_csvs=path_to_csvs,
                                       Massive_ID=study_id + '|' + str(analysis_details["analysis_id"]),
+                                      rest_analysis=analysis_details,
                                       allowedTerm_dict=allowedTerm_dict,
                                       ontology_table=ontology_table,
                                       ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
@@ -6092,6 +6862,10 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table,
                                                                  file_contexts=listing_contexts(raw_file_name_df))
     try:
+        redu_df_final = clear_polarity_contradicted_by_all_file_names(redu_df_final, polarity_table=polarity_table)
+    except Exception as e:
+        print(f"Could not check polarities against the file names: {type(e).__name__}: {e}")
+    try:
         redu_df_final = propagate_to_same_name_files(redu_df_final, raw_file_name_df, polarity_table=polarity_table)
     except Exception as e:
         print(f"Could not copy metadata to same-name files: {type(e).__name__}: {e}")
@@ -6100,18 +6874,15 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         redu_df_final = clear_chromatography_contradicted_by_path(redu_df_final, raw_file_name_df)
     except Exception as e:
         print(f"Could not check polarities / chromatographies against file paths: {type(e).__name__}: {e}")
+    try:
+        redu_df_final = clear_polarity_contradicted_by_folder_and_file_name(redu_df_final, polarity_table=polarity_table)
+    except Exception as e:
+        print(f"Could not check polarities against folders and file names: {type(e).__name__}: {e}")
 
-    # QC pools and reference materials are not samples of the study's subjects: like
-    # blanks (cleared in complete_and_fill_REDU_table) they get no organism, body part
-    # or subject fields
-    _not_subject = (redu_df_final['SampleType'].isin(['pool_QC', 'reference material'])
-                    | redu_df_final['SampleType'].astype(str).str.contains('blank', case=False))
-    if _not_subject.any():
-        _subject_cols = ['NCBITaxonomy', 'UBERONBodyPartName', 'UBERONOntologyIndex', 'AgeInYears', 'UniqueSubjectID',
-                         'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'DOIDOntologyIndex', 'BiologicalSex',
-                         'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'LifeStage',
-                         'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'CellLine']
-        redu_df_final.loc[_not_subject, [c for c in _subject_cols if c in redu_df_final.columns]] = 'missing value'
+    redu_df_final = mwb_clear_not_subject_rows(redu_df_final)
+    # reference materials named in the samples' items and the study's text (complete_and_fill_REDU_table)
+    redu_df_final[reference_materials.EVIDENCE_COLUMN] = mwb_refmat_evidence_column(redu_df_final['filename'])
+    _refmat_study_text = sorted(_REFMAT_STUDY_NUMBERS | set(reference_materials.study_text_materials(_STUDY_TEXT_REST)))
 
     ontology_table = ontology_table.drop_duplicates(subset=['Label'])
     # DOID table (one row per label) so complete_and_fill_REDU_table can generate DOIDOntologyIndex
@@ -6134,7 +6905,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
                                                  ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table.drop_duplicates(subset=["Label"]),
                                                  ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table.drop_duplicates(subset=["Label"]),
                                                  NCBIRankDivision_table=NCBIRankDivision_table,
-                                                 add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'])
+                                                 add_usi = True, other_allowed_file_extensions = ['.raw', '.cdf', '.wiff', '.d'],
+                                                 refmat_study_text=_refmat_study_text)
 
     redu_df_final = apply_sex_distribution_guard(redu_df_final, rest_response, study_id=str(study_id))
     try:
@@ -6177,8 +6949,15 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
             if mwTab_json is None:
                 return None
         
+    # reference materials the analysis' mwTab sections name by number (reference_materials.py)
+    mwb_note_refmat_study_text(mwTab_json)
     allowedTerm_dict = kwargs['allowedTerm_dict']
     ontology_table = kwargs['ontology_table']
+
+    try:
+        mwTab_json = chromatography_from_rest_analysis(mwTab_json, kwargs.get('rest_analysis'))
+    except Exception as e:
+        print(f"Could not check the REST analysis record for the chromatography: {type(e).__name__}: {e}")
 
     try:
 
@@ -6353,6 +7132,9 @@ if __name__ == '__main__':
     parser.add_argument("--path_to_ncbi_nodes_dmp", type=str, required=True, help="nodes.dmp of the pinned NCBI taxdump (fetchReferenceData); NCBI lineages for SampleType, cell lines")
     parser.add_argument("--path_to_ncbi_names_dmp", type=str, required=True, help="names.dmp of the pinned NCBI taxdump")
     parser.add_argument("--path_to_ncbi_merged_dmp", type=str, required=True, help="merged.dmp of the pinned NCBI taxdump")
+    parser.add_argument("--withheld_output", type=str, default="none",
+                        help="Side table (USI, dataset, reason) of the files whose sample the name matching withheld "
+                             "(saveOlderData --withheld_files; written with --study_id ALL, also when empty)")
 
     print('Starting MWB2REDU script,..')
 
@@ -6423,6 +7205,7 @@ if __name__ == '__main__':
                                           ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,
                                           polarity_table=polarity_table,
                                           NCBIRankDivision_table=NCBIRankDivision_table)
+                flush_study_withheld(study_id, result)
                 if result is not None and len(result) > 0:
                     print('Extracted information for {} samples.'.format(len(result)))
                     all_results_list.append(result)
@@ -6440,6 +7223,8 @@ if __name__ == '__main__':
                   + ', '.join(f'{a} ({r})' for a, r in sorted(DROPPED_ANALYSES.items())))
         merged_df = pd.concat(all_results_list, ignore_index=True)
         merged_df.to_csv('REDU_from_MWB_all.tsv', sep='\t', index=False, header=True)
+        if args.withheld_output != 'none':
+            write_withheld_files(args.withheld_output, WITHHELD_FILES)
 
     else:
         MWB_to_REDU_study_wrapper(study_id=study_id,

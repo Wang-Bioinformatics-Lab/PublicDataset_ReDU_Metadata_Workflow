@@ -6,6 +6,10 @@
 taxdmp.zip
 microbe_masst_table.csv
 plant_masst_table.csv
+food_masst_table.csv
+food_masst_table_full.tsv
+personalCareProduct_masst_table.csv
+microbiome_masst_table.tsv
 .reference_data_state.json
 .reference_data.lock
 get_data.log

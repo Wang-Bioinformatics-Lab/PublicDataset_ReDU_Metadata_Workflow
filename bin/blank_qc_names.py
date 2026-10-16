@@ -19,6 +19,10 @@ Type:
 
 'pool' is not a pooled QC where the name says it is a water body ('tide pool', 'rock
 pool', 'swimming pool', 'pool water'): see _POOL_PLACE_TOKENS.
+
+A token that mixes letters and digits is also read as its letter and digit runs, so a word
+followed by a number and more letters counts ('qc1list2' -> qc 1 list 2, as 'qc1-list2';
+'S3QC' -> s 3 qc); a word inside a longer word still does not ('QCT', 'blanket').
 """
 import os
 import re
@@ -49,9 +53,23 @@ def name_tokens(filename):
     return [t for t in _SPLIT.split(base) if t]
 
 
+_RUNS = re.compile(r'[A-Za-z]+|[0-9]+')
+
+
+def _tokens_and_runs(tokens):
+    """the tokens and, for tokens of letters and digits, their letter and digit runs ('qc1list2' ->
+    'qc1list2', 'qc', '1', 'list', '2')"""
+    out = list(tokens)
+    for t in tokens:
+        runs = _RUNS.findall(t)
+        if len(runs) > 1:
+            out.extend(runs)
+    return out
+
+
 def blank_qc_type_from_filename(filename):
     """'blank_analysis', 'blank_extraction', 'blank_QC', 'pool_QC' or None."""
-    tokens = name_tokens(filename)
+    tokens = _tokens_and_runs(name_tokens(filename))
     if not tokens:
         return None
     lower = {t.lower() for t in tokens}
@@ -77,8 +95,8 @@ def apply_filename_blank_qc(df, filename_column='filename', verbose=True):
     """Labels rows whose file name says blank / pooled QC (see module docstring) and whose
     SampleType is not already a blank, QC, culture-medium blank, reference material, personal
     care product or standard. SampleType and SampleTypeSub1 are set to the blank/QC type; the
-    organism, body part and other subject fields are then cleared by complete_and_fill_REDU_table,
-    as for any blank. Returns the frame and the number of changed rows."""
+    subject fields are then cleared by complete_and_fill_REDU_table (a blank's organism and body
+    part too; a pooled QC keeps its own). Returns the frame and the number of changed rows."""
     if filename_column not in df.columns or len(df) == 0:
         return df, 0
     df = df.copy()
@@ -98,3 +116,58 @@ def apply_filename_blank_qc(df, filename_column='filename', verbose=True):
             counts = types[change].value_counts().to_dict()
             print(f"File-name blank/QC rule: {int(change.sum())} rows relabelled {counts}")
     return df, int(change.sum())
+
+
+# ---- QC samples that are no pool of the study's samples (by their name or their values) ----
+# File-name / sample-name words of QC injections that are no pool of the study's samples (sources label them
+# pool_QC or QC too: 'calcurve_6mix', 'Std_Mix', 'QC_ESTD10000nM', 'PBQC_ISTDS', 'QCSolvent', 'acn1',
+# 'MediaControl', 'SST', 'triazines_10ngml', 'ISTD_QAQC', 'p1Std'). As letter runs of the base name.
+NOT_POOL_WORDS = {'blank', 'blk', 'std', 'stds', 'standard', 'standards', 'stdmix', 'estd', 'istd', 'istds', 'is', 'cal',
+                  'calib', 'calibration', 'calcurve', 'curve', 'mix', 'mixture', 'solvent', 'acn', 'meoh', 'methanol',
+                  'water', 'h', 'o', 'buffer', 'media', 'medium', 'sst', 'crude', 'reaction', 'spike', 'spiked', 'nm', 'um',
+                  'mm', 'ngml', 'ugml', 'mgml', 'ppb', 'ppm', 'ngl', 'ugl'}
+# the same for the values of a sample ('Sample source: Standard', 'Solvent Mixture', 'QC(Internal Standard)',
+# 'Quality standards'): not the short words and units, which are also parts of ordinary values
+NOT_POOL_VALUE_WORDS = {'blank', 'blk', 'std', 'stds', 'standard', 'standards', 'stdmix', 'estd', 'istd', 'istds',
+                        'calib', 'calibration', 'calcurve', 'solvent', 'solvents', 'acn', 'meoh', 'methanol', 'sst'}
+# the same for the names of QC samples a source calls QC (Workbench '_QC_' / '_POOLED_' sample sources): only
+# the words that say blank, standard, calibration or solvent; not 'mix' ('QC mix', 'Tech-Mix': a mix of the
+# study's samples), media ('Pool_QC_Media': a pool of the study's media samples), 'IS', units ('UM053')
+NOT_POOL_QC_NAME_WORDS = {'blank', 'blk', 'std', 'stds', 'standard', 'standards', 'stdmix', 'estd', 'istd', 'istds', 'cal',
+                          'calib', 'calibration', 'calcurve', 'solvent', 'solvents', 'acn', 'meoh', 'methanol', 'sst'}
+# words found inside longer runs too ('C18negblank1', 'blankH2O')
+NOT_POOL_SUBSTRINGS = ('blank', 'solvent', 'standard', 'calibrat')
+# water as 'H2O' (not hydrogen peroxide 'H2O2')
+_H2O = re.compile(r'h2o(?!\d)')
+_LETTER_RUNS = re.compile(r'[a-z]+')
+_NAME_EXTENSIONS = re.compile(r'(?i)(\.(mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|d|gz|zip|lzma|bz2|7z|xz|rar|scan))+$')
+
+
+def not_a_pool_by_name(filename, words=None):
+    """whether a file's (or sample's) base name says it is a blank, standard, calibration, solvent or medium
+    injection (its letter runs, camel case split: 'QCSolvent', 'MediaControl'); words: the words to use
+    (default NOT_POOL_WORDS)"""
+    words = NOT_POOL_WORDS if words is None else words
+    base = str(filename).rstrip('/').rsplit('/', 1)[-1]
+    base = _NAME_EXTENSIONS.sub('', base)
+    split = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', base).lower()
+    base = base.lower()
+    if any(w in base for w in NOT_POOL_SUBSTRINGS):
+        return True
+    # letter runs with and without the camel-case split ('MeOH': 'meoh', 'StdMix': 'std', 'mix', 'stdmix')
+    runs = set(_LETTER_RUNS.findall(split)) | set(_LETTER_RUNS.findall(base))
+    # 'h2o' -> 'h', 'o': only together
+    if {'h', 'o'} <= words and {'h', 'o'} <= runs and _H2O.search(base):
+        return True
+    return bool(runs & (words - {'h', 'o'}))
+
+
+def not_a_pool_by_value(value):
+    """whether a sample's value names a standard, calibration, solvent or blank ('Standard', 'Solvent Mixture',
+    'QC(Internal Standard)'), NOT_POOL_VALUE_WORDS as letter runs"""
+    text = str(value)
+    low = text.lower()
+    if any(w in low for w in NOT_POOL_SUBSTRINGS):
+        return True
+    runs = set(_LETTER_RUNS.findall(re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', text).lower())) | set(_LETTER_RUNS.findall(low))
+    return bool(runs & NOT_POOL_VALUE_WORDS)

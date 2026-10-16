@@ -201,11 +201,14 @@ process mwbRun {
     val after_listing
 
     output:
-    file 'REDU_from_MWB_all.tsv'
+    path 'REDU_from_MWB_all.tsv', emit: metadata
+    // files whose sample the name matching withheld (no row on purpose): saveOlderData --withheld_files
+    path 'withheld_files_workbench.tsv', emit: withheld
 
     """
     timeout ${params.source_timeout} python $TOOL_FOLDER/MWB_to_REDU.py \
     --study_id ALL \
+    --withheld_output withheld_files_workbench.tsv \
     --path_to_csvs $TOOL_FOLDER/translation_sheets \
     --path_to_allowed_term_json ${allowed_terms} \
     --duplicate_raw_file_handling keep_all \
@@ -222,7 +225,7 @@ process mwbRun {
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
     --path_to_ncbi_names_dmp ${names_dmp} \
     --path_to_ncbi_merged_dmp ${merged_dmp} \
-    || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; }
+    || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; printf 'USI\tdataset\treason\n' > withheld_files_workbench.tsv; }
     """
 }
 
@@ -295,12 +298,15 @@ process mlRun {
     val after_listing
 
     output:
-    file 'Metabolights2REDU_ALL.tsv'
+    path 'Metabolights2REDU_ALL.tsv', emit: metadata
+    // files the converter gives no row on purpose (sample pairing withheld): saveOlderData --withheld_files
+    path 'withheld_files_metabolights.tsv', emit: withheld
 
 
     """
     timeout ${params.source_timeout} python $TOOL_FOLDER/Metabolights2REDU.py \
     --study_id ALL  \
+    --withheld_output withheld_files_metabolights.tsv \
     --path_to_translation_sheet_csvs $TOOL_FOLDER/translation_sheets_metabolights \
     --path_to_allowed_term_json ${allowed_terms} \
     --path_to_uberon_cl_po_csv ${uberon_po_cl_csv_path} \
@@ -314,7 +320,7 @@ process mlRun {
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
     --path_to_ncbi_names_dmp ${names_dmp} \
     --path_to_ncbi_merged_dmp ${merged_dmp} \
-    || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; }
+    || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; printf 'USI\tdataset\treason\n' > withheld_files_metabolights.tsv; }
     """
 }
 
@@ -587,10 +593,13 @@ process MASST_to_REDU {
     path 'adjusted_metadata_folder', emit: folder
     // MASST rows of files GNPS metadata describes: they only fill missing fields in the merge
     path 'masst_supplement.tsv', emit: supplement
+    // reference materials MASST names for GNPS-described files (USI, evidence), for finalTableRules
+    path 'masst_refmat_evidence.tsv', emit: refmat_evidence
 
     """
     mkdir adjusted_metadata_folder
     : > masst_supplement.tsv
+    printf 'USI\\tevidence\\n' > masst_refmat_evidence.tsv
     timeout ${params.source_timeout} python $TOOL_FOLDER/MASST_to_REDU.py \
     ${redu_table} \
     adjusted_metadata_folder \
@@ -610,7 +619,8 @@ process MASST_to_REDU {
     --path_to_exposure_csv ${exposure_csv} \
     --files_table ${files_table} \
     --supplement_output masst_supplement.tsv \
-    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_supplement.tsv; }
+    --refmat_evidence_output masst_refmat_evidence.tsv \
+    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_supplement.tsv; printf 'USI\\tevidence\\n' > masst_refmat_evidence.tsv; }
     """
 }
 
@@ -672,6 +682,8 @@ process saveOlderData {
     path old_redu
     path ml_files
     path files_table
+    // side tables of the files the converters withheld this run (one per source, header only when none)
+    path withheld_files, stageAs: 'withheld_files_*.tsv'
 
     output:
     path 'merged_with_old.tsv', emit: merged
@@ -685,6 +697,7 @@ process saveOlderData {
     merged_with_old.tsv \
     --metabolights_files ${ml_files} \
     --files_table ${files_table} \
+    --withheld_files ${withheld_files} \
     --summary_output source_summary.tsv \
     --dropped_output saveolder_dropped.tsv
     """
@@ -727,7 +740,9 @@ process enrich_ncbi_information {
 
 
 // Rules for every row of the final table, also the rows kept from earlier runs (final_table_rules.py):
-// personal care products, BiologicalSex of mammal samples from a body part only one sex has
+// personal care products, reference materials and pooled QCs, BiologicalSex of mammal samples from a body
+// part only one sex has, Plant Ontology body parts of plants and exudates (UBERON_CL_PO_ontology.csv),
+// placeholder factor names
 process finalTableRules {
     publishDir "./nf_output", mode: 'copy'
 
@@ -736,6 +751,8 @@ process finalTableRules {
     input:
     path merged_ch
     path sex_specific_parts
+    path masst_refmat_evidence
+    path uberon_cl_po_csv
 
     output:
     path 'merged_with_rules.tsv'
@@ -744,7 +761,9 @@ process finalTableRules {
     python $TOOL_FOLDER/final_table_rules.py \
     ${merged_ch} \
     merged_with_rules.tsv \
-    --path_to_sex_specific_parts ${sex_specific_parts}
+    --path_to_sex_specific_parts ${sex_specific_parts} \
+    --masst_refmat_evidence ${masst_refmat_evidence} \
+    --path_to_uberon_cl_po_csv ${uberon_cl_po_csv}
     """
 }
 
@@ -809,16 +828,16 @@ workflow {
     // Metabolomics Workbench
     // one request stream per repository: the file listing first, then the converter
     mwb_files_ch = mwbFiles(1)
-    mwb_metadata_ch = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
+    mwb_run = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
         ref.nodes, ref.names, ref.merged, mwb_files_ch)
-    mwb_redu_ch = formatmwb(mwb_metadata_ch, mwb_files_ch)
+    mwb_redu_ch = formatmwb(mwb_run.metadata, mwb_files_ch)
 
     // Metabolights
     // one request stream per repository: the file listing first, then the converter
     ml_files_ch = mlFiles(1)
-    ml_metadata_ch = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
+    ml_run = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
         ref.nodes, ref.names, ref.merged, ml_files_ch)
-    ml_redu_ch = formatml(ml_metadata_ch, ml_files_ch)
+    ml_redu_ch = formatml(ml_run.metadata, ml_files_ch)
 
     // NORMAN
     norman_metadata_ch = normanRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
@@ -829,13 +848,15 @@ workflow {
 
     // Make sure we dont loose older data
     old_redu_path_ch = Channel.fromPath(params.old_redu)
-    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch, dataset_cache.table).merged
+    // files the converters withheld on purpose this run (their earlier rows are not kept); further sources: .mix(...)
+    withheld_ch = ml_run.withheld.mix(mwb_run.withheld).collect()
+    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch, dataset_cache.table, withheld_ch).merged
 
     // Enrich NCBI information
     merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch, ref.nodes, ref.names, ref.merged)
 
     // Rules for every row (needs the lineage)
-    merged_with_rules_ch = finalTableRules(merged_with_ncbi_ch, sex_specific_parts)
+    merged_with_rules_ch = finalTableRules(merged_with_ncbi_ch, sex_specific_parts, masst_metadata_ch.refmat_evidence, uberon_cl_co_onto)
 
     // Diet / FastingStatus / InternalStandardsUsed from the sample group texts; SampleGroupFreeText rules
     merged_with_text_ch = finalizeTextColumns(merged_with_rules_ch, allowed_terms, exposure_onto)

@@ -251,6 +251,8 @@ class DatasetFiles:
         self.by_ws_stem = collections.defaultdict(list)
         self.by_lower = collections.defaultdict(list)
         self.by_lower_stem = collections.defaultdict(list)
+        # (folders without polarity words, file name) -> paths, built on first use (polarity_twin)
+        self.twin_index = None
         for i, name in zip(ccms_df.index, ccms_df["query_path"]):
             name = str(name)
             self.by_name[name].append(i)
@@ -408,6 +410,139 @@ def _row_polarity(metadata_row, meta_path):
     return _polarity_of(_POLARITY_WORD.findall(os.path.basename(meta_path)))
 
 
+# Polarity twins: a sheet row that states one polarity (IonizationSourceAndPolarity positive or
+# negative) and is matched to a file in a positive- or negative-mode folder of that polarity, where
+# the dataset also has a file of exactly the same name in the folder of the other polarity, the
+# folders differing only by the polarity word (peak/Positive mzml/x.mzML and peak/Negative mzml/x.mzML,
+# ccms_peak/raw_pos/Blank_1.mzML and ccms_peak/raw_neg/Blank_1.mzML: the other acquisition of the
+# sample the row describes; MSV000093514, MSV000085779, checked by the scans' polarity cvParams).
+# The other file gets a copy of the row with the polarity of its folder (add_polarity_twins), unless
+# the sheet also describes it (a row matched to it, or a row naming its file name with its polarity),
+# several different rows would give it a row, or the row comes from a fill-only file. Fields that this
+# sheet gives differently for its positive and its negative rows (_TWIN_GUARD_FIELDS) are acquisition-
+# specific and stay missing on the copy.
+_TWIN_GUARD_FIELDS = ['ChromatographyAndPhase', 'MassSpectrometer', 'InternalStandardsUsed', 'SampleExtractionMethod']
+# hidden columns of a matched row: the twin's path and the fields left missing on its copy
+_TWIN_PATH, _TWIN_BLANK = '_polarity_twin_path', '_polarity_twin_blank'
+_POLARITY_TERM = re.compile(r'\((positive|negative)\)$')
+
+
+def _stated_polarity(value):
+    """'pos' / 'neg' of an IonizationSourceAndPolarity term that states exactly one polarity, else None"""
+    value = str(value).strip().lower()
+    if ('positive' in value) == ('negative' in value):
+        return None
+    return 'pos' if 'positive' in value else 'neg'
+
+
+def _other_polarity_term(value, allowed=None):
+    """'electrospray ionization (positive)' -> 'electrospray ionization (negative)' (and back), None if the
+    term states no single polarity or the other term is not an allowed term (allowed: a set, or None)"""
+    value = str(value).strip()
+    m = _POLARITY_TERM.search(value)
+    if not m:
+        return None
+    other = value[:m.start()] + ('(negative)' if m.group(1) == 'positive' else '(positive)')
+    return other if allowed is None or other in allowed else None
+
+
+def _unpolar_dirs(path):
+    """the folders of a path with every polarity word replaced by one placeholder"""
+    return tuple(_POLARITY_WORD.sub('<polarity>', d) for d in path.split('/')[:-1])
+
+
+def polarity_twin(files, path):
+    """The one file of the dataset (DatasetFiles) with exactly the same file name as path in the folder
+    of the other polarity (folders equal but for the polarity word), or None"""
+    polarity = _path_polarity(path)
+    if polarity is None:
+        return None
+    if files.twin_index is None:
+        files.twin_index = collections.defaultdict(list)
+        for p in files.filepaths:
+            if _path_polarity(p) is not None:
+                files.twin_index[(_unpolar_dirs(p), p.rsplit('/', 1)[-1])].append(p)
+    others = [p for p in files.twin_index.get((_unpolar_dirs(path), path.rsplit('/', 1)[-1]), [])
+              if p != path and _path_polarity(p) not in (None, polarity)]
+    return others[0] if len(others) == 1 else None
+
+
+def _polarity_specific_fields(group):
+    """the _TWIN_GUARD_FIELDS a sheet's rows (one dataset of one metadata file) give with other values on
+    its positive than on its negative rows"""
+    polarity = group['IonizationSourceAndPolarity'].map(_stated_polarity) if 'IonizationSourceAndPolarity' in group.columns \
+        else pd.Series(None, index=group.index)
+    out = []
+    for field in _TWIN_GUARD_FIELDS:
+        if field not in group.columns:
+            continue
+        values = {pol: {str(v).strip() for v in group.loc[polarity == pol, field] if _present(v)} for pol in ('pos', 'neg')}
+        if values['pos'] and values['neg'] and values['pos'] != values['neg']:
+            out.append(field)
+    return out
+
+
+def _sheet_names_by_polarity(group):
+    """(file name, stated polarity) of every row of a sheet (one dataset of one metadata file)"""
+    if 'IonizationSourceAndPolarity' not in group.columns:
+        return set()
+    return {(os.path.basename(_strip_segments(f)), _stated_polarity(p))
+            for f, p in zip(group['filename'].astype(str), group['IonizationSourceAndPolarity']) if _stated_polarity(p)}
+
+
+def add_polarity_twins(frames, allowed_polarities=None):
+    """frames: the matched tables after keep_fill_only_rows_of_described_files (rows of metadata files that
+    are not fill-only carry the hidden _TWIN_PATH / _TWIN_BLANK columns) -> the same list with one more
+    table of the polarity-twin rows (see _TWIN_GUARD_FIELDS). A twin is not added where a matched row
+    already has its USI, or where rows that differ (other than in their file) would give it a row.
+    allowed_polarities: the allowed IonizationSourceAndPolarity terms (a set) or None."""
+    described = set()
+    for df in frames:
+        if 'USI' in df.columns:
+            described.update(df['USI'].astype(str))
+    proposals = collections.defaultdict(list)
+    for df in frames:
+        if _TWIN_PATH not in df.columns:
+            continue
+        for row in df[df[_TWIN_PATH].fillna('') != ''].to_dict('records'):
+            twin = dict(row)
+            path = twin.pop(_TWIN_PATH)
+            blank = [f for f in str(twin.pop(_TWIN_BLANK, '') or '').split('|') if f]
+            other = _other_polarity_term(twin.get('IonizationSourceAndPolarity', ''), allowed_polarities)
+            if other is None:
+                MATCH_STATS['rows_polarity_twin_no_term_of_other_polarity'] += 1
+                continue
+            twin['IonizationSourceAndPolarity'] = other
+            for field in blank:
+                if _present(twin.get(field)):
+                    twin[field] = 'missing value'
+                    MATCH_STATS[f'fields_left_missing_polarity_twin_{field}'] += 1
+            twin['filename'] = 'f.' + path
+            twin['USI'] = _make_usi_from_filename(twin['filename'], twin['ATTRIBUTE_DatasetAccession'])
+            proposals[twin['USI']].append((twin, row.get('USI'), row.get('MetadataFileDataset', '')))
+    rows = []
+    for usi in sorted(proposals):
+        twins = proposals[usi]
+        if usi in described:
+            MATCH_STATS['rows_polarity_twin_file_already_described'] += len(twins)
+            MATCH_REPORT.append(('polarity_twin', usi.split(':')[1], ' ; '.join(sorted(str(s) for _, s, _ in twins)),
+                                 'polarity_twin_file_already_described', usi.split(':', 2)[2]))
+            continue
+        if len({tuple(sorted((k, str(v)) for k, v in t.items())) for t, _, _ in twins}) > 1:
+            MATCH_STATS['rows_polarity_twin_conflicting_rows'] += len(twins)
+            MATCH_REPORT.append(('polarity_twin', usi.split(':')[1], usi, 'polarity_twin_conflicting_rows',
+                                 ' ; '.join(sorted(str(s) for _, s, _ in twins))))
+            continue
+        twin, source_usi, _ = twins[0]
+        MATCH_STATS['rows_matched_polarity_twin'] += 1
+        MATCH_REPORT.append(('polarity_twin', twin['ATTRIBUTE_DatasetAccession'], str(source_usi), 'matched_polarity_twin',
+                             twin['filename'][2:]))
+        rows.append(twin)
+    if rows:
+        frames = frames + [pd.DataFrame(rows)]
+    return frames
+
+
 def _break_tie(paths, meta_path, polarity, identity=None):
     """(path, rule) when a tie between paths can be decided safely, else (None, kind); a tuple of
     paths (each gets the row) for each_mode and each_acquisition. identity: path -> file_identity
@@ -510,14 +645,42 @@ def _match_row(files, metadata_row):
     return rule, selected_path, options, how
 
 
-def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files_cache=None, source='', rehome=True):
+def _mark_polarity_twin(files, metadata_row, selected_path, rule, sheet_names, twin_blank, sheet_dirs=frozenset()):
+    """Sets the hidden _TWIN_PATH / _TWIN_BLANK of a matched row whose file has a polarity twin (see
+    _TWIN_GUARD_FIELDS): the row states one polarity, the one of its file's folder, the sheet has no
+    row naming the twin's file name with the twin's polarity, and no row of the sheet is matched to a file
+    in the twin's folder (sheet_dirs: the folders of the sheet's matched files): a sheet that describes
+    files of that folder leaves the others out on purpose (MSV000097243: the positive re-runs DOC_23r /
+    DOC_27r are described, the first positive runs DOC_23 / DOC_27 are not)."""
+    polarity = _stated_polarity(metadata_row.get('IonizationSourceAndPolarity', ''))
+    if polarity is None or 'each_' in rule or _path_polarity(selected_path) != polarity:
+        return
+    twin = polarity_twin(files, selected_path)
+    if twin is None:
+        return
+    if (twin.rsplit('/', 1)[-1], _path_polarity(twin)) in sheet_names:
+        MATCH_STATS['rows_polarity_twin_sheet_names_the_other_file'] += 1
+        MATCH_STATS[f'rows_polarity_twin_sheet_names_the_other_file {metadata_row.get("ATTRIBUTE_DatasetAccession")}'] += 1
+        return
+    if twin.rsplit('/', 1)[0] in sheet_dirs:
+        MATCH_STATS['rows_polarity_twin_folder_described_by_the_sheet'] += 1
+        MATCH_STATS[f'rows_polarity_twin_folder_described_by_the_sheet {metadata_row.get("ATTRIBUTE_DatasetAccession")}'] += 1
+        return
+    MATCH_STATS['rows_polarity_twin_proposed'] += 1
+    metadata_row[_TWIN_PATH] = twin
+    metadata_row[_TWIN_BLANK] = twin_blank
+
+
+def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files_cache=None, source='', rehome=True,
+                                 polarity_twins=False):
     """Matches each metadata row to a file of its own dataset (ATTRIBUTE_DatasetAccession;
     files can describe several datasets). Rows without a valid accession are matched in the
     dataset of the metadata file. A row whose stated dataset has no file of that name (a wrong
     MassiveID, e.g. MSV000090180..239 written by dragging MSV000090179 down a spreadsheet
     column) is matched in the metadata file's own dataset when that has the file and no other
     row of this metadata file is matched to it. Returns the matched rows with 'filename' set to
-    the file path and a USI, or None if nothing could be matched."""
+    the file path and a USI, or None if nothing could be matched. polarity_twins: mark the rows whose
+    file has a polarity twin (_mark_polarity_twin; the rows are added by add_polarity_twins)."""
     files_cache = {} if files_cache is None else files_cache
     accessions = dataset_metadata_df['ATTRIBUTE_DatasetAccession'].astype(str).str.strip()
     valid = accessions.str.match(_ACCESSION)
@@ -555,6 +718,9 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
             MATCH_REPORT.extend((source, dataset, f, 'dataset_without_files', '') for f in group['filename'].astype(str))
             continue
 
+        # polarity twins (add_polarity_twins): what this sheet says per polarity
+        twin_blank = '|'.join(_polarity_specific_fields(group)) if polarity_twins else ''
+        sheet_names = _sheet_names_by_polarity(group) if polarity_twins else set()
         matched = []
         for metadata_row in group.to_dict('records'):
             meta_path = str(metadata_row["filename"])
@@ -597,6 +763,9 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
         # through another extension (x.mzXML and x.mzML listed for the same sample: the
         # x.mzXML row would otherwise also get the converted ccms_peak/x.mzML)
         exact_targets = {path for _, path, _, is_exact, _ in matched if is_exact}
+        # the folders of the files this sheet describes (_mark_polarity_twin)
+        sheet_dirs = {path.rsplit('/', 1)[0] for _, path, _, is_exact, _ in matched
+                      if '/' in path and (is_exact or path not in exact_targets)} if polarity_twins else set()
         for metadata_row, selected_path, rule, is_exact, meta_path in matched:
             if not is_exact and selected_path in exact_targets:
                 MATCH_STATS['rows_twin_of_exactly_named_file'] += 1
@@ -604,6 +773,8 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
                 continue
             MATCH_STATS[f'rows_matched_{rule}'] += 1
             MATCH_REPORT.append((source, dataset, meta_path, f'matched_{rule}', selected_path))
+            if polarity_twins:
+                _mark_polarity_twin(files, metadata_row, selected_path, rule, sheet_names, twin_blank, sheet_dirs)
             metadata_row["filename"] = "f." + selected_path
             metadata_row["USI"] = _make_usi_from_filename(
                 metadata_row["filename"],
@@ -666,7 +837,8 @@ def _match_metadata_file(file, gnps_column_names, files_cache):
     MATCH_STATS['rows_in'] += len(dataset_metadata_df)
     enriched_metadata_df = _match_filenames_and_add_usi(
         dataset_metadata_df, file_accession.group(1) if file_accession else None, files_cache,
-        source=os.path.basename(str(file)), rehome=not os.path.basename(str(file)).endswith(FILL_ONLY_MARK))
+        source=os.path.basename(str(file)), rehome=not os.path.basename(str(file)).endswith(FILL_ONLY_MARK),
+        polarity_twins=not os.path.basename(str(file)).endswith(FILL_ONLY_MARK))
     if enriched_metadata_df is not None:
         enriched_metadata_df['MetadataFileDataset'] = file_accession.group(1) if file_accession else ''
 
@@ -740,6 +912,14 @@ def main():
         print(f"ERROR: the fill-only step failed ({type(e).__name__}: {e}); fill-only rows are left out")
         traceback.print_exc(file=sys.stdout)
         all_metadata_list = [df for fill_only, df in all_metadata_list if not fill_only]
+    # polarity twins: the file of the other polarity of a described file gets the row (add_polarity_twins);
+    # on an error none are added
+    try:
+        allowed_polarities = set((allowed_terms_json.get('IonizationSourceAndPolarity') or {}).get('allowed_values') or []) or None
+        all_metadata_list = add_polarity_twins(all_metadata_list, allowed_polarities)
+    except Exception as e:
+        print(f"ERROR: the polarity-twin step failed ({type(e).__name__}: {e}); no polarity-twin rows are added")
+        traceback.print_exc(file=sys.stdout)
     all_metadata_list = [df for df in all_metadata_list if len(df)]
 
     # Create a DataFrame from the list with headers (header only if nothing matched,
