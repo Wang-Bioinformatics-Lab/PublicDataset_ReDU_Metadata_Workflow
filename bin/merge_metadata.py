@@ -78,6 +78,106 @@ def link_same_files(query_usi, target_usi):
     return out
 
 
+# ---- identical copies: the same data uploaded twice (e.g. peak/Plate01_mzXMLs/x.mzXML and
+# peak/Plate02_mzXMLs/x.mzXML), recognised by the dataset cache's description of the spectra ----
+# Two files are identical copies when they have the same extension, the cache counted MS1 and MS2
+# spectra (> 0) in both, all these columns are equal and the cache gives both sizes, which differ
+# by at most IDENTICAL_SIZE_TOLERANCE. Equal counts alone are not enough: two extracts of
+# one sample measured with one method can have equal counts (MSV000079777 Aq/ and Org/ 711/3102)
+# but differ in the other columns and in size. A fingerprint that files of other names share in
+# the dataset at other sizes is fixed by the method, not by the sample (DIA, SWATH and targeted
+# runs: MSV000082852 160628_FHS_Eicosanoid_Plate_17_76.mzML and 160702_..._Plate_05_56.mzML,
+# 30,143,326 and 30,143,494 bytes): such files are never identical copies (method_fixed_fingerprints),
+# nor are files the cache classifies as such acquisitions (METHOD_FIXED_CLASSIFICATIONS).
+FINGERPRINT_COLUMNS = ['spectra_ms1', 'spectra_ms2', 'RT_Range_in_Min', 'Top_CEs', 'Top_CE_Counts', 'MassAnalyzer',
+                       'Ionization', 'top_k_prec_mz_diffs', 'top_k_prec_mz_diff_counts', 'conseq_ms2_prec_increase',
+                       'conseq_ms2_prec_decrease', 'conseq_ms2_prec_equal', 'prec_prop_equal', 'prec_prop_increase',
+                       'prec_prop_decrease']
+IDENTICAL_SIZE_TOLERANCE = 1e-4
+# dataset cache 'classification' of runs whose spectra fingerprint the method fixes, not the sample
+METHOD_FIXED_CLASSIFICATIONS = frozenset({'DIA OR TARGETED', 'DIA-SWATH', 'inconclusive (limited MS2)'})
+_FP_SEP = '\x1f'
+
+
+def fingerprint_column(df):
+    """One string per row of a dataset cache table (FINGERPRINT_COLUMNS joined), or None if the table
+    lacks any of these columns (then no file counts as an identical copy)"""
+    if any(c not in df.columns for c in FINGERPRINT_COLUMNS):
+        return None
+    cols = [df[c].fillna('').astype(str).str.strip() for c in FINGERPRINT_COLUMNS]
+    return cols[0].str.cat(cols[1:], sep=_FP_SEP)
+
+
+def _number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
+
+
+def file_identity(path, fingerprint, size=None, classification=None):
+    """(extension, fingerprint, size) of a file that can be an identical copy, or None: without
+    a fingerprint, with no MS1 or no MS2 spectra counted, without precursor differences, or of a
+    METHOD_FIXED_CLASSIFICATIONS classification"""
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return None
+    if isinstance(classification, str) and classification.strip() in METHOD_FIXED_CLASSIFICATIONS:
+        return None
+    values = fingerprint.split(_FP_SEP)
+    if len(values) != len(FINGERPRINT_COLUMNS):
+        return None
+    record = dict(zip(FINGERPRINT_COLUMNS, values))
+    ms1, ms2 = _number(record['spectra_ms1']), _number(record['spectra_ms2'])
+    if not ms1 or not ms2 or ms1 <= 0 or ms2 <= 0 or not record['top_k_prec_mz_diffs']:
+        return None
+    size = _number(size)
+    return os.path.splitext(str(path))[1].lower(), fingerprint, (size if size and size > 0 else None)
+
+
+def identical_files(a, b):
+    """True if two file_identity records are identical copies (see FINGERPRINT_COLUMNS); without
+    both sizes they are not"""
+    if a is None or b is None or a[0] != b[0] or a[1] != b[1]:
+        return False
+    if a[2] is None or b[2] is None:
+        return False
+    return abs(a[2] - b[2]) <= IDENTICAL_SIZE_TOLERANCE * max(a[2], b[2])
+
+
+def _file_name_key(path):
+    """lower-case file name without folders and extension"""
+    return os.path.splitext(os.path.basename(str(path).replace('\\', '/')))[0].lower()
+
+
+def method_fixed_fingerprints(files):
+    """The (extension, fingerprint) keys of file_identity records that files of different names
+    share at different sizes (or without a size), among the files of one dataset: the fingerprint
+    then comes from the method (DIA, SWATH, targeted runs), and equal fingerprints do not show that
+    two files are one. files: iterable of (path, file_identity record or None)."""
+    seen = collections.defaultdict(set)
+    for path, identity in files:
+        if identity is not None:
+            seen[identity[:2]].add((_file_name_key(path), identity[2]))
+    fixed = set()
+    for key, entries in seen.items():
+        names = {name for name, _ in entries}
+        if len(names) < 2:
+            continue
+        for name, size in entries:
+            if any(other != name and (size is None or other_size is None or other_size != size)
+                   for other, other_size in entries):
+                fixed.add(key)
+                break
+    return fixed
+
+
+def without_method_fixed(identities):
+    """{path: file_identity record} with None for the records of method_fixed_fingerprints"""
+    fixed = method_fixed_fingerprints(identities.items())
+    return {p: (None if r is None or r[:2] in fixed else r) for p, r in identities.items()}
+
+
 def _massive_top_and_stem(path):
     """(top folder, e.g. peak or updates/<date>/peak; lower-case file name without extension) of a MassIVE path"""
     m = re.match(_MASSIVE_UPDATES, path)
@@ -108,22 +208,37 @@ class NameCopies:
     (the dataset cache table, plus the given USIs) has exactly these two groups with that file
     name, they share no top folder (two files of one name in one top folder are two files, e.g.
     peak/Plate01/x and peak/Plate02/x), and where the cache counted spectra in both, the
-    MS1/MS2 counts agree (pos/ and neg/ runs of one sample do not)."""
+    MS1/MS2 counts agree (pos/ and neg/ runs of one sample do not).
+    Groups of copies of one file name are also one file, in any folder layout and however many
+    groups have that name, when a file of one and a file of the other are identical copies
+    (identical_files: the same data uploaded twice, e.g. peak/Plate01_mzXMLs/x.mzXML and
+    peak/Plate02_mzXMLs/x.mzXML). Fingerprints that the dataset's files of other names share at
+    other sizes (method_fixed_fingerprints) are not used."""
 
     def __init__(self, files_table, extra_usis, datasets):
+        # copy identity -> the copy identities that are the same file
         self.partner = {}
         datasets = {d for d in datasets if re.match(r'^R?MSV\d', d)}
         if not datasets:
             return
-        usis, counts = [], {}
+        usis, counts, identities = [], {}, {}
         if files_table and files_table != 'none' and os.path.exists(files_table) and os.path.getsize(files_table) > 0:
             try:
-                for chunk in pd.read_csv(files_table, usecols=['usi', 'dataset', 'spectra_ms1', 'spectra_ms2'], dtype=str,
+                wanted = {'usi', 'dataset', 'spectra_ms1', 'spectra_ms2', 'size', 'classification'} | set(FINGERPRINT_COLUMNS)
+                for chunk in pd.read_csv(files_table, usecols=lambda c: c in wanted, dtype=str,
                                          keep_default_na=False, chunksize=1_000_000):
                     chunk = chunk[chunk['dataset'].isin(datasets)]
                     usis.extend(chunk['usi'])
                     counts.update({u: (a, b) for u, a, b in zip(chunk['usi'], chunk['spectra_ms1'], chunk['spectra_ms2'])
                                    if a not in ('', '0', 'nan') or b not in ('', '0', 'nan')})
+                    fingerprints = fingerprint_column(chunk)
+                    if fingerprints is not None:
+                        sizes = chunk['size'] if 'size' in chunk.columns else pd.Series('', index=chunk.index)
+                        classes = chunk['classification'] if 'classification' in chunk.columns else pd.Series('', index=chunk.index)
+                        for u, f, s, k in zip(chunk['usi'], fingerprints, sizes, classes):
+                            identity = file_identity(u, f, s, k)
+                            if identity is not None:
+                                identities[u] = identity
             except Exception as e:  # without the listing only the other identities are used
                 print(f"WARNING: could not read the dataset cache table {files_table} ({type(e).__name__}: {e}); "
                       f"copies in other folder layouts are not recognised")
@@ -136,26 +251,50 @@ class NameCopies:
                                                      if u.split(':')[1:2] and u.split(':')[1] in datasets])))
         if len(usis) == 0:
             return
+        # fingerprints fixed by the method, per dataset (method_fixed_fingerprints)
+        by_dataset = collections.defaultdict(dict)
+        for u, identity in identities.items():
+            by_dataset[u.split(':')[1]][u] = identity
+        identities = {u: r for records in by_dataset.values() for u, r in without_method_fixed(records).items() if r is not None}
         _, copy, _ = same_file_keys(usis)
         groups = collections.defaultdict(lambda: collections.defaultdict(set))
         spectra = collections.defaultdict(set)
+        group_identities = collections.defaultdict(list)
         for u, c in zip(usis, copy):
             d = u.split(':')[1]
             top, stem = _massive_top_and_stem(u.split(':', 2)[2])
             groups[(d, stem)][c].add(top)
             if u in counts:
                 spectra[c].add(counts[u])
-        for (d, stem), by_copy in groups.items():
-            if len(by_copy) != 2:
-                continue
-            (c1, tops1), (c2, tops2) = sorted(by_copy.items())
-            if tops1 & tops2 or '' in tops1 | tops2:
-                continue
-            if spectra[c1] and spectra[c2] and not (spectra[c1] & spectra[c2]):
-                continue
-            self.partner[c1], self.partner[c2] = c2, c1
+            if u in identities and identities[u] not in group_identities[c]:
+                group_identities[c].append(identities[u])
+        partner = collections.defaultdict(set)
+        n_layout, n_identical = 0, 0
+        for (d, stem), by_copy in sorted(groups.items()):
+            items = sorted(by_copy.items())
+            if len(items) == 2:
+                (c1, tops1), (c2, tops2) = items
+                if not (tops1 & tops2 or '' in tops1 | tops2) and \
+                        not (spectra[c1] and spectra[c2] and not (spectra[c1] & spectra[c2])):
+                    partner[c1].add(c2)
+                    partner[c2].add(c1)
+                    n_layout += 1
+            # identical copies, also in one top folder and next to other files of that name (only
+            # files with the same extension and fingerprint can be identical: compared per bucket)
+            buckets = collections.defaultdict(list)
+            for c, _ in items:
+                for identity in group_identities.get(c, ()):
+                    buckets[identity[:2]].append((c, identity))
+            for members in buckets.values():
+                for i, (c1, a) in enumerate(members):
+                    for c2, b in members[i + 1:]:
+                        if c1 != c2 and c2 not in partner[c1] and identical_files(a, b):
+                            partner[c1].add(c2)
+                            partner[c2].add(c1)
+                            n_identical += 1
+        self.partner = {c: tuple(sorted(p)) for c, p in partner.items() if p}
         print(f"Dataset cache table: {len(listed)} files of {len(datasets)} datasets; "
-              f"{len(self.partner) // 2} files with a copy in another folder layout")
+              f"{n_layout} files with a copy in another folder layout, {n_identical} pairs of identical copies")
 
     def link(self, query_usi, target_usi, links):
         """links (from link_same_files) completed with the name copies: a query without a link gets the
@@ -168,7 +307,8 @@ class NameCopies:
         for u, c in zip(target_usi, t_copy):
             by_copy[c].append(u)
         _, q_copy, _ = same_file_keys(query_usi.fillna('').astype(str))
-        return [t if t else tuple(sorted(by_copy.get(self.partner.get(c), ()))) for t, c in zip(links, q_copy)]
+        return [t if t else tuple(sorted(u for p in self.partner.get(c, ()) for u in by_copy.get(p, ())))
+                for t, c in zip(links, q_copy)]
 
 
 def read_source(path, data_source, name=None):

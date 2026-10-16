@@ -26,6 +26,7 @@ from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_d
 from REDU_conversion_functions import normalize_redu_datetime
 from ms_instrument_matching import match_mass_spectrometer
 import diet_columns
+from blank_qc_names import blank_qc_type_from_filename
 # time point, fasting and sample group rules shared with the Workbench converter
 from MWB_to_REDU import (_norm_key, _TP_UNIT_WORDS, timepoint_key_tier, timepoint_hours, _timepoint_key_unit,
                          sample_timepoint_hours, sample_fasting_status,
@@ -913,6 +914,281 @@ def rename_duplicated_column_names(df):
     return df
 
 
+# ---------------------------------------------------------------------------------------------
+# Sample / data file pairing of an assay sheet
+#
+# The converter joins every assay row to the sample sheet on its Sample Name. In many
+# MetaboLights assay sheets (public FTP files and API records alike) the Sample Name column was
+# sorted on its own, or shifted by a few rows, while the Extract Name, MS Assay Name and data
+# file columns kept their order: each file then names one sample, its Extract Name another
+# sample of the study, and its Sample Name a third one (MTBLS4861 API record: 'RP NEG-U30.raw',
+# Extract Name 'U30', Sample Name 'QC-2-10'). assay_sample_pairing() checks each MS assay:
+#   * it acts only where the Sample Name differs from the Extract Name in most rows (>= half,
+#     at least _PAIR_MIN_ROWS rows); other assays are joined on Sample Name as before
+#   * which column is aligned with the data files is decided by the files themselves: per
+#     differing row, whether its data files are named after the Extract Name but not the Sample
+#     Name, or the other way round (_pair_names: compared without case, punctuation, folders and
+#     file extensions; a number is not matched inside a longer number). One side has to win by
+#     at least 3 to 1. Files named after neither leave the decision to the structure: a Sample
+#     Name column that is a sorted permutation of the Extract Name column is out of place
+#     (sorted on its own); otherwise nothing is changed
+#   * each differing row is then joined to the sample its data file is named after (the file
+#     name without extensions is a Sample Name of the study, compared the same way), else, in an assay whose files
+#     follow the Extract Name, to the sample its Extract Name names; a row whose file names its
+#     Sample Name in such an assay (or its Extract Name in an assay whose files follow the Sample
+#     Name), or that has no such sample, keeps only its assay fields (instrument, polarity,
+#     chromatography): its sample fields are dropped and its QC status is taken from the file
+#     name (blank_qc_names)
+#   * an assay whose files follow the Extract Name is only re-paired when this finds a sample
+#     for at least half of the differing rows: Extract Names that are extract or run IDs
+#     (not Sample Names of the study) with files named after them are left alone
+#   * a Sample Name column sorted on its own (files named after neither column) is re-paired on
+#     the Extract Name, as an assay whose files follow it, when the assay itself shows that the
+#     Extract Name column kept the row order (_pair_extract_kept_order): the Extract Names
+#     follow the order of the sample sheet while the Sample Names do not, or the MS Assay Name
+#     (the run) is the Extract Name in most differing rows (MTBLS2356 API record: the FTP copy of
+#     the assay pairs every file with its Extract Name). Without such evidence the differing
+#     rows keep only their assay fields (MTBLS718: Extract Names in no order, runs named
+#     otherwise)
+# ---------------------------------------------------------------------------------------------
+_PAIR_MIN_ROWS = 5
+_PAIR_VOTE_RATIO = 3
+_PAIR_FILE_SUFFIX = re.compile(r'(?:\.(?:zip|gz|lzma|bz2|7z|xz|rar|tar))+$', re.I)
+_PAIR_FILE_EXTENSION = re.compile(r'(?:\.(?:mzml|mzxml|mzdata|mgf|raw|cdf|wiff2?|scan|d|txt|csv|ibd|imzml))+$', re.I)
+
+
+def _pair_norm(value):
+    return re.sub(r'[^a-z0-9]', '', str(value).lower())
+
+
+def _pair_base(value):
+    """A data file or sample name without folder, compression and MS file extensions (lower case)."""
+    base = os.path.basename(str(value).strip().rstrip('/')).lower()
+    base = _PAIR_FILE_SUFFIX.sub('', base)
+    return _PAIR_FILE_EXTENSION.sub('', base)
+
+
+def _pair_full_name(path):
+    """Normalised data file name without folder and compression suffix (MS extensions kept)."""
+    return _pair_norm(_PAIR_FILE_SUFFIX.sub('', os.path.basename(str(path).strip().rstrip('/')).lower()))
+
+
+def _pair_file_stem(path):
+    """Normalised data file name without folder, compression and MS file extensions."""
+    return _pair_norm(_pair_base(path))
+
+
+def _pair_tokens(value):
+    return [t for t in re.split(r'[^a-z0-9]+', _pair_base(value)) if t]
+
+
+def _pair_within(part, whole):
+    """Whether normalised `part` (at least 2 characters) occurs in normalised `whole`, a number
+    not matched inside a longer number ('QC1' is not in 'QC10')."""
+    if len(part) < 2:
+        return False
+    start = whole.find(part)
+    while start >= 0:
+        end = start + len(part)
+        if not (part[0].isdigit() and start > 0 and whole[start - 1].isdigit()) and \
+                not (part[-1].isdigit() and end < len(whole) and whole[end].isdigit()):
+            return True
+        start = whole.find(part, start + 1)
+    return False
+
+
+def _pair_names(name, path):
+    """Whether a data file is named after a sample / extract name: the name is part of the
+    file name, the file name is part of the name ('QC1.D.zip' for 'S_QC1'), or the name has
+    several words and all occur in this order among the words of the file name
+    ('MALLMB02B4R1_Batch4QC_R01_R1' in '20240101_MH_MALLMB02B4R1_C18_posneg_MeOH_QC_Batch4QC_R01_R1.raw';
+    words of at least 2 characters). Names and file names are compared without case, punctuation,
+    folders and file extensions."""
+    n, f = _pair_norm(_pair_base(name)), _pair_file_stem(path)
+    if not n or not f:
+        return False
+    if _pair_within(n, f) or _pair_within(f, n):
+        return True
+    words = _pair_tokens(name)
+    if len(words) < 2 or min(len(w) for w in words) < 2:
+        return False
+    rest = iter(_pair_tokens(path))
+    return all(any(w == t for t in rest) for w in words)
+
+
+def _pair_natural_key(value):
+    return [(0, int(t), '') if t.isdigit() else (1, 0, t) for t in re.split(r'(\d+)', value.lower()) if t]
+
+
+def _pair_sorted(values):
+    """Whether the values are in ascending order: by code point, without case, or naturally ('S2' < 'S10')."""
+    for key in (None, str.lower, _pair_natural_key):
+        keys = values if key is None else [key(v) for v in values]
+        if all(a <= b for a, b in zip(keys, keys[1:])):
+            return True
+    return False
+
+
+def _pair_follows_sheet(values, sheet_positions):
+    """Whether column values (in assay row order) follow the order of the sample sheet: every
+    value is a Sample Name of the sheet, and the sheet rows of their first occurrence never go
+    back (repeats of a sample next to each other allowed); at least _PAIR_MIN_ROWS values."""
+    if not sheet_positions or len(values) < _PAIR_MIN_ROWS:
+        return False
+    positions = [sheet_positions.get(v) for v in values]
+    if any(p is None for p in positions):
+        return False
+    return all(a <= b for a, b in zip(positions, positions[1:]))
+
+
+def _pair_extract_kept_order(sample_names, extract_names, assay_names, named, differ, sheet_positions):
+    """Whether an assay whose Sample Name column was sorted on its own shows that its Extract
+    Name column kept the row order: the Extract Names follow the sample sheet's order and the
+    Sample Names do not, or the MS Assay Name is the Extract Name in at least half of the
+    differing rows."""
+    column_sn = [sample_names[i] for i in named]
+    column_en = [extract_names[i] for i in named]
+    if _pair_follows_sheet(column_en, sheet_positions) and not _pair_follows_sheet(column_sn, sheet_positions):
+        return True
+    if assay_names is not None:
+        same = sum(assay_names[i] != '' and assay_names[i] == extract_names[i] for i in differ)
+        if 2 * same >= len(differ):
+            return True
+    return False
+
+
+def assay_sample_pairing(sample_names, extract_names, file_names, study_samples, sheet_positions=None, assay_names=None):
+    """Sample to join each assay row to (see the block comment above).
+
+    sample_names, extract_names: the row's Sample Name and Extract Name (stripped strings);
+    file_names: per row, the list of its data file paths; study_samples: the Sample Names of
+    the sample sheet; sheet_positions: {Sample Name: row of its first occurrence in the sample
+    sheet} (None: unknown); assay_names: the row's MS Assay Name (stripped strings; None:
+    unknown). Returns (keys, drop, decision): keys[i] is the Sample Name to join row i
+    on, drop[i] whether its sample fields are dropped, decision 'consistent' (nothing
+    changed), 'extract' (files follow the Extract Name), 'sample' (files follow the Sample
+    Name), 'sorted_extract' (Sample Name column sorted on its own, files named after neither,
+    the Extract Name column kept the row order: joined as 'extract') or 'sorted' (the same
+    without that evidence: differing rows dropped)."""
+    n = len(sample_names)
+    keys, drop = list(sample_names), [False] * n
+    named = [i for i in range(n) if sample_names[i] != '']
+    differ = [i for i in named if extract_names[i] != '' and extract_names[i] != sample_names[i]]
+    if len(differ) < _PAIR_MIN_ROWS or 2 * len(differ) < len(named):
+        return keys, drop, 'consistent'
+    # Sample Names by their normalised name with and without file extensions (a sheet can name
+    # samples 'x.wiff' and 'x.wiff.scan')
+    by_full, by_stem = {}, {}
+    for s in study_samples:
+        if s != '':
+            by_full.setdefault(_pair_full_name(s), set()).add(s)
+            by_stem.setdefault(_pair_file_stem(s), set()).add(s)
+    votes, exact = {}, {}
+    for i in differ:
+        files = [f for f in file_names[i] if str(f).strip() and _pair_file_stem(f)]
+        names_sn = any(_pair_names(sample_names[i], f) for f in files)
+        names_en = any(_pair_names(extract_names[i], f) for f in files)
+        votes[i] = 'extract' if names_en and not names_sn else 'sample' if names_sn and not names_en else None
+        # the sample the data file is named after: by the whole file name, else without extensions
+        for index, name in ((by_full, _pair_full_name), (by_stem, _pair_file_stem)):
+            hits = {s for f in files for s in index.get(name(f), ())}
+            if hits:
+                if len(hits) == 1:
+                    exact[i] = hits.pop()
+                break
+    n_extract = sum(v == 'extract' for v in votes.values())
+    n_sample = sum(v == 'sample' for v in votes.values())
+
+    def resolve(alignment):
+        out = {}
+        for i in differ:
+            if i in exact:
+                out[i] = exact[i]
+            elif votes[i] is not None and votes[i] != alignment:
+                out[i] = None
+            elif alignment == 'extract':
+                out[i] = extract_names[i] if extract_names[i] in study_samples else None
+            elif alignment == 'sample':
+                out[i] = sample_names[i]
+            else:
+                out[i] = None
+        return out
+
+    decision, target = None, None
+    if n_extract >= 1 and n_extract >= _PAIR_VOTE_RATIO * n_sample:
+        target = resolve('extract')
+        if 2 * sum(t is not None for t in target.values()) >= len(differ):
+            decision = 'extract'
+    if decision is None and n_sample >= 1 and n_sample >= _PAIR_VOTE_RATIO * n_extract:
+        decision, target = 'sample', resolve('sample')
+    if decision is None:
+        column_sn = [sample_names[i] for i in named]
+        if sorted(column_sn) == sorted(extract_names[i] for i in named) and _pair_sorted(column_sn):
+            decision, target = 'sorted', resolve('sorted')
+            if _pair_extract_kept_order(sample_names, extract_names, assay_names, named, differ, sheet_positions):
+                by_extract = resolve('extract')
+                if 2 * sum(t is not None for t in by_extract.values()) >= len(differ):
+                    decision, target = 'sorted_extract', by_extract
+    if decision is None:
+        return keys, drop, 'consistent'
+    for i, t in target.items():
+        if t is None:
+            drop[i] = True
+        else:
+            keys[i] = t
+    return keys, drop, decision
+
+
+def _sample_sheet_positions(sample_table):
+    """{stripped Sample Name: row of its first occurrence} of a sample table record (empty if it has none)."""
+    try:
+        headers = _table_headers(sample_table, '')
+    except Exception:
+        return {}
+    if 'Sample Name' not in headers:
+        return {}
+    k = headers.index('Sample Name')
+    positions = {}
+    for i, row in enumerate(sample_table.get('data') or []):
+        if k < len(row) and row[k] is not None:
+            positions.setdefault(str(row[k]).strip(), i)
+    return positions
+
+
+def _sample_sheet_names(sample_table):
+    """Stripped Sample Names of a sample table record (empty set if it has none)."""
+    return set(_sample_sheet_positions(sample_table))
+
+
+def _assay_pairing(df, study_samples, label='', sheet_positions=None):
+    """(join keys, drop flags) of an assay table (columns 'Assay_...') from assay_sample_pairing;
+    rows it leaves alone keep the converter's join key (the stripped Sample Name).
+    sheet_positions: _sample_sheet_positions of the study's sample sheet."""
+    def values(column):
+        if column not in df.columns:
+            return [''] * len(df)
+        return ['' if v is None or (isinstance(v, float) and np.isnan(v)) else str(v).strip() for v in df[column]]
+    sample_names, extract_names = values('Assay_Sample Name'), values('Assay_Extract Name')
+    file_columns = [c for c in df.columns if re.fullmatch(r'Assay_(?:Raw|Derived) Spectral Data File(?:\.\d+)?(?:_\d+)?', str(c))]
+    files = [[] for _ in range(len(df))]
+    for c in file_columns:
+        for i, v in enumerate(values(c)):
+            if v:
+                files[i].append(v)
+    assay_names = values('Assay_MS Assay Name') if 'Assay_MS Assay Name' in df.columns else None
+    keys, drop, decision = assay_sample_pairing(sample_names, extract_names, files, study_samples,
+                                                sheet_positions=sheet_positions, assay_names=assay_names)
+    join = df['Assay_Sample Name'].astype(str).str.strip().tolist() if 'Assay_Sample Name' in df.columns else [''] * len(df)
+    moved = sum(k != s for k, s in zip(keys, sample_names))
+    if decision != 'consistent':
+        follow = {'extract': 'the Extract Name', 'sample': 'the Sample Name',
+                  'sorted': 'neither (Sample Name column sorted on its own)',
+                  'sorted_extract': 'neither (Sample Name column sorted on its own, Extract Name column in row order)'}[decision]
+        print(f'{label}: Sample Name differs from Extract Name in most rows; data files follow {follow}: '
+              f'{moved} rows joined to another sample, {sum(drop)} rows without sample fields')
+    return [k if k != s else j for k, s, j in zip(keys, sample_names, join)], drop
+
+
 def _table_headers(table, prefix):
     """Column headers for a MetaboLights assay/sample table, in the order of its data rows.
 
@@ -977,6 +1253,164 @@ def _ncbi_term_by_id(allowedTerm_dict):
             taxid, _, _ = str(term).partition('|')
             _ncbi_by_id.setdefault(taxid, term)
     return _ncbi_by_id
+
+
+# ---------------------------------------------------------------------------------------------
+# NCBITaxonomy from the organism text and its NCBITaxon accession
+#
+# Curators type the organism and pick (or drag down) its NCBITaxon accession, and the two can
+# contradict each other: 'Gallus gallus' with NCBITaxon_9606 (MTBLS12310), a human cell line
+# with the dog's 9615 (MTBLS1755), and spreadsheet drag-fills that count the accession up row
+# by row ('Homo sapiens' with 9607, 9608 ... 9636: MTBLS3342; 'Arbidopsis thaliana' with 3702,
+# 3703 ...: MTBLS2522). organism_accession_terms() decides per sample, from the whole sample
+# sheet of the study:
+#   * the text names a taxon T (allowed name, or the MetaboLights organism alias sheet):
+#       - accession A == T, or A's own name is the text (another taxon of that name): A
+#       - A below T in the pinned NCBI taxonomy (a strain or subspecies of T) and not part of a
+#         drag-fill series: A
+#       - otherwise (A above T, unrelated, or drag-filled): T, the text wins
+#   * the text names no taxon: A, unless the text lists several organisms ('a; b', 'a, b',
+#     'a and b', 'a/b' ...), the text carries several different accessions in the study, or A
+#     is part of a drag-fill series: then 'missing value'
+# A drag-fill series: at least _DRAG_FILL_RUN sample rows next to each other in the sample sheet
+# whose accession counts up by one from row to row while the organism text stays the same (up to
+# its numbers: 'ATCC 31823', 'ATCC 31824' ...), or at least _DRAG_FILL_RUN consecutive taxon IDs
+# among the accessions of one organism text in the study. Distinct organisms that NCBI happened to
+# number consecutively and that are listed in that order (MTBLS705 ASF361 1235801, ASF492 1235802,
+# ASF519 1235803) are no series.
+# ---------------------------------------------------------------------------------------------
+_DRAG_FILL_RUN = 3
+_ORGANISM_LIST = re.compile(r'[;,+&]|\band\b|(?<=[A-Za-z]{2})\s*/\s*(?=[A-Za-z]{2})', re.I)
+
+
+def _organism_key(text):
+    return ' '.join(str(text).lower().split())
+
+
+def _consecutive_runs(ids, length=_DRAG_FILL_RUN):
+    """The IDs that are part of a run of at least `length` consecutive integers."""
+    ids = sorted(set(ids))
+    out, run = set(), []
+    for i in ids + [None]:
+        if run and i is not None and i == run[-1] + 1:
+            run.append(i)
+            continue
+        if len(run) >= length:
+            out.update(run)
+        run = [i] if i is not None else []
+    return out
+
+
+def _drag_filled(samples, length=_DRAG_FILL_RUN):
+    """(text, accession) pairs of the sample rows (in sheet order) that are part of a drag-fill:
+    rows next to each other (repeats of a row collapsed) whose accession counts up by one while
+    the text stays the same up to its numbers, at least `length` rows."""
+    skeleton = lambda t: re.sub(r'\d+', '#', _organism_key(t))
+    rows = []
+    for text, acc in samples:
+        row = (skeleton(text), int(acc) if acc.isdigit() else None, (text, acc))
+        if rows and row[1] is not None and rows[-1][:2] == row[:2]:
+            continue
+        rows.append(row)
+    out, run = set(), []
+    for row in rows + [('', None, None)]:
+        if run and row[1] is not None and row[1] == run[-1][1] + 1 and row[0] == run[-1][0]:
+            run.append(row)
+            continue
+        if len(run) >= length:
+            out.update(r[2] for r in run)
+        run = [row] if row[1] is not None else []
+    return out
+
+
+def _ncbi_is_ancestor(ancestor, taxon):
+    """Whether taxon `ancestor` is a proper ancestor of `taxon` in the pinned NCBI taxonomy
+    (nodes.dmp, merged IDs followed); False without the pinned taxonomy."""
+    import REDU_conversion_functions
+    pinned = REDU_conversion_functions._PINNED_LINEAGE
+    if pinned is None:
+        return False
+    try:
+        a, t = pinned.taxonomy.resolve(int(ancestor)), pinned.taxonomy.resolve(int(taxon))
+    except (TypeError, ValueError):
+        return False
+    if a is None or t is None or a == t:
+        return False
+    parent = pinned.taxonomy.parent
+    node = t
+    for _ in range(1000):
+        up = parent[node]
+        if up == node or up < 0:
+            return False
+        if up == a:
+            return True
+        node = up
+    return False
+
+
+def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_ncbi_is_ancestor, pairs=None):
+    """NCBITaxonomy term of each (organism text, NCBITaxon accession ID) pair with a valid
+    accession, by the rules of the block comment above.
+
+    samples: (text, accession ID) of the rows of the study's sample sheet, in sheet order (the
+    evidence for drag-fills; accession IDs without the 'NCBITaxon:' prefix, '' if none); pairs:
+    the pairs to decide (default: those of samples); text_term(text): the allowed term the text
+    names, or None; accession_term(ID): the allowed term of the ID, or None; is_ancestor(a, b):
+    whether taxon ID a is a proper ancestor of b. Returns {(text, ID): term or 'missing value'}."""
+    ids_of_text = {}
+    for text, acc in samples:
+        if acc:
+            ids_of_text.setdefault(_organism_key(text), set()).add(acc)
+    runs_of_text = {key: _consecutive_runs([int(a) for a in ids if a.isdigit()]) for key, ids in ids_of_text.items()}
+    dragged = _drag_filled(samples)
+    out = {}
+    for text, acc in dict.fromkeys(list(samples) + list(pairs or [])):
+        if not acc:
+            continue
+        a_term = accession_term(acc)
+        if not a_term:
+            continue
+        key = _organism_key(text)
+        in_series = (text, acc) in dragged or (acc.isdigit() and int(acc) in runs_of_text.get(key, ()))
+        t_term = text_term(text)
+        a_id, _, a_name = a_term.partition('|')
+        if t_term:
+            t_id = t_term.split('|', 1)[0]
+            if a_term == t_term or a_name.strip().lower() == key:
+                out[(text, acc)] = a_term
+            elif not in_series and is_ancestor(t_id, a_id):
+                out[(text, acc)] = a_term
+            else:
+                out[(text, acc)] = t_term
+        elif _ORGANISM_LIST.search(str(text)) or len(ids_of_text.get(key, ())) > 1 or in_series:
+            out[(text, acc)] = 'missing value'
+        else:
+            out[(text, acc)] = a_term
+    return out
+
+
+def _organism_text_accession(df):
+    """Organism text and NCBITaxon accession ID per row of a frame with the sample sheet's
+    'Samples_' columns: 'Samples_Organism', or where that is blank the first alias column
+    (Species, Bacteria, Genus, ...), with the accession of the same column (as the converter
+    reads them)."""
+    alias_columns = ['Samples_Species', 'Samples_species', 'Samples_Bacteria',
+                     'Samples_Genus', 'Samples_genus', 'Samples_organism']
+    text = df['Samples_Organism'].copy() if 'Samples_Organism' in df.columns else pd.Series(np.nan, index=df.index, dtype=object)
+    accession = pd.Series('', index=df.index, dtype=object)
+    column = _accession_column(df, 'Samples_Organism')
+    if column:
+        accession = _accession_ids(df[column], 'NCBITaxon')
+    for c in alias_columns:
+        if c in df.columns:
+            blank = text.isna() | text.astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
+            if not blank.any():
+                break
+            text.loc[blank] = df.loc[blank, c]
+            alias_accession = _accession_column(df, c)
+            if alias_accession:
+                accession.loc[blank] = _accession_ids(df.loc[blank, alias_accession], 'NCBITaxon')
+    return text, accession.str.replace('NCBITaxon:', '', regex=False)
 
 
 _ncbi_by_name = {}
@@ -2251,6 +2685,10 @@ def Metabolights2REDU(study_id, **kwargs):
 
     df_assays = pd.DataFrame()
     ms_study_assays = []
+    # Sample Names of the sample sheet, for the sample / data file pairing check of each assay
+    sheet_positions = _sample_sheet_positions(study_details['content'].get('sampleTable'))
+    study_samples = set(sheet_positions)
+    pairings = []
 
     #get study assays if they are MS. There can be multiple assay tables in the same study
     for index, assay_json in enumerate(study_assays):
@@ -2265,6 +2703,10 @@ def Metabolights2REDU(study_id, **kwargs):
             df.columns = headers
 
             print(f'Assay {index} has {len(df)} rows and {len(df.columns)} columns.')
+
+            # the sample each row is joined to, and rows whose sample fields are dropped
+            pairings.append(_assay_pairing(rename_duplicated_column_names(df), study_samples, f'{study_id} assay {index}',
+                                           sheet_positions=sheet_positions))
             
             ms_study_assays.append(df)
 
@@ -2286,6 +2728,8 @@ def Metabolights2REDU(study_id, **kwargs):
 
         # Concatenate all dataframes into a single dataframe
         df_assays = pd.concat(aligned_dfs, ignore_index=True)
+        df_assays['Assay__pair_key'] = [k for keys, _ in pairings for k in keys]
+        df_assays['Assay__pair_drop'] = [d for _, drops in pairings for d in drops]
 
         print(f'Assay table has {len(df_assays)} rows and {len(df_assays.columns)} columns.')
 
@@ -2309,11 +2753,21 @@ def Metabolights2REDU(study_id, **kwargs):
         # Sample names are typed by hand in both sheets; ignore surrounding whitespace
         df_assays['Assay_Sample Name'] = df_assays['Assay_Sample Name'].astype(str).str.strip()
         df_samples['Samples_Sample Name'] = df_samples['Samples_Sample Name'].astype(str).str.strip()
-        n_unmatched = (~df_assays['Assay_Sample Name'].isin(df_samples['Samples_Sample Name'])).sum()
+        n_unmatched = (~df_assays['Assay__pair_key'].isin(df_samples['Samples_Sample Name'])).sum()
         if n_unmatched > 0:
             print(f'{n_unmatched} of {len(df_assays)} assay rows have no matching sample in the sample table and are dropped.')
 
-        df_study = df_assays.merge(df_samples, left_on='Assay_Sample Name', right_on='Samples_Sample Name', how='inner')
+        df_study = df_assays.merge(df_samples, left_on='Assay__pair_key', right_on='Samples_Sample Name', how='inner')
+        # rows whose pairing with a sample could not be established keep their assay fields only;
+        # their QC status comes from the file name (below)
+        _pair_drop = df_study['Assay__pair_drop'].astype(bool)
+        if _pair_drop.any():
+            # by position: the sample table can repeat a header ('Organism part' twice)
+            _sample_columns = set(df_samples.columns)
+            df_study.iloc[np.flatnonzero(_pair_drop.to_numpy()),
+                          [i for i, c in enumerate(df_study.columns) if c in _sample_columns]] = ''
+        df_study['_pair_dropped'] = _pair_drop
+        df_study = df_study.drop(columns=['Assay__pair_key', 'Assay__pair_drop'])
         df_study['row_id'] = range(1, len(df_study) + 1)
 
         print(f'Sample table has {len(df_study)} rows and {len(df_study.columns)} columns.')
@@ -2414,13 +2868,27 @@ def Metabolights2REDU(study_id, **kwargs):
                 # ('203745|Nonea', '1068978|Nonomuraea ...') are allowed terms
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['NCBITaxonomy'].replace('None', 'missing value')
 
-                # The curator-chosen NCBITaxon accession is more reliable than resolving the
-                # free-text organism name, so it is used whenever it is a valid taxon
+                # The NCBITaxon accession recorded with the organism, where it agrees with the
+                # organism text (same taxon or a strain of it) or the text names no taxon, and
+                # it is not a drag-filled series (organism_accession_terms); the whole sample
+                # sheet is the evidence for drag-fills
                 if (_tax_accession != '').any():
                     _by_id = _ncbi_term_by_id(allowedTerm_dict)
+
+                    def _text_term(text):
+                        term = _by_name.get(str(text).lower())
+                        if term is None:
+                            term = _org_alias.get(str(text).strip().lower())
+                        return term
+                    _as_text = lambda v: '' if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
+                    _row_pairs = list(zip(df_study['Samples_Organism'].map(_as_text),
+                                          _tax_accession.str.replace('NCBITaxon:', '', regex=False)))
+                    # the sample sheet with repeated headers renamed as in df_study ('Organism_1')
+                    _sheet_text, _sheet_acc = _organism_text_accession(rename_duplicated_column_names(df_samples.copy()))
+                    _decided = organism_accession_terms(list(zip(_sheet_text.map(_as_text), _sheet_acc)),
+                                                        _text_term, _by_id.get, pairs=_row_pairs)
                     # dict.get per value: Series.map(dict) turns the ~3M entry dict into a Series on every call
-                    _from_acc = pd.Series([_by_id.get(k, np.nan) for k in _tax_accession.str.replace('NCBITaxon:', '', regex=False)],
-                                          index=_tax_accession.index, dtype=object)
+                    _from_acc = pd.Series([_decided.get(pair, np.nan) for pair in _row_pairs], index=df_study.index, dtype=object)
                     _use = _from_acc.notna()
                     df_study.loc[_use, 'NCBITaxonomy'] = _from_acc[_use]
                 
@@ -2479,6 +2947,12 @@ def Metabolights2REDU(study_id, **kwargs):
                 qc_label = qc_label.where(qc_label.notna(), _qc.where(_not_organism))
                 if 'Samples_Organism part' in df_study.columns:
                     qc_label = qc_label.where(qc_label.notna(), _new_label(df_study['Samples_Organism part']))
+                # rows whose sample fields were dropped (assay_sample_pairing): blank / QC status
+                # from the file name, as for GNPS files (blank_qc_names)
+                if '_pair_dropped' in df_study.columns and df_study['_pair_dropped'].any():
+                    _from_name = df_study['filename'].map(lambda f: blank_qc_type_from_filename(f) if isinstance(f, str) else None)
+                    _fill = df_study['_pair_dropped'].astype(bool) & qc_label.isna() & _from_name.notna()
+                    qc_label = qc_label.where(~_fill, _from_name)
                 # a generic blank label does not replace a more specific blank type ('Blank Extraction')
                 qc_label = qc_label.where(~((qc_label == 'blank_analysis') & df_study['SampleType'].isin(['blank_extraction', 'blank_culturemedia'])),
                                           df_study['SampleType'])
@@ -3455,6 +3929,7 @@ def Metabolights2REDU(study_id, **kwargs):
             df_study['MassiveID'] = study_id
             
             ontology_table = ontology_table.drop_duplicates(subset=['Label'])
+            df_study = df_study.drop(columns=['_pair_dropped'], errors='ignore')
             df_study = merge_repeated_fileobservations(df_study)
             # HPO and exposure tables (one row per label) so complete_and_fill_REDU_table can generate their indexes
             _index_tables = {}

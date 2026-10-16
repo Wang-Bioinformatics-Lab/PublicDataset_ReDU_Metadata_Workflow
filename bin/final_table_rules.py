@@ -1,5 +1,7 @@
 """Rules applied to every row of the final table, after the NCBI lineage (enrich_ncbi_information) and
 before the text columns (final_text_columns.py), so also to the rows saveOlderData keeps from earlier runs:
+- collapse_cell_breaks: line breaks and tabs inside a cell (multi-line cells of a sheet) become one
+  space, so every row of the TSV is one line (line-based readers: awk, cut, split by line)
 - personal_care_products: personal care products are SampleType 'personal care product' with the most
   specific product category
 - life_stage_humans_only: LifeStage (human age brackets) only on rows of humans
@@ -13,6 +15,7 @@ changes nothing.
 """
 import argparse
 import collections
+import re
 
 import pandas as pd
 
@@ -32,6 +35,43 @@ HUMAN_TAXON_ID = '9606'
 
 def _missing(series):
     return series.fillna('').astype(str).str.strip().str.lower().isin(('', 'nan', MISSING))
+
+
+# a run of line breaks / tabs (with the spaces around it) inside a cell
+_CELL_BREAK = re.compile(r' *[\r\n\t][\r\n\t ]*')
+# columns that name a file: a USI or file name is kept as it is (it must match the file)
+FILE_COLUMNS = ('USI', 'filename')
+
+
+def collapse_cell_breaks(df):
+    """\\r, \\n and \\t inside a text cell (sheets with multi-line cells, e.g. a subject identifier with
+    a line feed at its end) become one space, and the cell is stripped; a cell left empty becomes
+    'missing value'. Cells without these characters are not changed, so a second pass changes nothing.
+    USI and filename are kept as they are (a file's name must match the file), their cells with such
+    characters are only counted. Returns the frame and a Counter."""
+    stats = collections.Counter()
+    dataset = df['ATTRIBUTE_DatasetAccession'] if 'ATTRIBUTE_DatasetAccession' in df.columns else pd.Series('', index=df.index)
+    changed = pd.Series(False, index=df.index)
+    for column in df.columns:
+        values = df[column]
+        if values.dtype != object:
+            continue
+        # checked per distinct value (most columns have few)
+        broken = [v for v in pd.unique(values) if isinstance(v, str) and _CELL_BREAK.search(v)]
+        if not broken:
+            continue
+        hit = values.isin(broken)
+        if column in FILE_COLUMNS:
+            stats[f'line_breaks_in_file_column_kept {column}'] = int(hit.sum())
+            continue
+        fixed = {v: (_CELL_BREAK.sub(' ', v).strip() or MISSING) for v in broken}
+        df.loc[hit, column] = values[hit].map(fixed)
+        stats[f'line_breaks_collapsed {column}'] = int(hit.sum())
+        changed |= hit
+    for d, n in dataset[changed].value_counts().sort_index().items():
+        stats[f'line_breaks_collapsed_rows {d}'] = int(n)
+    stats['line_breaks_collapsed_rows'] = int(changed.sum())
+    return df, stats
 
 
 def personal_care_products(df):
@@ -146,7 +186,9 @@ if __name__ == '__main__':
 
     # all cells as the previous step wrote them (no NA parsing: e.g. 'NA' stays 'NA')
     df = pd.read_csv(args.input_tsv, sep='\t', dtype=str, keep_default_na=False, na_filter=False, low_memory=False)
-    df, stats = personal_care_products(df)
+    df, stats = collapse_cell_breaks(df)
+    df, care_stats = personal_care_products(df)
+    stats.update(care_stats)
     df, life_stage_stats = life_stage_humans_only(df)
     stats.update(life_stage_stats)
     if args.path_to_sex_specific_parts:

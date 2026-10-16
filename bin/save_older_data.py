@@ -1,5 +1,6 @@
 import argparse
 import collections
+import os
 import pandas as pd
 import re
 
@@ -32,6 +33,60 @@ def _acq_tokens(path):
     return frozenset(_ACQ_NORM.get(t.lower(), t.lower()) for t in _ACQ_TOKEN.findall(re.sub(r'[_\\/.+-]', ' ', path)))
 
 
+def _missing_value(value):
+    return pd.isna(value) or str(value).strip().lower() in ('', 'nan', 'missing value')
+
+
+_POLARITY_TOKENS = frozenset({'pos', 'neg'})
+_CHROMATOGRAPHY_TOKENS = frozenset({'hilic', 'c18', 'c8', 'rp'})
+
+
+def _polarity_value_tokens(value):
+    """IonizationSourceAndPolarity -> path tokens it agrees with ('alternating': both, no polarity: none)"""
+    v = str(value).lower()
+    tokens = set()
+    if 'positive' in v or 'alternating' in v:
+        tokens.add('pos')
+    if 'negative' in v or 'alternating' in v:
+        tokens.add('neg')
+    return tokens
+
+
+def _chromatography_value_tokens(value):
+    """ChromatographyAndPhase -> path tokens it agrees with: HILIC, C18 / C8 (and rp), reverse phase
+    (NOS) with any reverse phase token; other phases (GC, PGC, ...) with none"""
+    v = str(value).lower()
+    tokens = set()
+    if 'hilic' in v:
+        tokens.add('hilic')
+    if 'c18' in v:
+        tokens |= {'c18', 'rp'}
+    if re.search(r'(?<![0-9])c8(?![0-9])', v):
+        tokens |= {'c8', 'rp'}
+    if 'reverse phase' in v:
+        tokens.add('rp')
+        if '(nos)' in v:
+            tokens |= {'c18', 'c8'}
+    return tokens
+
+
+def _contradicts_path(path_tokens, polarity, chromatography):
+    """True when a row's own IonizationSourceAndPolarity or ChromatographyAndPhase (if filled)
+    contradicts the acquisition tokens of its path: a polarity none of the path's polarity tokens
+    (neg/x.mzML labelled positive), a chromatography none of its chromatography tokens (hilic/x.mzML
+    labelled reverse phase (C18)). A missing value, or a path without such tokens, contradicts nothing."""
+    path_polarity = path_tokens & _POLARITY_TOKENS
+    if path_polarity and not _missing_value(polarity):
+        mine = _polarity_value_tokens(polarity)
+        if mine and not (mine & path_polarity):
+            return True
+    path_chromatography = path_tokens & _CHROMATOGRAPHY_TOKENS
+    if path_chromatography and not _missing_value(chromatography):
+        if not (_chromatography_value_tokens(chromatography) & path_chromatography):
+            return True
+    return False
+
+
 def _name_keys(usi):
     """(dataset, lower-case file name without MS file extension) per USI of a Series ('\\' and '/' separate folders)"""
     dataset = usi.str.extract(r'^mzspec:([^:]+):', expand=False).fillna('')
@@ -54,6 +109,96 @@ def _missing(series):
     return series.fillna('').astype(str).str.strip().str.lower().isin(('', 'nan', 'missing value'))
 
 
+def _cache_files_noext(files_table, datasets):
+    """USIs without MS file extension of the files of these datasets in the dataset cache table, or
+    None when the table is not given, empty or cannot be read"""
+    if not files_table or files_table == 'none' or not os.path.exists(files_table) or os.path.getsize(files_table) == 0:
+        return None
+    files = set()
+    try:
+        for chunk in pd.read_csv(files_table, usecols=['usi', 'dataset'], dtype=str, keep_default_na=False,
+                                 chunksize=1_000_000):
+            chunk = chunk[chunk['dataset'].isin(datasets)]
+            files.update(usi_noext(chunk['usi']))
+    except Exception as e:
+        print(f"WARNING: could not read the dataset cache table {files_table} ({type(e).__name__}: {e})")
+        return None
+    return files
+
+
+# the fields an earlier row must share with this run's row of the same path in another dataset to be
+# taken for that file under a wrong accession (_file_of_another_dataset)
+BIOLOGY_FIELDS = ('NCBITaxonomy', 'UBERONBodyPartName', 'SampleType')
+
+
+def _biology(df, index):
+    """(NCBITaxonomy, UBERONBodyPartName, SampleType) per row of df (missing values as ''), for the rows of index"""
+    columns = []
+    for c in BIOLOGY_FIELDS:
+        if c in df.columns:
+            v = df.loc[index, c].fillna('').astype(str).str.strip()
+            columns.append(v.where(~v.str.lower().isin(('', 'nan', 'missing value')), ''))
+        else:
+            columns.append(pd.Series('', index=index))
+    return list(zip(*columns)) if columns else [()] * len(index)
+
+
+def _file_of_another_dataset(old_usi, old_source, cur_usi, cur_source, candidates, files_table, df_older=None, df_current=None):
+    """Earlier MassIVE rows (of `candidates`) whose USI is not a file of their dataset in the dataset
+    cache table (files_table) and whose path below the accession (without MS file extension) is a
+    file of another dataset among this run's rows that describes the same biology: a row of that path
+    in the other dataset has the same NCBITaxonomy, UBERONBodyPartName and SampleType (BIOLOGY_FIELDS;
+    missing on both counts as the same, not all three missing). Generic paths (ccms_peak/Raw/3.mzML,
+    peak/mzML/Blank_17.mzML) are files of many datasets; an earlier row that describes another
+    organism, body part or sample type there is another file and is kept (also when its dataset is no
+    longer in the cache table: made private or removed upstream). Without the cache table: none."""
+    out = pd.Series(False, index=old_usi.index)
+    massive = candidates & (old_source == 'GNPS') & (old_usi != '')
+    cur_massive = cur_source == 'GNPS'
+    if not massive.any() or not cur_massive.any():
+        return out
+    def dataset_and_path(usi):
+        return _dataset_of(usi), usi_noext(usi.str.replace(r'^mzspec:[^:]+:', '', regex=True))
+    old_ds, old_path = dataset_and_path(old_usi[massive])
+    cur_ds, cur_path = dataset_and_path(cur_usi[cur_massive])
+    wanted = set(old_path)
+    in_wanted = cur_path.isin(wanted)
+    cur_bio = _biology(df_current, cur_path.index[in_wanted]) if df_current is not None else [()] * int(in_wanted.sum())
+    old_bio = _biology(df_older, old_path.index) if df_older is not None else [()] * len(old_path)
+    # path -> other dataset -> the biology of its rows of that path this run
+    datasets_of_path = collections.defaultdict(lambda: collections.defaultdict(set))
+    for d, p, b in zip(cur_ds[in_wanted], cur_path[in_wanted], cur_bio):
+        datasets_of_path[p][d].add(b)
+    shared = pd.Series([bool(set(datasets_of_path.get(p, {})) - {d}) for d, p in zip(old_ds, old_path)], index=old_ds.index)
+    elsewhere = pd.Series([any(o != d and b in bios and any(b) for o, bios in datasets_of_path.get(p, {}).items())
+                           for d, p, b in zip(old_ds, old_path, old_bio)], index=old_ds.index)
+    if shared.any():
+        print(f"Earlier MassIVE rows with the path of a file of another dataset this run: {int(shared.sum())}, "
+              f"of them with other biology than every row of that path there (kept): {int((shared & ~elsewhere).sum())}")
+    if not elsewhere.any():
+        return out
+    cache = _cache_files_noext(files_table, set(old_ds[elsewhere]))
+    if cache is None:
+        print(f"No dataset cache table: {int(elsewhere.sum())} earlier MassIVE rows with the path of a file of another "
+              f"dataset this run are kept (their own dataset's files cannot be checked)")
+        return out
+    not_listed = ~usi_noext(old_usi[massive][elsewhere]).isin(cache)
+    hit = not_listed[not_listed].index
+    out[hit] = True
+    if len(hit):
+        # per dataset this run that has the files: rows, and the earlier datasets they were under
+        by_other = collections.defaultdict(list)
+        for d, p in zip(old_ds[hit], old_path[hit]):
+            by_other[','.join(sorted(set(datasets_of_path[p]) - {d}))].append(d)
+        print(f"Earlier MassIVE rows dropped, not a file of their dataset (dataset cache) but a file of another "
+              f"dataset this run: {len(hit)} rows of {old_ds[hit].nunique()} datasets; "
+              + '; '.join(f"files of {o}: {len(ds)} rows under {len(set(ds))} datasets ({', '.join(sorted(set(ds))[:3])}"
+                          f"{', ...' if len(set(ds)) > 3 else ''})" for o, ds in sorted(by_other.items())))
+    print(f"Earlier MassIVE rows with the path and biology of a file of another dataset this run: {int(elsewhere.sum())}, "
+          f"of them files of their own dataset (kept): {int(elsewhere.sum()) - len(hit)}")
+    return out
+
+
 def replace_per_dataset(df_current, masst_only, df_older, files_table=None):
     """Rows of this run and of earlier runs, per file (same_file_keys in merge_metadata.py:
     the same path without extension or a copy in another top folder), by precedence
@@ -67,6 +212,11 @@ def replace_per_dataset(df_current, masst_only, df_older, files_table=None):
     any SUBMITTER_ONLY_FIELDS count as MASST rows.
     With the dataset cache table (files_table) copies of a MassIVE file in another folder layout
     count as the same file too (merge_metadata.NameCopies).
+    An earlier row of a rebuilt dataset whose path differs from every file of this run with its name in
+    the acquisition tokens (_ACQ_TOKEN) is kept as another acquisition of the sample, unless its own
+    polarity / chromatography contradicts its path (_contradicts_path). An earlier MassIVE row that is
+    not a file of its dataset in the dataset cache table but whose path is a file of another dataset
+    this run is dropped (a wrong accession; _file_of_another_dataset; not without the cache table).
     Returns (df_current, df_older) with the replaced rows removed, and a table of the dropped rows."""
     dropped = []
     cur_usi = df_current['USI'].fillna('').astype(str)
@@ -138,15 +288,35 @@ def replace_per_dataset(df_current, masst_only, df_older, files_table=None):
         for u, k in zip(cur_usi[fresh][fresh_keys.isin(wanted)], fresh_keys[fresh_keys.isin(wanted)]):
             fresh_tokens[k].append(_acq_tokens(u.split(':', 2)[-1]))
         other_acq = pd.Series(False, index=df_older.index)
+        # (kept only if the row's own polarity / chromatography does not contradict its path: the matcher
+        # of this run may have rejected the file, e.g. a positive-mode sheet row on neg/x.mzML)
+        contradicted = pd.Series(False, index=df_older.index)
+        no_value = pd.Series('', index=df_older.index)
+        polarity = df_older['IonizationSourceAndPolarity'] if 'IonizationSourceAndPolarity' in df_older.columns else no_value
+        chromatography = df_older['ChromatographyAndPhase'] if 'ChromatographyAndPhase' in df_older.columns else no_value
         for i, k in old_keys.items():
             tokens = fresh_tokens.get(k)
             mine = _acq_tokens(old_usi[i].split(':', 2)[-1])
             other_acq[i] = bool(tokens) and bool(mine) and all(t and t != mine for t in tokens)
+            if other_acq[i] and _contradicts_path(mine, polarity[i], chromatography[i]):
+                other_acq[i], contradicted[i] = False, True
         if other_acq.any():
             print(f"Earlier rows kept as another acquisition of a file of this run: {int(other_acq.sum())} "
                   f"{old_ds[other_acq].value_counts().sort_index().to_dict()}")
+        if contradicted.any():
+            print(f"Earlier rows of another acquisition not kept, their polarity / chromatography contradicts their path: "
+                  f"{int(contradicted.sum())} {old_ds[contradicted].value_counts().sort_index().to_dict()}")
         not_produced &= ~other_acq
+    else:
+        contradicted = pd.Series(False, index=df_older.index)
     drop_old[not_produced] = 'file_not_produced_by_rebuilt_dataset'
+    drop_old[not_produced & contradicted] = 'other_acquisition_contradicts_its_path'
+    # an earlier MassIVE row whose file is not in its dataset (dataset cache table) but whose path is a
+    # file of another dataset this run: a wrong accession (e.g. a sheet's MassiveID column filled down,
+    # MSV000090179 -> MSV000090180, 181, ...), the file is a row of its own dataset this run
+    drop_old[_file_of_another_dataset(old_usi, old_source, cur_usi, cur_source, drop_old == '', files_table,
+                                      df_older=df_older, df_current=df_current)] = \
+        'file_of_another_dataset_this_run'
     # (the same USI without extension as a row of this run: replaced as before)
     drop_old[(drop_old != '') & same_noext] = 'same_usi_noext_as_this_run'
 

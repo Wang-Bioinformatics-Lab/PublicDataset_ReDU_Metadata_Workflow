@@ -108,6 +108,123 @@ def collapse_conflicting_rows(df, key, missing_value='missing value'):
     return df
 
 
+# columns that name the file or the dataset, not the sample (never blanked by blank_conflicting_copies)
+FILE_IDENTITY_COLUMNS = ('MassiveID', 'filename', 'USI', 'DataSource')
+# allowed_values of a column without a fixed vocabulary (complete_and_fill_REDU_table checks a format)
+_FORMAT_PLACEHOLDERS = ('00', 'datetime', 'numeric', 'numeric|numeric')
+# coordinates of the records of one file are the same place when their latitudes and their longitudes
+# each lie within this many degrees (1e-5, about 1 m; the sheets carry float noise such as 49.68530001
+# or 8.59290001)
+COORDINATE_TOLERANCE = 1e-5
+
+
+# SampleType of the rows that are no samples of an organism or place, and the columns
+# complete_and_fill_REDU_table empties on such rows (its 'strip_for_blank')
+NON_SAMPLE_TYPES = r'blank|^pool_QC$|^reference material$|^personal care product$|^molecular_standards$'
+BLANK_STRIPPED_COLUMNS = ('NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded',
+                          'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus',
+                          'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus',
+                          'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex',
+                          'ColonizationStatus')
+
+
+def _coordinates(value):
+    """'54.344172|-6.21791702' -> (54.344172, -6.21791702); None if not two numbers"""
+    try:
+        lat, lon = (float(x) for x in str(value).split('|'))
+    except (ValueError, AttributeError):
+        return None
+    return (lat, lon) if lat == lat and lon == lon else None
+
+
+def _distinct_values(values, column):
+    """The different values of one file's rows (missing values left out, sorted); coordinates
+    (LatitudeandLongitude) that all lie within COORDINATE_TOLERANCE of each other count as one place"""
+    distinct = sorted(set(values.dropna()))
+    if column == 'LatitudeandLongitude' and len(distinct) > 1:
+        points = [_coordinates(v) for v in distinct]
+        if all(p is not None for p in points) and \
+                max(p[0] for p in points) - min(p[0] for p in points) <= COORDINATE_TOLERANCE and \
+                max(p[1] for p in points) - min(p[1] for p in points) <= COORDINATE_TOLERANCE:
+            return distinct[:1]
+    return distinct
+
+
+def _comparable_values(series, column, allowedTerm_dict):
+    """The values of a column as complete_and_fill_REDU_table will keep them, for comparing the rows of
+    one file: NaN for a missing value ('', 'nan', 'missing value', coordinates without numbers such
+    as 'nan|nan'); in a column with a fixed vocabulary the term the value matches when spaces are
+    ignored, NaN for a value that is not a term (it becomes missing, e.g. the 'Real Sample'
+    placeholder of SampleType); other columns as written (stripped; coordinates are compared with a
+    tolerance, _distinct_values)."""
+    text = series.astype(object).where(series.notna(), '').astype(str).str.strip()
+    missing = text.str.lower().isin(('', 'nan', 'missing value')) | text.str.fullmatch(r'(?:nan)?(?:\|(?:nan)?)+')
+    out = text.where(~missing)
+    allowed = (allowedTerm_dict.get(column) or {}).get('allowed_values') or []
+    if column not in ('NCBITaxonomy', 'MassSpectrometer') and len(allowed) >= 1 \
+            and allowed[0] not in _FORMAT_PLACEHOLDERS and all(isinstance(t, str) for t in allowed):
+        terms = {}
+        for term in allowed:
+            terms.setdefault(term.replace(' ', ''), term)
+        out = out.map(lambda v: terms.get(v.replace(' ', ''), np.nan) if isinstance(v, str) else np.nan)
+    return out
+
+
+def blank_conflicting_copies(df, columns, allowedTerm_dict, key=('MassiveID', 'filename')):
+    """One uploaded file named by several sample records: submitters attach the same file to
+    several DSFP samples (a pos and a neg record, groundwater and wastewater, two matrices), and a
+    record's URL can point at another sample's S3 object (the same USI). Each copy would keep its
+    own record's metadata, so one of them is wrong. Rows are grouped by dataset and exact file
+    name (case kept: 'lubw_..._0.mzml' and 'LUBW_..._0.mzML' are different objects, a full-scan
+    file and one collision-energy channel); in a group of several rows every column of `columns`
+    whose values disagree (_comparable_values: missing values are no conflict) is set to missing
+    (NaN, completed later as the column's missing value) on all rows of the group. Values the copies
+    agree on, and missing entries, are kept; the rows stay (one per USI after the USI dedupe).
+    When the records disagree on SampleType and one of them is a blank or QC (NON_SAMPLE_TYPES), the
+    file may be a blank: the columns complete_and_fill_REDU_table empties on blanks
+    (BLANK_STRIPPED_COLUMNS) are set to missing on all rows of the file too.
+    Columns complete_and_fill_REDU_table generates (ontology indexes, NCBI rank) are not compared:
+    they are made again from the compared ones. Returns the frame and a table of the blanked fields
+    (dataset, filename, rows, sample_ids, column, values)."""
+    report_columns = ['dataset', 'filename', 'rows', 'sample_ids', 'column', 'values']
+    key = [k for k in key if k in df.columns]
+    columns = [c for c in columns if c in df.columns and c not in key and c not in FILE_IDENTITY_COLUMNS
+               and (c == 'LifeStage' or (allowedTerm_dict.get(c) or {}).get('generate') != 'True')]
+    if len(df) == 0 or len(key) < 2 or not columns:
+        return df, pd.DataFrame(columns=report_columns)
+    repeated = df.duplicated(subset=key, keep=False)
+    if not repeated.any():
+        return df, pd.DataFrame(columns=report_columns)
+    sub = df.loc[repeated, key + (['sample_id'] if 'sample_id' in df.columns else [])].copy()
+    for c in columns:
+        sub[c] = _comparable_values(df.loc[repeated, c], c, allowedTerm_dict)
+    records = []
+    blank = {c: [] for c in columns}
+    for (dataset, filename), group in sub.groupby(key, sort=True):
+        samples = ','.join(sorted(set(group['sample_id'].astype(str)))) if 'sample_id' in group.columns else ''
+        types = set(group['SampleType'].dropna()) if 'SampleType' in group.columns else set()
+        maybe_blank = len(types) > 1 and any(re.search(NON_SAMPLE_TYPES, t, flags=re.IGNORECASE) for t in types)
+        for c in columns:
+            distinct = _distinct_values(group[c], c)
+            if len(distinct) > 1 or (maybe_blank and distinct and c in BLANK_STRIPPED_COLUMNS):
+                blank[c].extend(group.index)
+                records.append((dataset, filename, len(group), samples, c, ' || '.join(distinct)))
+    for c, index in blank.items():
+        if index:
+            df.loc[index, c] = np.nan
+    report = pd.DataFrame(records, columns=report_columns)
+    n_files = report[['dataset', 'filename']].drop_duplicates().shape[0] if len(report) else 0
+    print(f"Files named by several rows (same dataset and file name): {sub.groupby(key).ngroups} files, "
+          f"{int(repeated.sum())} rows; {n_files} files with conflicting fields set to missing on all their rows", flush=True)
+    if len(report):
+        files = report.drop_duplicates(['dataset', 'filename'])
+        per_dataset = files.groupby('dataset').agg(files=('filename', 'size'), rows=('rows', 'sum'))
+        per_dataset['fields'] = report.groupby('dataset').size()
+        print(per_dataset.to_string())
+        print("Files with the column set to missing: " + str(report.groupby('column').size().sort_index().to_dict()), flush=True)
+    return df, report
+
+
 def clean(series):
     """Lower-case, drop spaces, tolerate NaNs/numbers → always returns a string Series."""
     return (
@@ -1048,6 +1165,17 @@ def main(output_filename, study_id, **kwargs):
         
         combined_df = pd.concat(dfs, ignore_index=True)
 
+        # One file named by several sample records: conflicting fields to missing on all copies, before
+        # the table is completed (the columns derived from them follow, and the minimum-metadata
+        # filter sees the result) and before the USI dedupe (copies that share one USI)
+        # (on an error the copies keep their own values, as before this step)
+        try:
+            combined_df, conflicts = blank_conflicting_copies(
+                combined_df.copy(), [c for c in combined_df.columns if c in allowedTerm_dict], allowedTerm_dict)
+            conflicts.to_csv(f"{output_filename}.conflicting_copies.tsv", sep='\t', index=False)
+        except Exception as e:
+            print(f"WARNING: could not compare the copies of files named by several records: {type(e).__name__}: {e}")
+            traceback.print_exc()
 
         combined_df = complete_and_fill_REDU_table(combined_df, allowedTerm_dict, UBERONOntologyIndex_table=ontology_table, ENVOEnvironmentBiomeIndex_table=ENVOEnvironmentBiomeIndex_table,
                                                     ENVOEnvironmentMaterialIndex_table=ENVOEnvironmentMaterialIndex_table,NCBIRankDivision_table=NCBIRankDivision_table, add_usi = False, 

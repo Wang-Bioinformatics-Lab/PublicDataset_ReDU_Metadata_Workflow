@@ -13,6 +13,8 @@ import json
 import re
 from pathlib import Path
 
+from merge_metadata import FINGERPRINT_COLUMNS, fingerprint_column, file_identity, identical_files, without_method_fixed
+
 ccms_peak_link = "https://datasetcache.gnps2.org/datasette/datasette/database/uniquemri.csv?_sort=usi&dataset__exact=" # MSV000081468&filepath__endswith=%25.mz%25ML&_size=max"
 # MetadataFileDataset: accession of the dataset the metadata file was found in (MassIVE)
 # or named after (GitHub); merge_metadata.py prefers a dataset's own file on conflicts
@@ -125,10 +127,22 @@ _LIKE_MZ_ML = r'\.[mM][zZ].*[mM][lL]\Z'
 
 
 def load_files_table(path):
-    """Reads the uniquemri export once and indexes its mz(X)ML rows by dataset."""
+    """Reads the uniquemri export once and indexes its mz(X)ML rows by dataset (with the size and
+    the spectra fingerprint of each file, merge_metadata.FINGERPRINT_COLUMNS, where the export has
+    them: they tell identical copies apart, see _break_tie)."""
     global FILES_TABLE
-    df = pd.read_csv(path, usecols=['usi', 'filepath', 'dataset'], dtype=str, keep_default_na=False, na_values=[])
-    df = df[df['filepath'].str.contains(_LIKE_MZ_ML, regex=True, flags=re.DOTALL)]
+    wanted = {'usi', 'filepath', 'dataset', 'size', 'classification'} | set(FINGERPRINT_COLUMNS)
+    parts = []
+    for chunk in pd.read_csv(path, usecols=lambda c: c in wanted, dtype=str, keep_default_na=False, na_values=[],
+                             chunksize=1_000_000):
+        chunk = chunk[chunk['filepath'].str.contains(_LIKE_MZ_ML, regex=True, flags=re.DOTALL)]
+        fingerprints = fingerprint_column(chunk)
+        out = chunk[['usi', 'filepath', 'dataset']].copy()
+        out['_fingerprint'] = fingerprints if fingerprints is not None else ''
+        out['_size'] = chunk['size'] if 'size' in chunk.columns else ''
+        out['_classification'] = chunk['classification'] if 'classification' in chunk.columns else ''
+        parts.append(out)
+    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=['usi', 'filepath', 'dataset'])
     # the per-dataset query orders by usi (SQLite BINARY collation = code point order)
     df = df.sort_values('usi', kind='stable')
     FILES_TABLE = {dataset: group.reset_index(drop=True) for dataset, group in df.groupby('dataset', sort=False)}
@@ -191,34 +205,72 @@ def _fetch_dataset_files(dataset, retry_attempts=3):
     return None
 
 
+def _ws_key(name):
+    """a file name with runs of whitespace as one space and none at either end"""
+    return re.sub(r'\s+', ' ', str(name)).strip()
+
+
+def _strip_segments(path):
+    """a metadata file path without whitespace at either end of each folder / file name: sheets write
+    ' 05_Mastigocladus_laminosus_SPE.mzML' (MSV000088697) for the listed '05_Mastigocladus_laminosus_SPE.mzML'"""
+    return '/'.join(part.strip() for part in str(path).split('/'))
+
+
 class DatasetFiles:
-    """File lookups of one dataset (by name, name without .mzML/.mzXML, lower-case name)."""
+    """File lookups of one dataset (by name, name without .mzML/.mzXML, name with runs of whitespace
+    as one space, lower-case name)."""
 
     def __init__(self, ccms_df):
         # (a row without a file path cannot be matched; answers with such rows are retried
         # by _fetch_dataset_files, this only guards against a crash)
         ccms_df = ccms_df[ccms_df["filepath"].notna()].reset_index(drop=True)
         ccms_df["query_path"] = ccms_df["filepath"].apply(lambda x: os.path.basename(x))
-        ccms_df["_dir_parts"] = ccms_df["filepath"].apply(lambda p: tuple(Path(p).parts[:-1]))
+        # (folder names compared with runs of whitespace as one space, none at either end: _ws_key)
+        ccms_df["_dir_parts"] = ccms_df["filepath"].apply(lambda p: tuple(_ws_key(d) for d in Path(p).parts[:-1]))
         self.df = ccms_df
         # plain lists (row i = position i) for the per-row candidate scoring in _select
         self.filepaths = ccms_df["filepath"].tolist()
         self.dir_parts = ccms_df["_dir_parts"].tolist()
+        # identical-copy identity of each file (merge_metadata.file_identity; None without a fingerprint):
+        # from the export (load_files_table) or the columns of a per-dataset answer
+        none = pd.Series('', index=ccms_df.index)
+        if '_fingerprint' in ccms_df.columns:
+            fingerprints = ccms_df['_fingerprint']
+            sizes = ccms_df['_size'] if '_size' in ccms_df.columns else none
+            classes = ccms_df['_classification'] if '_classification' in ccms_df.columns else none
+        else:
+            fingerprints = fingerprint_column(ccms_df)
+            sizes = ccms_df['size'] if 'size' in ccms_df.columns else none
+            classes = ccms_df['classification'] if 'classification' in ccms_df.columns else none
+        # (fingerprints that files of other names share at other sizes are the method's: none)
+        self.identity = {} if fingerprints is None else \
+            without_method_fixed({p: file_identity(p, f, z, k) for p, f, z, k in zip(self.filepaths, fingerprints, sizes, classes)})
         self.by_name = collections.defaultdict(list)
         self.by_stem = collections.defaultdict(list)
+        self.by_ws = collections.defaultdict(list)
+        self.by_ws_stem = collections.defaultdict(list)
         self.by_lower = collections.defaultdict(list)
         self.by_lower_stem = collections.defaultdict(list)
         for i, name in zip(ccms_df.index, ccms_df["query_path"]):
             name = str(name)
             self.by_name[name].append(i)
-            self.by_lower[name.lower()].append(i)
+            self.by_ws[_ws_key(name)].append(i)
+            self.by_lower[_ws_key(name).lower()].append(i)
             stem, ext = os.path.splitext(name)
             if ext.lower() in _MZ_EXTENSIONS:
                 self.by_stem[stem].append(i)
-                self.by_lower_stem[stem.lower()].append(i)
+                self.by_ws_stem[_ws_key(stem)].append(i)
+                self.by_lower_stem[_ws_key(stem).lower()].append(i)
 
     def candidates(self, meta_basename):
-        """(rule, candidate rows) for the first rule that finds any file."""
+        """(rule, candidate rows) for the first rule that finds any file. Whitespace at either end of
+        the name is ignored (also by 'exact'); 'whitespace': the same name once runs of whitespace are
+        one space, also with the other of .mzML/.mzXML and without whitespace before the extension
+        (MSV000097243 'Babayani_DOC_33 .mzML' for the listed 'Babayani_DOC_33.mzML'); 'case' also
+        ignores such whitespace. A name listed exactly as written (whitespace included) is 'exact'."""
+        meta_basename = str(meta_basename)
+        if not self.by_name.get(meta_basename):
+            meta_basename = meta_basename.strip()
         meta_basename2 = meta_basename[:-3] + "ML" if len(meta_basename) >= 3 else meta_basename
         exact = self.by_name.get(meta_basename, []) + \
             ([] if meta_basename2 == meta_basename else self.by_name.get(meta_basename2, []))
@@ -229,9 +281,14 @@ class DatasetFiles:
             same_stem = self.by_stem.get(stem, [])
             if same_stem:
                 return 'stem_ext', same_stem
-        lower = self.by_lower.get(meta_basename.lower(), [])
+        ws = self.by_ws.get(_ws_key(meta_basename), [])
         if ext.lower() in _MZ_EXTENSIONS:
-            lower = list(dict.fromkeys(lower + self.by_lower_stem.get(stem.lower(), [])))
+            ws = list(dict.fromkeys(ws + self.by_ws_stem.get(_ws_key(stem), [])))
+        if ws:
+            return 'whitespace', ws
+        lower = self.by_lower.get(_ws_key(meta_basename).lower(), [])
+        if ext.lower() in _MZ_EXTENSIONS:
+            lower = list(dict.fromkeys(lower + self.by_lower_stem.get(_ws_key(stem).lower(), [])))
         if lower:
             return 'case', lower
         return None, []
@@ -254,6 +311,17 @@ class DatasetFiles:
 #                ignored and x.mzML / x.mzXML count as one (a conversion). Preference, in order:
 #                the file named exactly as in the row, the original upload before an update's
 #                copy, .mzML before .mzXML, then the path in code-point order
+#   identical_copies  all candidates are the same data uploaded twice (or more) under other folder
+#                names: the dataset cache describes their spectra identically and their sizes agree
+#                (merge_metadata.identical_files; e.g. peak/Plate01_mzXMLs/x.mzXML and
+#                peak/Plate02_mzXMLs/x.mzXML). Preference as for copies
+#   each_acquisition  the candidates are other acquisitions of the sample the row describes: their
+#                paths differ in one folder only, and only by acquisition words (_ACQUISITION_WORDS:
+#                aqueous / organic extract, chromatography, MS1 / MS/MS run; format words such as raw
+#                or mzML are ignored), e.g. Aq/x.mzML and Org/x.mzML, or Pos_MSMS_raw/x.mzML and
+#                pos_raw/x.mzML. As for each_mode each file gets the row; the fields that describe
+#                what differs (_ACQUISITION_FIELDS, e.g. SampleExtractionMethod for Aq/Org) are left
+#                missing, as one row cannot tell the acquisitions apart
 # Otherwise (e.g. plate01/x.mzML and plate02/x.mzML, or blanks of several batches) the row is
 # not matched (logged as ambiguous, 'different_folders').
 _UPDATE_PREFIX = re.compile(r'^updates/[^/]+/')
@@ -262,8 +330,52 @@ _FORMAT_FOLDER = re.compile(r'(?i)^(raws?|raw[ _-]?(data|files?)|mzx?mls?|mzx?ml
 _POLARITY_WORD = re.compile(r'(?i)(?<![a-z])(pos|positive|neg|negative)(?![a-z])(?![ _-]*(?:controls?|ctrls?|ctls?)(?![a-z]))')
 
 
+# acquisition words in folder names (whole tokens between '_', '-', ' ', ...) and what they describe
+_ACQUISITION_WORDS = {'aq': 'extract', 'aqueous': 'extract', 'org': 'extract', 'organic': 'extract',
+                      'hilic': 'chromatography', 'c18': 'chromatography', 'c8': 'chromatography', 'rp': 'chromatography',
+                      'ms1': 'ms_level', 'ms2': 'ms_level', 'msms': 'ms_level', 'dda': 'ms_level', 'dia': 'ms_level',
+                      'fullscan': 'ms_level'}
+# the fields a sheet row gives for both acquisitions but can only be true for one of them
+_ACQUISITION_FIELDS = {'extract': ['SampleExtractionMethod'], 'chromatography': ['ChromatographyAndPhase'], 'ms_level': []}
+# file format words, not part of what a folder says about the acquisition (Pos_MSMS_raw vs pos_raw)
+_FORMAT_WORDS = {'raw', 'raws', 'mzml', 'mzmls', 'mzxml', 'mzxmls', 'data', 'file', 'files'}
+_TOKEN_SPLIT = re.compile(r'[^A-Za-z0-9]+')
+
+
 def _norm_ws(path):
     return '/'.join(re.sub(r'\s+', ' ', part).strip() for part in str(path).split('/'))
+
+
+def _acquisition_of_folder(folder):
+    """(the folder's words without acquisition and format words, its acquisition words)"""
+    words = [w.lower() for w in _TOKEN_SPLIT.split(folder) if w]
+    return (tuple(w for w in words if w not in _ACQUISITION_WORDS and w not in _FORMAT_WORDS),
+            frozenset(w for w in words if w in _ACQUISITION_WORDS))
+
+
+def _acquisition_difference(paths):
+    """What the paths differ in (a set of _ACQUISITION_FIELDS keys) if they are other acquisitions
+    of one sample (see each_acquisition), else None"""
+    split = [p.split('/') for p in paths]
+    if len({len(parts) for parts in split}) != 1:
+        return None
+    if len({os.path.splitext(parts[-1])[0].lower() for parts in split}) != 1:
+        return None
+    differing = [i for i in range(len(split[0]) - 1) if len({parts[i] for parts in split}) > 1]
+    if len(differing) != 1:
+        return None
+    folders = [_acquisition_of_folder(parts[differing[0]]) for parts in split]
+    if len({rest for rest, _ in folders}) != 1 or len({acq for _, acq in folders}) != len(folders):
+        return None
+    words = frozenset().union(*(acq for _, acq in folders)) - frozenset.intersection(*(acq for _, acq in folders))
+    return {_ACQUISITION_WORDS[w] for w in words} or None
+
+
+def _identical_copies(paths, identity):
+    """True if every pair of paths is an identical copy (merge_metadata.identical_files)"""
+    records = [identity.get(p) for p in paths]
+    return all(r is not None for r in records) and \
+        all(identical_files(a, b) for i, a in enumerate(records) for b in records[i + 1:])
 
 
 def _copy_key(path):
@@ -296,8 +408,10 @@ def _row_polarity(metadata_row, meta_path):
     return _polarity_of(_POLARITY_WORD.findall(os.path.basename(meta_path)))
 
 
-def _break_tie(paths, meta_path, polarity):
-    """(path, rule) when a tie between paths can be decided safely, else (None, kind)."""
+def _break_tie(paths, meta_path, polarity, identity=None):
+    """(path, rule) when a tie between paths can be decided safely, else (None, kind); a tuple of
+    paths (each gets the row) for each_mode and each_acquisition. identity: path -> file_identity
+    record (DatasetFiles.identity), for identical_copies."""
     meta = str(meta_path).strip()
     if '/' in meta:
         same = [p for p in paths if p == meta]
@@ -323,12 +437,16 @@ def _break_tie(paths, meta_path, polarity):
         rules.append('polarity')
     if len({_copy_key(p) for p in pool}) == 1:
         return min(pool, key=lambda p: _copy_preference(p, os.path.basename(meta))), '_'.join(rules + ['copies'])
+    if identity and _identical_copies(pool, identity):
+        return min(pool, key=lambda p: _copy_preference(p, os.path.basename(meta))), '_'.join(rules + ['identical_copies'])
+    if _acquisition_difference(pool):
+        return tuple(sorted(pool)), '_'.join(rules + ['each_acquisition'])
     return None, 'different_folders'
 
 
 def _select(files, rows, meta_path, polarity=None):
     """(best candidate file path or None, the equally good candidates, tie rule or None)."""
-    meta_dir_parts = tuple(Path(meta_path).parts[:-1])  # () if no dirs present
+    meta_dir_parts = tuple(_ws_key(d) for d in Path(meta_path).parts[:-1])  # () if no dirs present
 
     # Score candidates by longest common directory suffix with the metadata path
     # (all score 0 when the metadata has no directory info); keep the best ones
@@ -349,7 +467,7 @@ def _select(files, rows, meta_path, polarity=None):
     if len(selected_paths) > 1:
         # Several distinct files fit equally well (e.g. pos/s1.mzML and neg/s1.mzML for
         # metadata 's1.mzML'): decided only by the safe rules of _break_tie
-        selected, how = _break_tie(selected_paths, meta_path, polarity)
+        selected, how = _break_tie(selected_paths, meta_path, polarity, files.identity)
         return selected, selected_paths, how
     return selected_paths[0], selected_paths, None
 
@@ -371,9 +489,20 @@ def _dataset_files(dataset, files_cache):
     return files_cache[dataset]
 
 
+def _lookup_path(files, filename):
+    """The metadata path a row is matched with: as written when its file name is listed exactly so
+    (whitespace at either end included), else without whitespace at either end of each folder /
+    file name (_strip_segments)"""
+    raw = str(filename)
+    stripped = _strip_segments(raw)
+    if raw != stripped and files.by_name.get(os.path.basename(raw)):
+        return raw
+    return stripped
+
+
 def _match_row(files, metadata_row):
     """(rule, selected path or None, candidate paths, tie rule) for one metadata row."""
-    meta_path = str(metadata_row["filename"])
+    meta_path = _lookup_path(files, metadata_row["filename"])
     rule, rows = files.candidates(os.path.basename(meta_path))
     if not rows:
         return None, None, [], None
@@ -429,7 +558,7 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
         matched = []
         for metadata_row in group.to_dict('records'):
             meta_path = str(metadata_row["filename"])
-            meta_basename = os.path.basename(meta_path)
+            meta_basename = os.path.basename(_lookup_path(files, meta_path))
             rule, selected_path, options, how = _match_row(files, metadata_row)
             if rule is None:
                 if retry_elsewhere:
@@ -445,14 +574,24 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
                 AMBIGUOUS.append((dataset, meta_path, rule, ' ; '.join(options)))
                 MATCH_REPORT.append((source, dataset, meta_path, f'ambiguous_{rule}', ' ; '.join(options)))
                 continue
+            if meta_path != _lookup_path(files, meta_path):
+                MATCH_STATS['rows_filename_whitespace_stripped'] += 1
             base_rule = rule
+            # each_acquisition: the fields that tell the acquisitions apart stay missing
+            blank = [f for kind in sorted(_acquisition_difference(selected_path) or ())
+                     for f in _ACQUISITION_FIELDS[kind]] if how and how.endswith('each_acquisition') else []
             for path in (selected_path if isinstance(selected_path, tuple) else (selected_path,)):
                 rule = base_rule
                 if rule == 'exact' and os.path.basename(path) != meta_basename:
                     rule = 'exact_mzxml_to_converted_mzml'
                 if how:
                     rule = f'{rule}_tie_{how}'
-                matched.append((dict(metadata_row), path, rule, os.path.basename(path) == meta_basename, meta_path))
+                row = dict(metadata_row)
+                for field in blank:
+                    if field in row and str(row[field]).strip().lower() not in ('', 'nan', 'missing value'):
+                        row[field] = 'missing value'
+                        MATCH_STATS[f'fields_left_missing_each_acquisition_{field}'] += 1
+                matched.append((row, path, rule, os.path.basename(path) == meta_basename, meta_path))
 
         # A file named exactly by one row is not also given to rows that only reach it
         # through another extension (x.mzXML and x.mzML listed for the same sample: the

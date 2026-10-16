@@ -55,16 +55,122 @@ _CHROM_TOKENS = {
 }
 
 
+def _path_tokens(path):
+    """The polarities and chromatographies tokens of a path name (sets; both polarities in
+    'pos_neg/x.raw')."""
+    p = str(path).lower()
+    pols = set()
+    if _POS_RE.search(p) or re.search(r'(?<![a-z])(?:esi|apci|hesi)\s*\+', p):
+        pols.add('positive')
+    if _NEG_RE.search(p) or re.search(r'(?<![a-z])(?:esi|apci|hesi)\s*-(?![a-z])', p):
+        pols.add('negative')
+    return pols, [k for k, rx in _CHROM_TOKENS.items() if rx.search(p)]
+
+
 def _path_indicates(path):
     """Polarity ('positive'/'negative'/None) and chromatography ('hilic'/'reverse'/None)
     stated by tokens in a raw file path, e.g. 'C18-NEG/0001.raw' or 'x_HILICpos_1.mzML'."""
-    p = str(path).lower()
-    pos = bool(_POS_RE.search(p) or re.search(r'(?<![a-z])(?:esi|apci|hesi)\s*\+', p))
-    neg = bool(_NEG_RE.search(p) or re.search(r'(?<![a-z])(?:esi|apci|hesi)\s*-(?![a-z])', p))
-    polarity = 'positive' if pos and not neg else 'negative' if neg and not pos else None
-    chrom_hits = [k for k, rx in _CHROM_TOKENS.items() if rx.search(p)]
+    pols, chrom_hits = _path_tokens(path)
+    polarity = next(iter(pols)) if len(pols) == 1 else None
     chrom = chrom_hits[0] if len(chrom_hits) == 1 else None
     return polarity, chrom
+
+
+# archive names of one listed path in the 'archive' column of the file listing
+ARCHIVE_SEP = '\n'
+
+
+def _archive_names(archives):
+    if archives is None or (isinstance(archives, float) and np.isnan(archives)):
+        return []
+    if isinstance(archives, str):
+        archives = archives.split(ARCHIVE_SEP)
+    return sorted({str(a) for a in archives if str(a)})
+
+
+def archive_context(archives):
+    """(polarity, chromatography) the Workbench archive name(s) of a listed path state
+    ('ST004470_HILIC_Rawfiles.zip', 'ST003799_HILIC-NEG_mzml.zip'): per dimension the value
+    every archive the path lies in states, else None (a path in a pos and a neg archive is
+    one USI for both files)."""
+    return _archive_context(tuple(_archive_names(archives)))
+
+
+_ARCHIVE_CTX_CACHE = {}
+# in archive names: a range of sample names ('C1-C8': the control mice C1 to C8, 'QC1-QC8') and a
+# column word followed by digits ('C3015', 'C3002': project codes, not a C30 column) name no column
+_ARCHIVE_RANGE = re.compile(r'(?<![a-z0-9])([a-z]+)\d+\s*-\s*\1\d+(?![0-9])')
+_ARCHIVE_CODE = re.compile(r'(?<![a-z])(?:c18|c8|c30|t3)(?=\d)')
+
+
+def _archive_text(name):
+    """An archive name (lower case) without sample-name ranges and codes that the path tokens would
+    read as a column (_ARCHIVE_RANGE, _ARCHIVE_CODE)"""
+    text = _ARCHIVE_RANGE.sub(' ', str(name).lower())
+    return _ARCHIVE_CODE.sub(' ', text)
+
+
+def _archive_context(names):
+    if names not in _ARCHIVE_CTX_CACHE:
+        if not names:
+            _ARCHIVE_CTX_CACHE[names] = (None, None)
+        else:
+            ctx = [_path_indicates(_archive_text(a)) for a in names]
+            pols, chroms = {c[0] for c in ctx}, {c[1] for c in ctx}
+            _ARCHIVE_CTX_CACHE[names] = ((next(iter(pols)) if len(pols) == 1 else None),
+                                         (next(iter(chroms)) if len(chroms) == 1 else None))
+    return _ARCHIVE_CTX_CACHE[names]
+
+
+def archive_dimensions(archives_of_files):
+    """The dimensions (0 polarity, 1 chromatography) in which the archive contexts of a
+    study's listed files differ (HILIC and RP archives; pos and neg archives; a HILIC archive
+    next to one stating nothing): only there do archive names tell its files apart. Archive
+    names that all state the same (one 'x_HILIC.zip', 'x_C3015_Serum.zip' and
+    'x_C3015_Serum-QC.zip') say nothing about which file is which acquisition."""
+    values = {archive_context(a) for a in archives_of_files}
+    return frozenset(d for d in (0, 1) if len({v[d] for v in values}) > 1)
+
+
+def file_context(path, archives=None, dims=(0, 1)):
+    """(polarity, chromatography) of a listed file: what its path states (_path_indicates);
+    a dimension the path has no token of at all is taken from the archive name(s) the file
+    lies in (archive_context), for the dimensions dims (archive_dimensions of the study). The
+    path keeps precedence: the archive is not used for a file whose path states a dimension
+    otherwise than the archive (Blank_POS1.mzML in x_Negative_Rawdata.zip; x_1C8.mzML, a well
+    C8, in x_HILIC_pos.zip) or names both values of it, nor where the path states a dimension
+    only in its file name and the archive does not state it too: a column or polarity word
+    in a file name is often a sample or well name ('C8_194.d', 'X0141-M001A-103_1C8.mzML'
+    in x_ionexchange-neg.zip) and must not decide the analysis together with the archive."""
+    pols, chrom_hits = _path_tokens(path)
+    polarity = next(iter(pols)) if len(pols) == 1 else None
+    chrom = chrom_hits[0] if len(chrom_hits) == 1 else None
+    if not ((not pols and 0 in dims) or (not chrom_hits and 1 in dims)) or not _archive_names(archives):
+        return polarity, chrom
+    a_ctx = archive_context(archives)
+    folder = None
+    for d, tokens, value in ((0, pols, polarity), (1, chrom_hits, chrom)):
+        if not tokens:
+            continue
+        if value is None or (a_ctx[d] is not None and a_ctx[d] != value):
+            return polarity, chrom
+        if a_ctx[d] is None:
+            folder = folder if folder is not None else _path_indicates(str(path).replace('\\', '/').rsplit('/', 1)[0]
+                                                                       if '/' in str(path).replace('\\', '/') else '')
+            if folder[d] != value:
+                return polarity, chrom
+    polarity = a_ctx[0] if not pols and 0 in dims else polarity
+    chrom = a_ctx[1] if not chrom_hits and 1 in dims else chrom
+    return polarity, chrom
+
+
+def listing_contexts(raw_file_name_df, path_col='filename', archive_col='archive'):
+    """{listed path: file_context} of a study's file listing (archive names in archive_col,
+    used in the study's archive_dimensions; path contexts only without the column)."""
+    paths = raw_file_name_df[path_col].astype(str).tolist()
+    archives = raw_file_name_df[archive_col].tolist() if archive_col in raw_file_name_df.columns else [None] * len(paths)
+    dims = archive_dimensions(archives)
+    return {p: file_context(p, a, dims) for p, a in zip(paths, archives)}
 
 
 def _context_contradicts(context, hints):
@@ -75,8 +181,8 @@ def _context_contradicts(context, hints):
                 or (chrom is not None and hints.get('chrom') is not None and chrom != hints['chrom']))
 
 
-def acquisition_contexts(stems, paths, hints=None, ranks=None):
-    """Acquisition context of each file (lists aligned with stems / paths / ranks), for
+def acquisition_contexts(stems, paths, hints=None, ranks=None, archives=None):
+    """Acquisition context of each file (lists aligned with stems / paths / ranks / archives), for
     keeping one file per sample and acquisition: files of one stem (sample name) are raw and
     converted copies of one acquisition unless their paths state different polarities or
     chromatographies (temp_pos/x.mzML vs temp_neg/x.mzXML, rp_pos/x.mzML vs hilic_pos/x.mzML),
@@ -90,10 +196,16 @@ def acquisition_contexts(stems, paths, hints=None, ranks=None):
     dimension (an unattributable copy). A file whose path states no context at all, in a stem whose other files lie in
     stated contexts, is kept as a group of its own only when it is a better format (rank,
     mzML 0 < mzXML 1 < vendor 2) than every file kept for the contexts (a converted x.mzML
-    next to hilic_p/x.raw, rplc_n/x.raw, ...)."""
+    next to hilic_p/x.raw, rplc_n/x.raw, ...). A file's context is that of its path, with
+    a dimension the path leaves open taken from its Workbench archive name(s) where the
+    study's archives differ in it (file_context, archive_dimensions; paths / archives: the
+    study's whole listing): mzML_workbench/601.mzML of ST004470_HILIC_Rawfiles.zip is HILIC,
+    MzML_workbench/601.mzML of ST004470_RP_Rawfiles.zip reverse phase."""
     hints = hints or {}
     ranks = list(ranks) if ranks is not None else [0] * len(stems)
-    ctx = [_path_indicates(p) for p in paths]
+    archives = list(archives) if archives is not None else [None] * len(stems)
+    dims = archive_dimensions(archives)
+    ctx = [file_context(p, a, dims) for p, a in zip(paths, archives)]
     by_stem = {}
     for i, s in enumerate(stems):
         by_stem.setdefault(s, []).append(i)
@@ -293,22 +405,31 @@ def _phase_family(values):
     return v.where(~v.str.startswith('gas chromatography ('), 'gas chromatography (NOS)')
 
 
-def resolve_analysis_conflicts_from_path(df):
+def resolve_analysis_conflicts_from_path(df, contexts=None):
     """A raw file listed under several analyses of a study (e.g. a positive and a
     negative mode analysis) gets conflicting analysis-level values, which are later
     blanked to 'missing value'. When the file path itself states the polarity and/or
     the chromatography (C18-NEG/..., ..._HILICpos...), keep only the analysis rows that
     agree with it - but only if that leaves rows that agree with each other on the
-    analysis-level columns. Otherwise the group is left unchanged."""
+    analysis-level columns. Otherwise the group is left unchanged. contexts: {path:
+    (polarity, chromatography)} of the listing (file_context, with the archive names);
+    paths not in it get their path's context. A path without any polarity / chromatography
+    token whose context comes from its archive name(s) alone (100.raw, only in an RPLC pos and
+    an RPLC neg archive, named by RP, HILIC and direct-infusion analyses) also loses the rows of
+    the analyses the archives contradict when the rows left still disagree (on the polarity):
+    those analyses name a file of other archives; the merge keeps what the rows left agree on.
+    Tokens of a path do not do this (a file name's 'C8' may be a well)."""
     analysis_cols = [c for c in ['IonizationSourceAndPolarity', 'ChromatographyAndPhase', 'MassSpectrometer'] if c in df.columns]
     dup = df['filename'].duplicated(keep=False)
     if not dup.any() or not analysis_cols:
         return df
+    contexts = contexts or {}
     drop_idx = []
+    n_partial = 0
     for filename, group in df[dup].groupby('filename'):
         if all(group[c].astype(str).nunique() == 1 for c in analysis_cols):
             continue
-        polarity, chrom = _path_indicates(filename)
+        polarity, chrom = contexts.get(filename) or _path_indicates(filename)
         if polarity is None and chrom is None:
             continue
         keep = pd.Series(True, index=group.index)
@@ -324,8 +445,12 @@ def resolve_analysis_conflicts_from_path(df):
         if all(_phase_family(kept[c]) .nunique() == 1 if c == 'ChromatographyAndPhase' else kept[c].astype(str).nunique() == 1
                for c in analysis_cols):
             drop_idx.extend(group.index[~keep])
+        elif filename in contexts and _path_tokens(filename) == (set(), []):
+            drop_idx.extend(group.index[~keep])
+            n_partial += 1
     if drop_idx:
-        print(f"Resolved analysis conflicts from file paths: {len(drop_idx)} conflicting analysis rows dropped")
+        print(f"Resolved analysis conflicts from file paths: {len(drop_idx)} conflicting analysis rows dropped"
+              + (f" ({n_partial} files by their archive names only, other analysis fields left to the merge)" if n_partial else ""))
     return df.drop(index=drop_idx)
 
 
@@ -372,10 +497,17 @@ def clear_polarity_contradicted_by_sibling(df, raw_file_name_df, polarity_table=
     polarity ('x_pos.mzML'): the polarity word in the path then tells two acquisitions
     apart. Without such a counterpart the word may belong to a sample or folder name
     ('Negative control1', 'triple negative breast cancer cells/') and the value stays; so
-    does a value the file's scans (polarity_table) agree with."""
+    does a value the file's scans (polarity_table) agree with. A path without a polarity
+    word takes the polarity of its archive name(s) (file_context); the counterpart is then
+    an archive of the other polarity ('x_NEG.zip' next to 'x_POS.zip')."""
     if df is None or len(df) == 0 or 'IonizationSourceAndPolarity' not in df.columns:
         return df
     listing = {_path_without_extension(p) for p in raw_file_name_df['filename'].astype(str)}
+    contexts = listing_contexts(raw_file_name_df)
+    archives_of = {}
+    if 'archive' in raw_file_name_df.columns:
+        archives_of = {p: _archive_names(a) for p, a in zip(raw_file_name_df['filename'].astype(str), raw_file_name_df['archive'])}
+    study_archives = {_path_without_extension(a) for names in archives_of.values() for a in names}
     scans = {}
     if polarity_table is not None and len(polarity_table):
         _pt = polarity_table[polarity_table['USI'].isin(set(df['USI'].astype(str)))]
@@ -389,13 +521,17 @@ def clear_polarity_contradicted_by_sibling(df, raw_file_name_df, polarity_table=
     n = 0
     for i, (path, usi, v) in enumerate(zip(df['filename'].astype(str), df['USI'].astype(str), values.astype(str))):
         polarity, _ = _path_indicates(path)
+        from_archive = polarity is None and not _path_tokens(path)[0]
+        if from_archive:
+            polarity = (contexts.get(path) or (None, None))[0]
         if polarity is None:
             continue
         other = 'negative' if polarity == 'positive' else 'positive'
         vl = v.lower()
         if other not in vl or polarity in vl or scans.get(usi) == other:
             continue
-        if polarity_siblings(path) & listing:
+        if (polarity_siblings(path) & listing) if not from_archive else \
+                any(polarity_siblings(a) & study_archives for a in archives_of.get(path, ())):
             values.iat[i] = 'missing value'
             n += 1
     if n:
@@ -410,15 +546,24 @@ def clear_chromatography_contradicted_by_path(df, raw_file_name_df):
     'C18/x.mzML', HILIC on 'HILIC_pos/x.raw' given a reverse phase) is cleared to 'missing
     value' in a study whose file paths name both separations (HILIC and C18 / RP folders):
     the path then tells the acquisitions apart. Elsewhere a token may belong to a sample
-    name ('T3' time points, 'C8' wells) and the value stays."""
+    name ('T3' time points, 'C8' wells) and the value stays. A path without a chromatography
+    token takes that of its archive name(s) (file_context), in a study whose files' contexts
+    (paths and archive names) name both separations."""
     if df is None or len(df) == 0 or 'ChromatographyAndPhase' not in df.columns:
         return df
-    if len({_path_indicates(p)[1] for p in raw_file_name_df['filename'].astype(str)} - {None}) < 2:
+    paths = raw_file_name_df['filename'].astype(str)
+    path_seps = len({_path_indicates(p)[1] for p in paths} - {None}) >= 2
+    contexts = listing_contexts(raw_file_name_df)
+    archive_seps = len({c[1] for c in contexts.values()} - {None}) >= 2
+    if not path_seps and not archive_seps:
         return df
     values = df['ChromatographyAndPhase'].copy()
     n = 0
     for i, (path, v) in enumerate(zip(df['filename'].astype(str), values.astype(str))):
-        chrom = _path_indicates(path)[1]
+        if _path_tokens(path)[1]:
+            chrom = _path_indicates(path)[1] if path_seps else None
+        else:
+            chrom = (contexts.get(path) or (None, None))[1] if archive_seps else None
         if chrom is not None and _value_contradicts_path('ChromatographyAndPhase', v, (None, chrom)):
             values.iat[i] = 'missing value'
             n += 1
@@ -438,7 +583,8 @@ def propagate_to_same_name_files(redu_df, raw_file_name_df, polarity_table=None)
     otherwise they come from the file path tokens, or stay missing. A polarity /
     chromatography that the copy's own path (Negative/..., rp_neg/...) or its scans
     (polarity_table) contradict is never copied: such a file is another acquisition of
-    the sample."""
+    the sample. A copy's path context takes a dimension its path leaves open from the
+    copy's archive name(s) (file_context)."""
     if redu_df is None or len(redu_df) == 0 or raw_file_name_df is None or len(raw_file_name_df) == 0:
         return redu_df
     out = redu_df.copy()
@@ -478,6 +624,7 @@ def propagate_to_same_name_files(redu_df, raw_file_name_df, polarity_table=None)
     copies = unique_rows.loc[files['_base']].reset_index(drop=True)
     copies['filename'] = files['filename'].values
     copies['USI'] = files['USI'].values
+    contexts = listing_contexts(raw_file_name_df)
     if not single_setup:
         # a field with one value across the study's files (e.g. the instrument) is still
         # known for the copies
@@ -485,7 +632,7 @@ def propagate_to_same_name_files(redu_df, raw_file_name_df, polarity_table=None)
             if out[c].astype(str).nunique() != 1:
                 copies[c] = 'missing value'
         for i, path in enumerate(copies['filename']):
-            polarity, chrom = _path_indicates(path)
+            polarity, chrom = contexts.get(path) or _path_indicates(path)
             match = out
             if polarity is not None:
                 match = match[match['IonizationSourceAndPolarity'].astype(str).str.lower().str.contains(polarity)]
@@ -506,7 +653,7 @@ def propagate_to_same_name_files(redu_df, raw_file_name_df, polarity_table=None)
             elif n_pos > 0 and not n_neg > 0:
                 scans[u] = 'positive'
     for i, path in enumerate(copies['filename']):
-        context = _path_indicates(path)
+        context = contexts.get(path) or _path_indicates(path)
         for c in ('IonizationSourceAndPolarity', 'ChromatographyAndPhase'):
             if c not in copies.columns:
                 continue
@@ -589,7 +736,8 @@ def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
     df = df[~((df['IonizationSourceAndPolarity'].str.contains('alternating')) & ((df['negative_polarity_count'] == 0) | (df['positive_polarity_count'] == 0)))]
 
     try:
-        df = resolve_analysis_conflicts_from_path(df.reset_index(drop=True))
+        # file contexts of the listing (path, else archive names: file_context)
+        df = resolve_analysis_conflicts_from_path(df.reset_index(drop=True), contexts=kwargs.get('file_contexts'))
     except Exception as e:
         print(f"Could not resolve analysis conflicts from file paths: {type(e).__name__}: {e}")
 
@@ -875,10 +1023,15 @@ def _get_metabolomicsworkbench_files(dataset_accession):
         acceptable_extensions = [".mzml", ".mzxml", ".cdf", ".raw", ".wiff", ".d"]
 
         mw_file_list = [file_obj for file_obj in mw_file_list if not is_apple_double(file_obj["FILENAME"])]
-        workbench_df = pd.DataFrame(mw_file_list, columns=["FILENAME", "FILESIZE", "URL"])
+        workbench_df = pd.DataFrame(mw_file_list, columns=["FILENAME", "FILESIZE", "URL", "ARCHIVE"])
         workbench_df["filename"] = workbench_df["FILENAME"].apply(clean_listing_path).apply(collapse_d_folder)
         workbench_df = workbench_df[workbench_df["filename"].str.lower().str.endswith(tuple(acceptable_extensions))]
         workbench_df["FILESIZE"] = pd.to_numeric(workbench_df["FILESIZE"], errors='coerce').fillna(0)
+        # the archive each file lies in (ST004470_HILIC_Rawfiles.zip / ST004470_RP_Rawfiles.zip):
+        # where the path states no polarity / chromatography, the archive name may
+        # (file_context); a row without ARCHIVE has it as the URL's A= parameter
+        workbench_df["ARCHIVE"] = [a if isinstance(a, str) and a else listing_query(u).get('A', [''])[0]
+                                   for a, u in zip(workbench_df["ARCHIVE"], workbench_df["URL"].astype(str))]
 
         # Generate USI column
         workbench_df["USI"] = workbench_df["URL"].apply(
@@ -888,12 +1041,17 @@ def _get_metabolomicsworkbench_files(dataset_accession):
             )
         )
 
-        # one row per file / .d folder (summing the sizes of the files inside a folder)
+        # one row per file / .d folder (summing the sizes of the files inside a folder), with
+        # the names of the archives holding the path (several for one path in a pos and a neg
+        # archive: one USI for both), sorted and joined by ARCHIVE_SEP
+        archives = workbench_df.drop_duplicates(["filename", "ARCHIVE"]).groupby("filename", sort=False)["ARCHIVE"].agg(
+            lambda s: ARCHIVE_SEP.join(_archive_names(s.tolist())))
         workbench_df = workbench_df.groupby("filename", as_index=False, sort=False).agg(
             FILESIZE=("FILESIZE", "sum"), USI=("USI", "first"))
         workbench_df["size_mb"] = (workbench_df["FILESIZE"] / 1024 / 1024).astype(int)
+        workbench_df["archive"] = workbench_df["filename"].map(archives).fillna('')
 
-        workbench_df = workbench_df[["filename", "size_mb", "USI"]]
+        workbench_df = workbench_df[["filename", "size_mb", "USI", "archive"]]
     except ArchiveListingError as e:
         print(f"DROPPED {dataset_accession}: no archive listing ({e})")
         DROPPED_STUDIES[dataset_accession] = 'no archive listing'
@@ -3612,7 +3770,7 @@ def not_a_study_sample(sample_id, values=()):
     return any(qc_sample_type(k, v) for k, v in values)
 
 
-def own_file_matches(pairs, listing, hints=None, is_not_study_sample=None):
+def own_file_matches(pairs, listing, hints=None, is_not_study_sample=None, contexts=None):
     """The own file of each sample that names a raw file several samples of the analysis name
     (a multi-sample SCIEX .wiff, or one file named for several samples).
 
@@ -3637,8 +3795,10 @@ def own_file_matches(pairs, listing, hints=None, is_not_study_sample=None):
     analysis names the file (or another file of its stem, e.g. x.raw for x.mzML) as its raw
     file; when its path states another polarity / chromatography than the analysis or the
     shared file; and when the file would be the own file of several samples (or shared files of
-    different stems)."""
+    different stems). contexts: {path: (polarity, chromatography)} of the listing (file_context,
+    with the archive names); a path not in it has its path's context."""
     hints = hints or {}
+    contexts = contexts or {}
     pairs = sorted({(str(r).lower(), str(s)) for r, s in pairs})
     naming = {}
     for r, s in pairs:
@@ -3686,8 +3846,8 @@ def own_file_matches(pairs, listing, hints=None, is_not_study_sample=None):
         _id = str(s).strip().replace('-', '_')
         exact = [(b, p) for b, p in hits if os.path.basename(b.replace('\\', '/')).rsplit('.', 1)[0].replace('-', '_').endswith(_id)]
         hits = exact or hits
-        ctx = _path_indicates(hits[0][1])
-        batch_ctx = {_path_indicates(p) for p in batch_paths}
+        ctx = contexts.get(hits[0][1]) or _path_indicates(hits[0][1])
+        batch_ctx = {contexts.get(p) or _path_indicates(p) for p in batch_paths}
         # every guard the candidate fails (the first is the reason given)
         fails = [why for why, bad in (
             ('shared name not a listed file', not batch_paths),
@@ -3719,11 +3879,12 @@ def own_file_matches(pairs, listing, hints=None, is_not_study_sample=None):
     return matches, details
 
 
-def per_sample_files_of_shared_names(df, raw_file_name_df, hints=None, sample_values=None):
+def per_sample_files_of_shared_names(df, raw_file_name_df, hints=None, sample_values=None, contexts=None):
     """filename_raw per df row, where several samples name one raw file (a multi-sample
     SCIEX .wiff) whose per-sample files are listed too: the sample's own file name instead of
     the shared one (own_file_matches). Other rows unchanged. sample_values: function giving the
-    (Sample ID, key, value) rows of the samples, to leave out blanks / QCs / standards."""
+    (Sample ID, key, value) rows of the samples, to leave out blanks / QCs / standards.
+    contexts: {path: (polarity, chromatography)} of the study's listing (listing_contexts)."""
     raw = df['filename_raw'].astype(str)
     sid = df['_sample_id'].astype(str) if '_sample_id' in df.columns else df['filename'].astype(str)
     pairs = pd.DataFrame({'raw': raw.str.lower(), 'sid': sid}).drop_duplicates()
@@ -3741,7 +3902,7 @@ def per_sample_files_of_shared_names(df, raw_file_name_df, hints=None, sample_va
         return not_a_study_sample(s, _values.get(s, ()))
 
     matches, details = own_file_matches(zip(raw, sid), zip(raw_file_name_df['filename_base'], raw_file_name_df['filename_raw_path']),
-                                        hints=hints, is_not_study_sample=_not_study_sample)
+                                        hints=hints, is_not_study_sample=_not_study_sample, contexts=contexts)
     out = df['filename_raw'].copy()
     n = 0
     for i, (r, s) in enumerate(zip(raw, sid)):
@@ -4082,7 +4243,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
     if any(key in df['Key'].values for key in expected_raw_file_keys):
         print('raw file key found.')
         #attempt to get raw files from associated keys
-        raw_file_name_df = raw_file_name_df.rename(columns={'filename': 'filename_raw_path'})
+        # the archive names ride along as a '_ctx' helper column (dropped with the others below)
+        raw_file_name_df = raw_file_name_df.rename(columns={'filename': 'filename_raw_path', 'archive': '_ctx_archive'})
 
 
         # ---------- BEGIN: keep only preferred uploader file per stem (mzML > mzXML > others) ----------
@@ -4117,7 +4279,10 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         # whose path contradicts this analysis are left out where the stem has others):
         # best rank, tie-break by name for determinism
         tmp["_ctx"] = acquisition_contexts(tmp["_stem"].tolist(), tmp["filename_raw_path"].astype(str).tolist(), hints,
-                                           tmp["_rank"].tolist())
+                                           tmp["_rank"].tolist(),
+                                           tmp["_ctx_archive"].tolist() if "_ctx_archive" in tmp.columns else None)
+        # (polarity, chromatography) of every listed file, with the study's archive names
+        _file_contexts = listing_contexts(tmp, 'filename_raw_path', '_ctx_archive')
         n_ctx_out = int((tmp["_ctx"] < 0).sum())
         n_ctx_split = int(tmp.loc[tmp["_ctx"] > 0, "_stem"].nunique())
         if n_ctx_out or n_ctx_split:
@@ -4171,7 +4336,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             df, raw_file_name_df, hints=hints,
             sample_values=lambda: zip(pd.concat([df['_sample_id'], df_additional['filename']], ignore_index=True),
                                       pd.concat([df['Key'], df_additional['Key']], ignore_index=True),
-                                      pd.concat([df['Value'], df_additional['Value']], ignore_index=True)))
+                                      pd.concat([df['Value'], df_additional['Value']], ignore_index=True)),
+            contexts=_file_contexts)
 
 
         # --- Prefer mzML > mzXML > others BEFORE matching/merging ---
@@ -5881,7 +6047,7 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         
         redu_df = MWB_to_REDU_wrapper(MWB_analysis_ID=analysis_details["analysis_id"],
                                       rest_response=rest_response,
-                                      raw_file_name_df=raw_file_name_df[['filename', 'filename_base', 'USI']],
+                                      raw_file_name_df=raw_file_name_df[['filename', 'filename_base', 'USI', 'archive']],
                                       path_to_csvs=path_to_csvs,
                                       Massive_ID=study_id + '|' + str(analysis_details["analysis_id"]),
                                       allowedTerm_dict=allowedTerm_dict,
@@ -5923,7 +6089,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         return None
 
 
-    redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table)
+    redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table,
+                                                                 file_contexts=listing_contexts(raw_file_name_df))
     try:
         redu_df_final = propagate_to_same_name_files(redu_df_final, raw_file_name_df, polarity_table=polarity_table)
     except Exception as e:
