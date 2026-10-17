@@ -7,7 +7,7 @@ from tqdm import tqdm
 import re
 from urllib.parse import unquote
 import numpy as np
-from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
+from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms, sp_name_term, _taxonomy_term_index
 from REDU_conversion_functions import map_instrument_to_allowed
 from ms_instrument_matching import match_mass_spectrometer
 import json
@@ -840,8 +840,12 @@ def main(output_filename, study_id, **kwargs):
                             def _taxonomy(org):
                                 if pd.isna(org):
                                     return ''
+                                by_id, by_name = _taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
                                 for candidate in scientific_name_candidates(org, species_names):
                                     hit = get_taxonomy_id_from_name__allowedTerms(candidate, allowedTerm_dict = allowedTerm_dict)
+                                    # 'Genus sp. <a lab's numbering>' ('Mytilus sp. 1') names the genus only: NCBI's
+                                    # taxon of that name is another submitter's isolate (sp_name_term)
+                                    hit = sp_name_term(candidate, hit, '', by_id.get, lambda n: by_name.get(str(n).lower()))
                                     if hit:
                                         return hit
                                 return ''

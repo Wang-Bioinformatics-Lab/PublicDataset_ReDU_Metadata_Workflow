@@ -3994,6 +3994,18 @@ def _ncbi_name_lookup(allowedTerm_dict):
     return _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])[1]
 
 
+def _sp_name_term(text, term, given_id, allowedTerm_dict):
+    """_rcf.sp_name_term of an organism text and the term the converter's lookups found for it (by the given ID
+    given_id, '' if none, or by name): for 'Genus sp. <designation>', the genus where the designation is a lab's
+    numbering ('Bacillus sp. 1') and the term is not the given ID's taxon, or where the given ID is a strain of another
+    designation that the text's own name (allowed name, names.dmp synonym) does not name; else term."""
+    if not term or not _rcf.sp_designation(text):
+        return term
+    by_id, by_name = _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
+    text_term = by_name.get(' '.join(str(text).lower().split())) or _rcf.pinned_ncbi_synonym_term(str(text), allowedTerm_dict)
+    return _rcf.sp_name_term(text, term, given_id, by_id.get, lambda n: by_name.get(str(n).lower()), text_term)
+
+
 _organism_fallback_memo = {}
 
 
@@ -5052,6 +5064,8 @@ def own_taxon_term(key, value, allowedTerm_dict):
     if term is None and len(v.split()) > 1:
         # other white space, a strain designation at the end, one wrong character (two words at least)
         term = mwb_organism_fallback(v, allowedTerm_dict, f'sample item {key!r}')
+    # 'Genus sp. <a lab's numbering>' ('Bacillus sp. 1') names the genus only (_rcf.sp_name_term)
+    term = _sp_name_term(v, term, '', allowedTerm_dict)
     if term is None:
         return None
     if len(v.split()) == 1 and (_OWN_STRAIN_KEY_RE.search(_norm_key(key)) or term.split('|', 1)[1] != v):
@@ -6636,6 +6650,14 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     processed_species = {sp: (term if term is not None else
                               mwb_organism_fallback(sp, allowedTerm_dict, f"{entry['STUDY_ID']} SUBJECT_SPECIES"))
                          for sp, term in processed_species.items()}
+    # 'Genus sp. <designation>': the genus for a lab's numbering ('Bacillus sp. 1') without its own TAXONOMY_ID, and
+    # for a TAXONOMY_ID of another strain (_sp_name_term)
+    _given_ids = {str(i).strip() for i in unique_species_ncbiIDs}
+    _given_ids |= {str(_taxon_node(i)) for i in _given_ids if _taxon_node(i) is not None}   # (merged IDs: the current one)
+    processed_species = {sp: (_sp_name_term(sp, term, term.split('|', 1)[0].strip()
+                                            if term.split('|', 1)[0].strip() in _given_ids else '', allowedTerm_dict)
+                              if term is not None else None)
+                         for sp, term in processed_species.items()}
     df_outer['NCBITaxonomy'] = df_outer['SUBJECT_SPECIES'].map(processed_species)
     attempt_taxa_extraction_from_inner = False
     if all(value is None for value in processed_species.values()):
@@ -7108,6 +7130,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                         result = _names.get(' '.join(str(species).lower().split())) \
                             or _rcf.pinned_ncbi_synonym_term(str(species), allowedTerm_dict) \
                             or mwb_organism_fallback(str(species), allowedTerm_dict, 'sample species value')
+                    # ('Genus sp. <a lab's numbering>': the genus, _sp_name_term)
+                    result = _sp_name_term(species, result, '', allowedTerm_dict)
                     if result is not None:
                         processed_species[species] = result
                 # values of other keys ('Acquisition method: IDA', 'group: Salmo') are no
@@ -7116,7 +7140,7 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                 # set order); this rule no longer drops the values of species keys
                 other_hits = {}
                 for species in sorted(other_values, key=str):
-                    result = _names.get(str(species).lower())
+                    result = _sp_name_term(species, _names.get(str(species).lower()), '', allowedTerm_dict)
                     if result is not None:
                         other_hits[species] = result
                 n_hits = len(processed_species) + len(other_hits)

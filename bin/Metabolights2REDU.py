@@ -25,6 +25,7 @@ from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, food_ontology_term
 from REDU_conversion_functions import normalize_redu_datetime
 from REDU_conversion_functions import multi_sample_type, ORGANISM_LIST
+from REDU_conversion_functions import sp_name_term
 # several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
 from ncbi_database import all_parts_series, is_multi, join_parts, single_taxid, single_taxid_series, taxonomy_parts
 from ms_instrument_matching import match_mass_spectrometer
@@ -1629,6 +1630,10 @@ def _ncbi_term_by_id(allowedTerm_dict):
 #   * the text names no taxon: A, unless the text lists several organisms ('a; b', 'a, b',
 #     'a and b', 'a/b' ...), the text carries several different accessions in the study, or A
 #     is part of a drag-fill series: then 'missing value'
+#   * 'Genus sp. <designation>' (REDU_conversion_functions.sp_name_term, the rule the validator
+#     applies to GNPS 'ID|Name'): a designation that is a lab's numbering ('Bacillus sp. 1')
+#     names the genus only (T is the genus); where A wins above but is a strain of another
+#     designation ('Streptomyces sp. 1' with the accession of 'Streptomyces sp. 12'), the genus
 # A drag-fill series: at least _DRAG_FILL_RUN sample rows next to each other in the sample sheet
 # whose accession counts up by one from row to row while the organism text stays the same (up to
 # its numbers: 'ATCC 31823', 'ATCC 31824' ...), or at least _DRAG_FILL_RUN consecutive taxon IDs
@@ -1783,17 +1788,26 @@ def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_nc
             if a_term == t_term or a_name.strip().lower() == key:
                 out[(text, acc)] = a_term
             elif not in_series and is_ancestor(t_id, a_id):
-                out[(text, acc)] = a_term
+                out[(text, acc)] = _accession_strain(text, acc, a_term, t_term, text_term, accession_term)
             elif _microbe_accession_wins(key, acc, t_id, a_id, in_series, ids_of_text, texts_of_id, is_ancestor,
                                          microbe_group):
-                out[(text, acc)] = a_term
+                out[(text, acc)] = _accession_strain(text, acc, a_term, t_term, text_term, accession_term)
             else:
                 out[(text, acc)] = t_term
         elif _ORGANISM_LIST.search(str(text)) or len(ids_of_text.get(key, ())) > 1 or in_series:
             out[(text, acc)] = 'missing value'
         else:
-            out[(text, acc)] = a_term
+            out[(text, acc)] = _accession_strain(text, acc, a_term, t_term, text_term, accession_term)
     return out
+
+
+def _accession_strain(text, acc, a_term, t_term, text_term, accession_term):
+    """The accession's term a_term where organism_accession_terms takes it over the text's term t_term (None if the
+    text names no taxon); for a text 'Genus sp. X' whose accession is a strain of another designation ('Streptomyces
+    sp. 1' with the accession of 'Streptomyces sp. 12'), the genus (REDU_conversion_functions.sp_name_term; as the
+    validator decides an 'ID|Name' of GNPS), else the text's term, else 'missing value'."""
+    term = sp_name_term(text, a_term, acc, accession_term, text_term, t_term)
+    return term or t_term or 'missing value'
 
 
 # ---------------------------------------------------------------------------------------------
@@ -3571,6 +3585,13 @@ def Metabolights2REDU(study_id, **kwargs):
                         _fb = ml_organism_fallback(_org, allowedTerm_dict, _org_alias, study_id)
                         if _fb:
                             processed_organisms[_org] = _fb
+                # 'Genus sp. <a lab's numbering>' ('Bacillus sp. 1') names the genus only: NCBI's taxon of that name is
+                # another submitter's isolate (REDU_conversion_functions.sp_name_term)
+                _by_id = _ncbi_term_by_id(allowedTerm_dict)
+                _name_term = lambda n: _by_name.get(str(n).lower())
+                for _org, _tax in processed_organisms.items():
+                    if _tax != 'None':
+                        processed_organisms[_org] = str(sp_name_term(_org, _tax, '', _by_id.get, _name_term))
 
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
                 # 'None' is the name lookup without a match; taxa whose name contains 'None'
@@ -3581,15 +3602,14 @@ def Metabolights2REDU(study_id, **kwargs):
                 # organism text (same taxon or a strain of it) or the text names no taxon, and
                 # it is not a drag-filled series (organism_accession_terms); the whole sample
                 # sheet is the evidence for drag-fills
-                _by_id = _ncbi_term_by_id(allowedTerm_dict)
-
                 def _text_term(text):
                     term = _by_name.get(str(text).lower())
                     if term is None:
                         term = _org_alias.get(str(text).strip().lower())
                     if term is None:
                         term = ml_organism_fallback(text, allowedTerm_dict, _org_alias, study_id)
-                    return term
+                    # ('Genus sp. <a lab's numbering>': the genus, as above)
+                    return sp_name_term(text, term, '', _by_id.get, _name_term)
                 _as_text = lambda v: '' if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
                 if (_tax_accession != '').any():
                     _row_pairs = list(zip(df_study['Samples_Organism'].map(_as_text),
@@ -4675,6 +4695,8 @@ def Metabolights2REDU(study_id, **kwargs):
                         if not v.lower().startswith(species + ' ') or len(v) <= len(species) + 1:
                             return None
                         hit = _ncbi_term_by_name(allowedTerm_dict).get(v.lower())
+                        # ('Genus sp. <a lab's numbering>' names the genus only: REDU_conversion_functions.sp_name_term)
+                        hit = sp_name_term(v, hit, '', _ncbi_term_by_id(allowedTerm_dict).get)
                         return hit if hit and '|' in hit and hit != term and hit.split('|', 1)[1].strip().lower() == v.lower() else None
                     _cache = {}
                     _ref = pd.Series([_cache.setdefault((t, v), _refine(t, v)) for t, v in zip(df_study['NCBITaxonomy'], df_study[_c])],

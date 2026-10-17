@@ -671,6 +671,108 @@ def ncbi_name_fallback(text, term_of_id, exact=None):
     return (term, 'typo') if term else (None, None)
 
 
+# ---- 'Genus sp. <designation>' ------------------------------------------------------------------------------------
+# NCBI names many unnamed species by the designation of a strain, isolate or clone after 'sp.' ('Synechocystis sp.
+# PCC 6803', 'Streptomyces sp. CNQ-509'): a text or 'ID|Name' naming such an allowed taxon names that organism
+# (read_and_validate_redu_from_github.complete_and_fill_REDU_table, NCBITaxonomy). Two exceptions, applied by the
+# converters to the terms their name and ID lookups give (sp_name_term) and by the validator to its own lookups:
+#   * a designation that is a lab's numbering rather than one of its own (sp_generic_label: after an optional
+#     'strain', 'isolate', 'no.' or '#', at most two letters or digits, one to three digits, or a Roman numeral up to
+#     X: 'Bacillus sp. 1', 'Nostoc sp. A', 'Streptomyces sp. 12', 'Genus sp. III') names the genus only, unless the
+#     given ID is that taxon: NCBI lists such names for other submitters' isolates ('707210|Bacillus sp. 1',
+#     '492787|Streptomyces sp. 2'); 'Xylaria sp. P1' with the ID of that taxon stays the taxon;
+#   * a text 'Genus sp. X' with an ID whose NCBI name is 'Genus sp. Y' of another designation (sp_other_strain) names
+#     the genus, the ID being that of another strain ('585110|Pseudomonas sp. 2 1 26': 585110 is 'Pseudomonas sp.
+#     2156'), unless NCBI lists the text for that taxon (another collection's designation: 'Synechocystis sp. ATCC
+#     27184' for PCC 6803). Two designations are the same strain when they share a variant: the whole designation and
+#     its parts at NCBI's separators (' str. ', ' strain ', ' substr. ', ' = ', parentheses), letters and digits
+#     only, lower-cased ('oral taxon 186 str. F0373' gives oraltaxon186strf0373, oraltaxon186 and f0373; 'PCC 7120 =
+#     FACHB-418' pcc7120fachb418, pcc7120 and fachb418). So 'F0373', 'PCC 7120', 'CNQ525' (NCBI: 'CNQ-525'), '1 1 30'
+#     (NCBI: '1_1_30') name NCBI's strain, and '1' / '12', '2' / '2156', 'PCC 680' / 'PCC 6803' do not; a designation
+#     inside another is no evidence.
+# The genus: the NCBI genus of the term's taxon in the pinned taxonomy when its name is the text's first word
+# (pinned_genus_term), else (no pinned taxonomy, a taxon NCBI has put in another genus) the converter's term for
+# 'Genus sp.', which the validator reads as the genus; else none.
+_SP_WORDS = frozenset({'sp', 'spp'})
+_SP_DESIGNATION_PARTS = re.compile(r'(?i)\s+(?:str\.|strain|substr\.|=)\s+|^(?:str\.|strain)\s+|\s*[()]\s*')
+_SP_LABEL_PREFIX = re.compile(r'(?i)^(?:(?:strain|isolate)\s+|(?:str|no|nr)\.\s*|#\s*)')
+_SP_GENERIC_LABEL = re.compile(r'[a-z0-9]{1,2}|\d{1,3}|iii|vii|viii')
+_GENUS_COLUMN = 6   # ncbi_database.DESIRED_RANKS.index('genus')
+
+
+def sp_designation(name):
+    """The designation of a name 'Genus sp. <designation>' / 'Genus spp. <designation>', white space normalised
+    ('' for other names and for 'Genus sp.' alone)."""
+    words = str(name).split()
+    if len(words) < 3 or words[1].rstrip('.').lower() not in _SP_WORDS:
+        return ''
+    return ' '.join(words[2:])
+
+
+def sp_designation_variants(name):
+    """The variants of the designation of a name 'Genus sp. <designation>' (block comment above): a frozenset, empty
+    for other names."""
+    designation = sp_designation(name)
+    if not designation:
+        return frozenset()
+    parts = [designation] + _SP_DESIGNATION_PARTS.split(designation)
+    return frozenset(v for v in (re.sub(r'[^a-z0-9]', '', p.lower()) for p in parts if p) if v)
+
+
+def sp_other_strain(text, name):
+    """Whether a text 'Genus sp. X' and a name 'Genus sp. Y' name two strains: both have a designation and the two
+    share no variant (block comment above)."""
+    mine, theirs = sp_designation_variants(text), sp_designation_variants(name)
+    return bool(mine and theirs and not mine & theirs)
+
+
+def sp_generic_label(name):
+    """Whether the designation of a name 'Genus sp. <designation>' is a lab's numbering (block comment above)."""
+    label = re.sub(r'[^a-z0-9]', '', _SP_LABEL_PREFIX.sub('', sp_designation(name)).lower())
+    return bool(label) and _SP_GENERIC_LABEL.fullmatch(label) is not None
+
+
+def pinned_genus_term(taxid, genus, term_of_id):
+    """term_of_id(ID) of the NCBI genus of taxon `taxid` (the taxon itself or its ancestor at rank genus, merged IDs
+    followed) in the pinned taxonomy when the genus is named `genus` (case-insensitive), else None (also without the
+    pinned taxonomy)."""
+    if _PINNED_LINEAGE is None or not str(genus).strip():
+        return None
+    tax = _PINNED_LINEAGE.taxonomy
+    try:
+        node = tax.resolve(int(str(taxid).strip()))
+    except (TypeError, ValueError):
+        return None
+    if node is None:
+        return None
+    found = tax.lineage_ids(node)[_GENUS_COLUMN]
+    if found is None or _PINNED_LINEAGE.names.get(found, '').lower() != str(genus).strip().lower():
+        return None
+    return term_of_id(str(found))
+
+
+def sp_name_term(text, term, given_id, term_of_id, term_of_name=None, text_term=None):
+    """The NCBITaxonomy term for an organism text and the allowed term a converter's lookups found for it (`term`, by
+    the given ID `given_id` or by name; None if none) by the two exceptions of the block comment above: for a text
+    'Genus sp. <designation>', its genus where the designation is a lab's numbering and the term is not the given ID's
+    taxon, or where the term is the given ID's strain of another designation and not `text_term` (the term the text
+    names by the converter's name lookups, None if none); else `term` (also a term of several organisms). The genus:
+    pinned_genus_term of the term's taxon, else term_of_name('Genus sp.') (the converter's exact name lookup), else
+    None. term_of_id(ID): the allowed term of a taxon ID or None."""
+    if not term or is_multi(term) or not sp_designation(text):
+        return term
+    taxid, _, name = str(term).partition('|')
+    taxid = taxid.strip()
+    given = taxid == str(given_id or '').strip()
+    if not (sp_generic_label(text) and not given) and not (given and term != text_term and sp_other_strain(text, name)):
+        return term
+    genus = str(text).split()[0]
+    found = pinned_genus_term(taxid, genus, term_of_id)
+    if found is None and term_of_name is not None:
+        found = term_of_name(f'{genus} sp.')
+    return found or None
+
+
 # NCBI allows 3 requests/s without an API key; going faster returns HTTP 429
 _NCBI_MIN_INTERVAL = 0.4
 _ncbi_last_request = [0.0]

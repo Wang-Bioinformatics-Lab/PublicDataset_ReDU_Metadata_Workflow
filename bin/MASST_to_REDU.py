@@ -95,12 +95,17 @@ def follow_merged_taxa(values, merged, name_resolves, stats=None):
 
 def ncbi_name_resolves(allowed_ncbi_terms, ncbi_name_resolver):
     """Whether the validator resolves a taxon name without its id (an allowed scientific name of one
-    taxon, 'Genus sp.' of an allowed genus, or a names.dmp synonym / strain of an allowed taxon)."""
+    taxon, 'Genus sp.' of an allowed genus, or a names.dmp synonym / strain of an allowed taxon; not
+    'Genus sp. <a lab's numbering>', which names the genus only without its id:
+    REDU_conversion_functions.sp_generic_label)."""
+    from REDU_conversion_functions import sp_generic_label
     by_name = collections.Counter(t.split('|', 1)[1].strip().lower() for t in allowed_ncbi_terms if '|' in t)
     def resolves(name):
         name = str(name).strip()
         key = name.lower()
         words = key.split()
+        if sp_generic_label(name):
+            return False
         if len(words) == 2 and words[1] in ('sp.', 'spp.', 'sp', 'spp') and by_name.get(words[0]) == 1:
             return True
         if by_name.get(key) == 1:
