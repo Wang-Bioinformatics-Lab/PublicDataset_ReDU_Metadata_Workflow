@@ -396,6 +396,10 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     # (name_over_id): only where the caller asks for it (the GNPS harmonize step, which loads the pinned taxonomy
     # from --path_to_ncbi_nodes_dmp); the converters' terms are allowed terms already
     ncbi_lineage = pinned_ncbi_relations() if kwargs.get('ncbi_name_over_id') else None
+    # names no lookup resolves: other white space, a strain designation at the end, one wrong character
+    # (REDU_conversion_functions.ncbi_name_fallback); only where the caller asks for it (the GNPS harmonize
+    # step, with the pinned NCBI taxonomy)
+    use_ncbi_name_fallback = bool(kwargs.get('ncbi_name_fallback'))
 
     # Cellosaurus table (build_cellosaurus_table.py): checks CellLine, gives CellLineIndex
     cellosaurus_table = kwargs.get('CellLineIndex_table')
@@ -609,6 +613,19 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         same_division = [t for t in terms if division and division_of(t.split("|", 1)[0].strip()) == division]
                         return same_division[0] if len(same_division) == 1 else None
 
+                    def fallback_hit(name, oid):
+                        # a name no lookup resolves, read with its white space normalised, without a strain designation
+                        # at its end or with one wrong character fixed (REDU_conversion_functions.ncbi_name_fallback;
+                        # caller's choice)
+                        if not use_ncbi_name_fallback or not name:
+                            return None
+                        import REDU_conversion_functions
+                        term, how = REDU_conversion_functions.ncbi_name_fallback(
+                            name, allowed_by_id.get, lambda n: name_hit(n, oid))
+                        if term:
+                            print(f"[NCBITaxonomy] organism name {name!r} read as {term} ({how})")
+                        return term
+
                     def name_over_id(oid, oname, a_term):
                         # An 'ID|Name' whose name names another taxon than its ID (a_term): the name wins, as
                         # Metabolights2REDU.organism_accession_terms decides organism text vs NCBITaxon accession
@@ -619,11 +636,14 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         # unlike MetaboLights, one species name with many strain IDs is no copy-paste in GNPS strain
                         # collections). A name that only names.dmp lists (a synonym) wins only over an ID above it
                         # or over the genus it names; the ID also stays without the pinned NCBI taxonomy
-                        # (--path_to_ncbi_nodes_dmp).
+                        # (--path_to_ncbi_nodes_dmp). A name read by fallback_hit (white space, strain designation,
+                        # one wrong character) counts as written that way.
                         if not oname or ncbi_lineage is None:
                             return a_term
                         direct = name_hit(oname, oid)
                         t_term = direct or (ncbi_name_resolver(oname) if ncbi_name_resolver is not None else None)
+                        if not t_term:
+                            t_term = direct = fallback_hit(oname, oid)
                         if not t_term or t_term == a_term:
                             return a_term
                         a_id, t_id = a_term.split("|", 1)[0].strip(), t_term.split("|", 1)[0].strip()
@@ -672,7 +692,13 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                             if hit:
                                 return hit
 
-                        # 6) No match
+                        # 6) The name with its white space normalised, without a strain designation at its end, or
+                        #    with one wrong character fixed (the GNPS harmonize step only)
+                        hit = fallback_hit(oname, oid)
+                        if hit:
+                            return hit
+
+                        # 7) No match
                         return missing_value
 
                     value_map = {ov: resolve_ncbi(ov) for ov in unique_values}
@@ -1680,6 +1706,7 @@ if __name__ == '__main__':
                                               case_insensitive_terms=True,
                                               NCBI_name_resolver=ncbi_name_resolver,
                                               ncbi_name_over_id=True,
+                                              ncbi_name_fallback=True,
                                               CellLineIndex_table=cellosaurus_table,
                                               life_stage_as_submitted=True)
             

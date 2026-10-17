@@ -1602,7 +1602,10 @@ def _ncbi_term_by_id(allowedTerm_dict):
 # by row ('Homo sapiens' with 9607, 9608 ... 9636: MTBLS3342; 'Arbidopsis thaliana' with 3702,
 # 3703 ...: MTBLS2522). organism_accession_terms() decides per sample, from the whole sample
 # sheet of the study:
-#   * the text names a taxon T (allowed name, or the MetaboLights organism alias sheet):
+#   * the text names a taxon T (allowed name, the MetaboLights organism alias sheet, or else, as
+#     ml_organism_fallback reads it, the text with its white space normalised, without a strain
+#     designation at its end or with one wrong character fixed: 'Arbidopsis thaliana' is read as
+#     3702|Arabidopsis thaliana):
 #       - accession A == T, or A's own name is the text (another taxon of that name): A
 #       - A below T in the pinned NCBI taxonomy (a strain or subspecies of T) and not part of a
 #         drag-fill series: A
@@ -1819,6 +1822,32 @@ def _ncbi_term_by_name(allowedTerm_dict):
             if sep and '|' not in name:
                 _ncbi_by_name.setdefault(name.lower(), term)
     return _ncbi_by_name
+
+
+_organism_fallback_memo = {}
+
+
+def ml_organism_fallback(text, allowedTerm_dict, organism_aliases=None, study_id=''):
+    """Allowed term of an organism text that neither the allowed names nor the alias sheet resolve: other white
+    space (a no-break space), a strain designation at the end ('... ATCC 31916'), one wrong character
+    ('Arbidopsis thaliana'); see
+    REDU_conversion_functions.ncbi_name_fallback (pinned taxonomy only). Else None. Each text is looked up and
+    logged once per study."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    key = (study_id, text)
+    if key not in _organism_fallback_memo:
+        import REDU_conversion_functions
+        aliases = organism_aliases or {}
+        by_name = _ncbi_term_by_name(allowedTerm_dict)
+
+        def exact(name):
+            return by_name.get(name.lower()) or aliases.get(name.strip().lower())
+        term, how = REDU_conversion_functions.ncbi_name_fallback(text, _ncbi_term_by_id(allowedTerm_dict).get, exact)
+        if term:
+            print(f"[NCBITaxonomy] {study_id}: organism text {text!r} read as {term} ({how})")
+        _organism_fallback_memo[key] = term
+    return _organism_fallback_memo[key]
 
 
 def _investigation_submission_year(study_id):
@@ -3306,6 +3335,13 @@ def Metabolights2REDU(study_id, **kwargs):
                 for _org, _tax in processed_organisms.items():
                     if _tax == 'None' and str(_org).strip().lower() in _org_alias:
                         processed_organisms[_org] = _org_alias[str(_org).strip().lower()]
+                # texts no exact lookup resolves: other white space, a strain designation at the end, one wrong character
+                # (ml_organism_fallback; the accession rules below then read the text as that name)
+                for _org, _tax in processed_organisms.items():
+                    if _tax == 'None':
+                        _fb = ml_organism_fallback(_org, allowedTerm_dict, _org_alias, study_id)
+                        if _fb:
+                            processed_organisms[_org] = _fb
 
                 df_study.loc[:, 'NCBITaxonomy'] = df_study['Samples_Organism'].map(processed_organisms)
                 # 'None' is the name lookup without a match; taxa whose name contains 'None'
@@ -3323,6 +3359,8 @@ def Metabolights2REDU(study_id, **kwargs):
                         term = _by_name.get(str(text).lower())
                         if term is None:
                             term = _org_alias.get(str(text).strip().lower())
+                        if term is None:
+                            term = ml_organism_fallback(text, allowedTerm_dict, _org_alias, study_id)
                         return term
                     _as_text = lambda v: '' if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
                     _row_pairs = list(zip(df_study['Samples_Organism'].map(_as_text),

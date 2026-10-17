@@ -306,6 +306,267 @@ def pinned_ncbi_current_term(ncbi_id, allowedTerm_dict):
     return _allowed_term_of_ids({taxid}, allowedTerm_dict)
 
 
+# ---- Organism texts that no exact lookup resolves (pinned taxonomy only) ---------------
+# ncbi_name_fallback() is the last try of a converter for an organism text its exact lookups
+# (allowed scientific names, alias sheets, synonyms) do not resolve, used where the converter
+# would otherwise give 'missing value' or keep an organism ID it does not trust. Curators misspell
+# names and drag strain numbers down with the accessions: 'Arbidopsis thaliana' with NCBITaxon
+# 3702, 3703, 4056 ... (MTBLS2522), 'Zymomonas mobilis subsp. mobilis ATCC 31916', 'ATCC 31917' ...
+# with 264297, 264298 ... (MTBLS14081). The converter then decides as if the text had been written
+# as the name found (Metabolights2REDU.organism_accession_terms: the text wins over a drag-filled or
+# contradicting accession, microbes keep their exception).
+#   0. Other white space only (a no-break space, blanks at the end, two blanks): the converter's exact
+#      lookup of the text with its white space normalised.
+#   a. A strain / culture-collection designation at the end ('... ATCC 31916', '... DSM 20016',
+#      '... NRRL B-14023', '... (ATCC 25922)', '... DSM 30083 = ATCC 11775', '... strain K-12',
+#      '... str. MG1655'; collections: _STRAIN_COLLECTIONS; not a 'strain ...' part that names another
+#      organism after it: 'A strain X; B', 'A str. X and B'): the text itself when names.dmp lists it
+#      (scientific name, synonym or equivalent name) for exactly one taxon, that strain; else the
+#      text without the designation(s), when that has two words at least, by the converter's exact
+#      lookup, as a names.dmp scientific name / synonym / equivalent name of exactly one taxon, or
+#      by b.
+#   b. One wrong character: the text (lower-cased, whitespace-normalised) has two words at least,
+#      the first two of letters only (a hyphen inside the epithet), the others of letters or an
+#      infraspecific rank ('subsp.', 'var.' ...), no abbreviation ('E. coli'), no 'sp.', 'spp',
+#      'cf.', hybrid 'x', 'and', no digits, 10 characters at least; it is no name in names.dmp
+#      itself, and the names (any class, 9+ characters) at Damerau-Levenshtein distance 1 (one
+#      character inserted, deleted or replaced, or two neighbours swapped) all belong to one taxon,
+#      at species rank or below, and include its scientific name. Nothing when names of two taxa
+#      are that close, for one-word texts and for placeholder taxa.
+# The names are indexed once per process, when a text first needs it: every name of names.dmp
+# (lower-cased, whitespace-normalised, 9+ characters) under two keys, its length with its first and
+# with its last k = (length - 2) // 2 characters. A name within distance 1 of a text of length n has
+# length n - 1, n or n + 1 and shares one of its two keys with the text (an edit leaves either the
+# first or the last k characters as they are), so the texts' keys find all of them. Python's hash of
+# the keys only selects candidates (each is compared with the text), so the results do not depend on
+# PYTHONHASHSEED.
+_STRAIN_COLLECTIONS = ('ATCC', 'DSMZ', 'DSM', 'NRRL', 'NCTC', 'JCM', 'CBS', 'CECT', 'LMG', 'NBRC', 'IFO', 'KCTC',
+                       'CCUG', 'CIP', 'NCIMB')
+_STRAIN_DESIGNATION = re.compile(
+    r'(?:^|[\s,;=/(]+)(?P<designation>(?:strain|str\.)\s+\S.*'
+    r'|(?:' + '|'.join(_STRAIN_COLLECTIONS) + r')(?:\s*[®:#-])?\s*(?:[A-Z]{1,4}[\s-]?)?\d[\w./-]*™?(?:\s*\(T\)|T)?'
+    r')[\s)]*$', re.I)
+# a 'strain ...' part that goes on with another organism ('A strain X; B', 'A str. X and B') is no designation
+_ORGANISM_LIST_PART = re.compile(r'[;,+&]|\s(?:and|or|with|x)\s', re.I)
+_FALLBACK_WORD = re.compile(r'[a-z]+(?:-[a-z]+)*')
+_INFRASPECIFIC_RANKS = frozenset({'subsp.', 'ssp.', 'var.', 'f.', 'forma', 'subvar.', 'pv.', 'bv.', 'sv.', 'cv.'})
+# words that make a text no single organism name ('Streptomyces spp', 'A x B', 'A and B', 'leaves of A')
+_NO_NAME_WORDS = frozenset({'sp', 'spp', 'ssp', 'subsp', 'var', 'cf', 'aff', 'nov', 'gen', 'sect', 'x',
+                            'and', 'or', 'et', 'with', 'of', 'in', 'from', 'on', 'the'})
+_NAME_CLASS_CODES = {'scientific name': 0, 'synonym': 1, 'equivalent name': 2}   # every other class: 3
+_FALLBACK_MIN_LENGTH = 10
+_SPECIES_COLUMN = 7   # ncbi_database.DESIRED_RANKS.index('species')
+_NAME_INDEX = None
+
+
+def _within_one_edit(a, b):
+    """0 when a == b, 1 when their Damerau-Levenshtein (optimal string alignment) distance is 1, else None."""
+    if a == b:
+        return 0
+    la, lb = len(a), len(b)
+    if la == lb:
+        i = 0
+        while a[i] == b[i]:
+            i += 1
+        if a[i + 1:] == b[i + 1:]:
+            return 1
+        if i + 1 < la and a[i] == b[i + 1] and a[i + 1] == b[i] and a[i + 2:] == b[i + 2:]:
+            return 1
+        return None
+    if la > lb:
+        a, b, la, lb = b, a, lb, la
+    if lb != la + 1:
+        return None
+    i = 0
+    while i < la and a[i] == b[i]:
+        i += 1
+    return 1 if a[i:] == b[i + 1:] else None
+
+
+class _NcbiNameIndex:
+    """The names of names.dmp (lower-cased, whitespace-normalised, at least _FALLBACK_MIN_LENGTH - 1
+    characters) with their taxon and name class, for names within one edit of a text (see above)."""
+
+    def __init__(self, names_dmp):
+        import numpy as np
+        from array import array
+        t0 = time.time()
+        blob = bytearray()
+        ends, taxa, classes = array('q'), array('i'), array('b')
+        first, last = array('q'), array('q')
+        shortest = _FALLBACK_MIN_LENGTH - 1
+        with open(names_dmp, encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                fields = line.split('\t|\t')
+                if len(fields) < 4:
+                    continue
+                name = ' '.join(fields[1].lower().split())
+                n = len(name)
+                if n < shortest:
+                    continue
+                k = (n - 2) // 2
+                first.append(hash((n, name[:k])))
+                last.append(hash((n, name[-k:])))
+                blob += name.encode('utf-8')
+                ends.append(len(blob))
+                taxa.append(int(fields[0]))
+                classes.append(_NAME_CLASS_CODES.get(fields[3].rstrip('|\t\r\n').strip(), 3))
+        self.blob = bytes(blob)
+        del blob
+        self.ends = np.frombuffer(ends, dtype=np.int64)
+        self.taxa = np.frombuffer(taxa, dtype=np.int32)
+        self.classes = np.frombuffer(classes, dtype=np.int8)
+        self.keys = []
+        for column in (first, last):
+            keys = np.frombuffer(column, dtype=np.int64)
+            order = np.argsort(keys, kind='stable').astype(np.int32)
+            self.keys.append((keys[order], order))
+        del first, last
+        self.memo = {}
+        print(f"NCBI name index for organism texts: {len(self.ends)} names of {names_dmp} "
+              f"({time.time() - t0:.1f} s)", flush=True)
+
+    def name(self, i):
+        start = int(self.ends[i - 1]) if i else 0
+        return self.blob[start:int(self.ends[i])].decode('utf-8')
+
+    def near(self, text):
+        """[(taxon ID, name class code, distance)] of the names within one edit of text (normalised)."""
+        hit = self.memo.get(text)
+        if hit is not None:
+            return hit
+        import numpy as np
+        out, seen = [], set()
+        for n in (len(text) - 1, len(text), len(text) + 1):
+            if n < _FALLBACK_MIN_LENGTH - 1:
+                continue
+            k = (n - 2) // 2
+            for (keys, rows), part in zip(self.keys, (text[:k], text[-k:])):
+                h = hash((n, part))
+                lo, hi = np.searchsorted(keys, h, 'left'), np.searchsorted(keys, h, 'right')
+                for i in rows[lo:hi].tolist():
+                    if i in seen:
+                        continue
+                    seen.add(i)
+                    d = _within_one_edit(text, self.name(i))
+                    if d is not None:
+                        out.append((int(self.taxa[i]), int(self.classes[i]), d))
+        out.sort()
+        self.memo[text] = out
+        return out
+
+
+def _ncbi_name_index():
+    global _NAME_INDEX
+    if _NAME_INDEX is None:
+        _NAME_INDEX = _NcbiNameIndex(_PINNED_LINEAGE.taxonomy.names_dmp)
+    return _NAME_INDEX
+
+
+def _at_or_below_species(taxid):
+    """Whether a taxon (pinned taxonomy) has rank species or lies below a species."""
+    tax = _PINNED_LINEAGE.taxonomy
+    node = tax.resolve(taxid)
+    for _ in range(1000):
+        if node is None:
+            return False
+        column = tax.column[tax.rank[node]]
+        if column == _SPECIES_COLUMN:
+            return True
+        if column is not None:
+            return False   # genus or a rank above it
+        up = tax.parent[node]
+        if up == node or up < 0:
+            return False
+        node = up
+    return False
+
+
+def _one_taxon(taxids):
+    resolved = {_PINNED_LINEAGE.taxonomy.resolve(t) for t in taxids} - {None}
+    if len(resolved) != 1 or resolved & _NCBI_PLACEHOLDER_TAXA:
+        return None
+    return resolved.pop()
+
+
+def _named_taxon(text):
+    """The one taxon names.dmp lists text (normalised) for as scientific name, synonym or equivalent name, else None."""
+    return _one_taxon({t for t, c, d in _ncbi_name_index().near(text) if d == 0 and c < 3})
+
+
+def _typo_shape(text):
+    words = text.split()
+    if len(words) < 2 or len(text) < _FALLBACK_MIN_LENGTH:
+        return False
+    if any(w in _NO_NAME_WORDS for w in words):
+        return False
+    if not (_FALLBACK_WORD.fullmatch(words[0]) and _FALLBACK_WORD.fullmatch(words[1])):
+        return False
+    return all(_FALLBACK_WORD.fullmatch(w) or w in _INFRASPECIFIC_RANKS for w in words[2:])
+
+
+def _typo_taxon(text):
+    """The taxon of b. (block comment above) for a normalised text, else None."""
+    if not _typo_shape(text):
+        return None
+    near = _ncbi_name_index().near(text)
+    if not near or any(d == 0 for t, c, d in near):
+        return None
+    taxon = _one_taxon({t for t, c, d in near})
+    if taxon is None or not any(c == 0 for t, c, d in near) or not _at_or_below_species(taxon):
+        return None
+    return taxon
+
+
+def ncbi_name_fallback(text, term_of_id, exact=None):
+    """(allowed 'ID|Name' term, how) for an organism text no exact lookup resolves, by the rules of the
+    block comment above, else (None, None); how: 'white space' (the text with its white space normalised, by
+    exact), 'strain name' (the text is an NCBI name of that strain), 'strain' (the text without its designation),
+    'strain, typo', 'typo'. term_of_id(ID as str): the
+    allowed term of a taxon ID or None; exact(name): the converter's own lookup for the text without its
+    designation (allowed names, alias sheets) or None. Needs the pinned taxonomy (use_pinned_ncbi_taxonomy)."""
+    if _PINNED_LINEAGE is None or not isinstance(text, str):
+        return None, None
+    spaced = ' '.join(text.split())
+    if spaced != text and spaced and exact is not None:
+        # only other white space (a no-break space, a blank at the end, two blanks)
+        term = exact(spaced)
+        if term:
+            return term, 'white space'
+    norm = spaced.lower()
+    if len(norm) < _FALLBACK_MIN_LENGTH or not re.search(r'[a-z]{3}', norm):
+        return None, None
+    rest, stripped = spaced, False
+    for _ in range(5):
+        m = _STRAIN_DESIGNATION.search(rest)
+        if m is None or m.start() == 0 or _ORGANISM_LIST_PART.search(m.group('designation')):
+            break
+        rest, stripped = rest[:m.start()].rstrip(' ,;=/('), True
+    if stripped:
+        taxon = _named_taxon(norm)
+        if taxon is not None:
+            term = term_of_id(str(taxon))
+            if term:
+                return term, 'strain name'
+        if len(rest.split()) < 2:
+            return None, None
+        term = exact(rest) if exact is not None else None
+        if term:
+            return term, 'strain'
+        rest_norm = ' '.join(rest.lower().split())
+        taxon = _named_taxon(rest_norm)
+        if taxon is not None:
+            term = term_of_id(str(taxon))
+            if term:
+                return term, 'strain'
+        taxon = _typo_taxon(rest_norm)
+        term = term_of_id(str(taxon)) if taxon is not None else None
+        return (term, 'strain, typo') if term else (None, None)
+    taxon = _typo_taxon(norm)
+    term = term_of_id(str(taxon)) if taxon is not None else None
+    return (term, 'typo') if term else (None, None)
+
+
 # NCBI allows 3 requests/s without an API key; going faster returns HTTP 429
 _NCBI_MIN_INTERVAL = 0.4
 _ncbi_last_request = [0.0]

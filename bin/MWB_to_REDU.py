@@ -3987,6 +3987,28 @@ def _ncbi_name_lookup(allowedTerm_dict):
     return _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])[1]
 
 
+_organism_fallback_memo = {}
+
+
+def mwb_organism_fallback(text, allowedTerm_dict, where=''):
+    """Allowed term of an organism text that neither the allowed names nor names.dmp synonyms resolve: other white
+    space (a no-break space), a strain designation at the end ('... ATCC 31916'), one wrong character
+    ('Arbidopsis thaliana'); see
+    REDU_conversion_functions.ncbi_name_fallback (pinned taxonomy only). Else None. Logged where it is used."""
+    if not isinstance(text, str) or _rcf._PINNED_LINEAGE is None:
+        return None
+    if text not in _organism_fallback_memo:
+        by_id, by_name = _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
+
+        def exact(name):
+            return by_name.get(name.lower()) or _rcf.pinned_ncbi_synonym_term(name, allowedTerm_dict)
+        _organism_fallback_memo[text] = _rcf.ncbi_name_fallback(text, by_id.get, exact)
+    term, how = _organism_fallback_memo[text]
+    if term:
+        print(f"[NCBITaxonomy] {where}: organism text {text!r} read as {term} ({how})")
+    return term
+
+
 def get_key_info_into_outer(df, key_vars, new_col):
     # Match keys case-insensitively: MWB depositors use 'Sex'/'Gender'/'Age' etc.
     # with varied capitalization, and the fixed key_vars lists are lowercase, so a
@@ -4874,10 +4896,15 @@ def standard_sample_type(key, value):
 # not about another organism (_NOT_OWN_ORGANISM_KEY_RE: 'Infection', 'Colonized bacteria', 'Inoculum', 'Host',
 # 'Treatment', 'Diet', co-culture partners, cultivars, 'mouse strain', ...). A value names a taxon when it is an
 # allowed NCBI scientific name (case-insensitive) or a names.dmp synonym of one taxon (pinned taxonomy:
-# 'Clostridium bolteae' -> Enterocloster bolteae); a one-word value only when written as NCBI writes the name
-# ('Rattus', not the epithet 'melanogaster', which is a fungus genus), never under strain keys ('Strain:
+# 'Clostridium bolteae' -> Enterocloster bolteae), else (two words at least) the value with its white space
+# normalised, without a strain designation at its end or with one wrong character fixed (mwb_organism_fallback:
+# 'Bacteroides finegoldii DSMZ 17565', 'Muribaculun intestinale'); a one-word value only when written as NCBI writes
+# the name ('Rattus', not the epithet 'melanogaster', which is a fungus genus), never under strain keys ('Strain:
 # Valencia'); no virus, no placeholder taxon. Decided per analysis (apply_own_organisms), only when the
 # analysis' species resolves (else the older per-sample lookup of translate_MWB_to_REDU_from_csv runs):
+#   * a genus named by a one-word value that is the first word of another value of the same sample, whose taxon NCBI
+#     has put in another genus since ('genus: Bacteroides' with 'taxonomy: Bacteroides plebeius DSMZ 17135', now
+#     Phocaeicola plebeius: ST001688), names the same organism and is not counted as a taxon of its own;
 #   * own taxa of another kind than the analysis' taxon (animal / plant / virus / microbe) are not used: a host
 #     whose items name a microbe (an infection, its microbiota) keeps the host;
 #   * a sample's own taxon above or equal to the analysis' taxon keeps the analysis' (more specific) one, one
@@ -5007,6 +5034,9 @@ def own_taxon_term(key, value, allowedTerm_dict):
     term = _ncbi_name_lookup(allowedTerm_dict).get(v.lower())
     if term is None and len(v.split()) > 1:
         term = _rcf.pinned_ncbi_synonym_term(v, allowedTerm_dict)
+    if term is None and len(v.split()) > 1:
+        # other white space, a strain designation at the end, one wrong character (two words at least)
+        term = mwb_organism_fallback(v, allowedTerm_dict, f'sample item {key!r}')
     if term is None:
         return None
     if len(v.split()) == 1 and (_OWN_STRAIN_KEY_RE.search(_norm_key(key)) or term.split('|', 1)[1] != v):
@@ -5026,14 +5056,27 @@ def sample_own_taxa(df_items, allowedTerm_dict):
     keys = df_items['Key'].astype(str)
     use = keys.map(is_own_organism_key)
     memo = {}
+    named = {}
     for sid, k, v in zip(df_items.loc[use, 'filename'], keys[use], df_items.loc[use, 'Value']):
         if (k, v) not in memo:
             memo[(k, v)] = own_taxon_term(k, v, allowedTerm_dict)
         t = memo[(k, v)]
         if t is not None:
             out.setdefault(str(sid), set()).add(t)
+            named.setdefault(str(sid), []).append((' '.join(str(v).lower().split()), t))
         else:
             out.setdefault(str(sid), set())
+    # a genus written as the first word of another value of the sample that names a taxon NCBI has put in another
+    # genus since ('genus: Bacteroides' with 'taxonomy: Bacteroides plebeius DSMZ 17135', now Phocaeicola
+    # plebeius) names the same organism: the genus is not counted as a taxon of its own
+    for sid, pairs in named.items():
+        for v1, t1 in pairs:
+            if ' ' in v1:
+                continue
+            if any(v2.split(' ', 1)[0] == v1 and ' ' in v2 and not (_same_taxon(t1, t2) or taxon_is_ancestor(t1, t2)
+                                                                      or taxon_is_ancestor(t2, t1))
+                   for v2, t2 in pairs):
+                out[sid].discard(t1)
     return {s: OWN_TAXA_SEP.join(sorted(ts)) for s, ts in out.items()}
 
 
@@ -6543,6 +6586,10 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
                               _rcf.pinned_ncbi_current_term(df_outer['TAXONOMY_ID'].iloc[0], allowedTerm_dict)
                               or _rcf.pinned_ncbi_synonym_term(sp, allowedTerm_dict))
                          for sp, term in processed_species.items()}
+    # other white space, a strain designation at the end of the species, one wrong character (mwb_organism_fallback)
+    processed_species = {sp: (term if term is not None else
+                              mwb_organism_fallback(sp, allowedTerm_dict, f"{entry['STUDY_ID']} SUBJECT_SPECIES"))
+                         for sp, term in processed_species.items()}
     df_outer['NCBITaxonomy'] = df_outer['SUBJECT_SPECIES'].map(processed_species)
     attempt_taxa_extraction_from_inner = False
     if all(value is None for value in processed_species.values()):
@@ -7013,7 +7060,8 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                     if result is None:
                         # surrounding blanks, renamed taxa (synonyms in the pinned names.dmp)
                         result = _names.get(' '.join(str(species).lower().split())) \
-                            or _rcf.pinned_ncbi_synonym_term(str(species), allowedTerm_dict)
+                            or _rcf.pinned_ncbi_synonym_term(str(species), allowedTerm_dict) \
+                            or mwb_organism_fallback(str(species), allowedTerm_dict, 'sample species value')
                     if result is not None:
                         processed_species[species] = result
                 # values of other keys ('Acquisition method: IDA', 'group: Salmo') are no
