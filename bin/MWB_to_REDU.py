@@ -21,6 +21,9 @@ from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
 from REDU_conversion_functions import get_taxonomy_info
 from REDU_conversion_functions import normalize_redu_datetime
+from REDU_conversion_functions import multi_sample_type, ORGANISM_LIST
+# several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
+from ncbi_database import all_parts, is_multi, join_parts, single_taxid_series, taxonomy_parts
 from ms_instrument_matching import match_mass_spectrometer
 from water_kind import water_kind_of_unstated_water
 import REDU_conversion_functions as _rcf
@@ -3885,7 +3888,8 @@ def assign_cell_lines(MWB_table):
         _fill_cell_types(pd.Series(None, index=t.index, dtype=object))
         return t
     taxon = t['NCBITaxonomy'] if 'NCBITaxonomy' in t.columns else pd.Series(None, index=t.index, dtype=object)
-    taxon = taxon.where(taxon.astype(str).str.contains(r'^\d+\|', regex=True), '')
+    # (a sample of several organisms gives no study organism to match cell lines with)
+    taxon = taxon.where(taxon.astype(str).str.contains(r'^\d+\|', regex=True) & ~taxon.map(is_multi).astype(bool), '')
     cache = {}
     log = {}
 
@@ -3969,10 +3973,13 @@ def cultured_study_sample_type(t):
         | body.isin(_CL_LABELS)
     tax = t['NCBITaxonomy'].astype(str) if 'NCBITaxonomy' in t.columns else pd.Series('', index=t.index)
     mammal_of = {}
-    for x in sorted(set(tax[st.eq('animal') & is_cells])):
+    def _mammal(x):
         m = re.match(r'^(\d+)\|', x)
         lineage = _lineage(m.group(1)) if m else None
-        mammal_of[x] = lineage is not None and 'mammalia' in lineage
+        return lineage is not None and 'mammalia' in lineage
+    for x in sorted(set(tax[st.eq('animal') & is_cells])):
+        # (several organisms: all of them mammals)
+        mammal_of[x] = all_parts(x, _mammal) if is_multi(x) else _mammal(x)
     change = st.eq('animal') & is_cells & tax.map(lambda x: mammal_of.get(x, False)).astype(bool)
     if change.any():
         t.loc[change, 'SampleType'] = 'culture_mammalian'
@@ -4921,7 +4928,14 @@ def standard_sample_type(key, value):
 #   * for animals and plants the own taxon must lie in the analysis taxon's NCBI class ('Species: Schistosoma
 #     mansoni' in a mouse study is a parasite; 'Genus: Major' an insect genus);
 #   * pooled QCs, blanks and reference materials keep the analysis' organism (pooled QCs keep it: user decision).
-# SampleType / SampleTypeSub1 follow the new taxon where they came from the analysis' taxon.
+#   * a value that lists organisms ('S. aureus and C. striatum': REDU_conversion_functions.ORGANISM_LIST) and names no
+#     taxon as a whole names a sample of several organisms when each part names a taxon as above and the parts name two
+#     taxa at least (own_taxa_term: 'ID|Name||ID|Name', ncbi_database.MULTI_SEP). It is used only in a multi-species
+#     analysis, when every organism is of the analysis' kind (and class) and one of them is another sample's own taxon
+#     (the co-culture of two of the analysis' monocultures); otherwise the sample counts as one without an own taxon.
+#     A sample of several organisms is a value of its own (never read as its first organism).
+# SampleType / SampleTypeSub1 follow the new taxon where they came from the analysis' taxon (several organisms:
+# multi_sample_type).
 _OWN_ORGANISM_KEY_RE = re.compile(
     r'(?:^|[^a-z])(?:species|organisms?|strains?|taxon|taxonomy|genus|isolates?|serovar|serotype|bacteria|bacterium|'
     r'microorganisms?|microbes?)(?:[^a-z]|$)')
@@ -4942,7 +4956,8 @@ OWN_TAXA_SEP = ';'
 
 def _taxon_node(taxid):
     pinned = _rcf._PINNED_LINEAGE
-    if pinned is None:
+    if pinned is None or is_multi(taxid):
+        # (a value of several organisms is no one taxon: never its first ID)
         return None
     try:
         return pinned.taxonomy.resolve(int(str(taxid).split('|')[0]))
@@ -5047,8 +5062,28 @@ def own_taxon_term(key, value, allowedTerm_dict):
     return term
 
 
+def own_taxa_term(key, value, allowedTerm_dict):
+    """own_taxon_term of an own-organism item's value; for a value that lists organisms (ORGANISM_LIST) and names no
+    taxon itself, the 'ID|Name||ID|Name' term of its parts when each names a taxon (own_taxon_term, the same key), each
+    taxon once in the value's order (one taxon left: that term); else None."""
+    term = own_taxon_term(key, value, allowedTerm_dict)
+    if term is not None:
+        return term
+    v = ' '.join(str(value).split())
+    if not ORGANISM_LIST.search(v):
+        return None
+    parts = [p.strip() for p in ORGANISM_LIST.split(v) if p.strip()]
+    if len(parts) < 2:
+        return None
+    terms = [own_taxon_term(key, p, allowedTerm_dict) for p in parts]
+    if any(t is None for t in terms):
+        return None
+    # each taxon once: by its pinned node (merged IDs followed), by its ID where it has none
+    return join_parts(terms, key=lambda t: _taxon_node(t) or t.split('|', 1)[0].strip())
+
+
 def sample_own_taxa(df_items, allowedTerm_dict):
-    """Sample ID -> the distinct taxa its own-organism items name (own_taxon_term), joined by OWN_TAXA_SEP in
+    """Sample ID -> the distinct taxa its own-organism items name (own_taxa_term), joined by OWN_TAXA_SEP in
     sorted order; df_items: the mwTab items (columns filename = Sample ID, Key, Value as given)."""
     out = {}
     if df_items is None or not len(df_items) or _rcf._PINNED_LINEAGE is None:
@@ -5059,7 +5094,7 @@ def sample_own_taxa(df_items, allowedTerm_dict):
     named = {}
     for sid, k, v in zip(df_items.loc[use, 'filename'], keys[use], df_items.loc[use, 'Value']):
         if (k, v) not in memo:
-            memo[(k, v)] = own_taxon_term(k, v, allowedTerm_dict)
+            memo[(k, v)] = own_taxa_term(k, v, allowedTerm_dict)
         t = memo[(k, v)]
         if t is not None:
             out.setdefault(str(sid), set()).add(t)
@@ -5116,6 +5151,9 @@ def apply_own_organisms(df, study_term, column='MWB_own_taxa'):
     def usable(t):
         # an own taxon of the analysis' kind; for animals and plants also of its NCBI class (a parasite named in a
         # mouse study, 'Species: Schistosoma mansoni', does not replace the host; nor 'Genus: Major', an insect)
+        if is_multi(t):
+            # several organisms: every one of them
+            return all(usable(p) for p in taxonomy_parts(t))
         if taxon_kind(t) != kind:
             return False
         if kind not in ('animal', 'plant'):
@@ -5127,9 +5165,11 @@ def apply_own_organisms(df, study_term, column='MWB_own_taxa'):
     for value in own.unique():
         terms = [t for t in value.split(OWN_TAXA_SEP) if t and usable(t)]
         per_value[value] = (_one_lineage(terms) if terms else None, bool(terms))
-    taxa = {t for t, _ in per_value.values() if t}
+    # (the samples of several organisms do not make the analysis multi-species)
+    taxa = {t for t, _ in per_value.values() if t and not is_multi(t)}
     multi = any(not (_same_taxon(a, b) or taxon_is_ancestor(a, b) or taxon_is_ancestor(b, a))
                 for a in taxa for b in taxa if a < b)
+    own_nodes = {_taxon_node(t) for t in taxa} - {None}
     # the analysis' taxon holds for every sample when all own taxa lie below it ('Bacteria' over the genera of a
     # strain collection; an 'X sp.' taxon stands for its genus X here); then a sample without an own taxon keeps it
     anchor = _taxon_node(study_term)
@@ -5145,6 +5185,12 @@ def apply_own_organisms(df, study_term, column='MWB_own_taxa'):
     study_type = get_taxonomy_info(study_term.split('|')[0])
     new = {}
     for value, (t, named) in per_value.items():
+        if t is not None and is_multi(t):
+            # several organisms: in a multi-species analysis, one of them another sample's own taxon
+            if multi and any(_taxon_node(p) in own_nodes for p in taxonomy_parts(t)):
+                new[value] = t
+                continue
+            t = None
         if t is not None:
             if _same_taxon(t, study_term) or taxon_is_ancestor(t, study_term):
                 new[value] = study_term
@@ -5168,7 +5214,7 @@ def apply_own_organisms(df, study_term, column='MWB_own_taxa'):
         from_taxon = df['SampleType'].astype(str).eq(str(study_type[0])) & (
             sub1.astype(str).eq(str(study_type[1])) if study_type[1] is not None else sub1_missing)
         for t in sorted(set(target[changed].dropna())):
-            info = get_taxonomy_info(t.split('|')[0])
+            info = multi_sample_type(taxonomy_parts(t)) if is_multi(t) else get_taxonomy_info(t.split('|')[0])
             if not info or info[0] is None:
                 continue
             rows = changed & from_taxon & target.eq(t)
@@ -7121,7 +7167,8 @@ def non_vertebrate_muscle(t):
     if not rows.any():
         return t
     tax = t['NCBITaxonomy'] if 'NCBITaxonomy' in t.columns else pd.Series(None, index=t.index, dtype=object)
-    vertebrate = tax.map(lambda x: isinstance(x, str) and '|' in x and taxon_is_ancestor(VERTEBRATA, x))
+    # (several organisms: all of them vertebrates)
+    vertebrate = tax.map(lambda x: isinstance(x, str) and '|' in x and all_parts(x, lambda p: taxon_is_ancestor(VERTEBRATA, p)))
     change = rows & ~vertebrate.astype(bool)
     if change.any():
         allowed = set((allowedTerm_dict.get('UBERONBodyPartName') or {}).get('allowed_values') or [])
@@ -7173,7 +7220,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
             if 'SUBJECT_TYPE' in MWB_table.columns:
                 organism &= ~MWB_table['SUBJECT_TYPE'].astype(str).str.contains(r'cell|cultur|synthetic|water', case=False)
             study_h = MWB_table['MWB_study_health']
-            human = MWB_table['NCBITaxonomy'].astype(str).str.startswith('9606|') \
+            human = single_taxid_series(MWB_table['NCBITaxonomy'].astype(str)).eq('9606') \
                 if 'NCBITaxonomy' in MWB_table.columns else pd.Series(False, index=MWB_table.index)
             study_h = study_h.where(study_h != 'healthy if human', np.where(human, 'healthy', None))
             h_missing, d_missing = _is_missing('HealthStatus'), _is_missing('DOIDCommonName')
@@ -7195,7 +7242,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
             if 'SUBJECT_TYPE' in MWB_table.columns:
                 organism &= ~MWB_table['SUBJECT_TYPE'].astype(str).str.contains(r'cell|cultur|synthetic|water', case=False)
             if 'MWB_hpo_health' in MWB_table.columns:
-                human = MWB_table['NCBITaxonomy'].astype(str).str.startswith('9606|') \
+                human = single_taxid_series(MWB_table['NCBITaxonomy'].astype(str)).eq('9606') \
                     if 'NCBITaxonomy' in MWB_table.columns else pd.Series(False, index=MWB_table.index)
                 hpo_h = MWB_table['MWB_hpo_health']
                 hpo_h = hpo_h.where(hpo_h != 'healthy if human', np.where(human, 'healthy', None))
@@ -7731,7 +7778,8 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
 
     # LifeStage brackets are human ages: from the age only for humans; other organisms only
     # get a life stage the study states (newborn, adolescent, ...)
-    is_human = complete_df['NCBITaxonomy'].astype(str).str.startswith('9606|')
+    # (a sample of several organisms is not one of humans)
+    is_human = single_taxid_series(complete_df['NCBITaxonomy'].astype(str)).eq('9606')
     complete_df['LifeStage'] = [age_category(a) if h else '' for a, h in zip(complete_df['AgeInYears'], is_human)]
     if 'MWB_lifestage' in complete_df.columns:
         fill = (complete_df['LifeStage'].isin(['', None]) | complete_df['LifeStage'].isna()) & complete_df['MWB_lifestage'].notna()

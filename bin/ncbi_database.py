@@ -8,6 +8,11 @@ Earlier versions used ete3.NCBITaxa(), i.e. whichever taxonomy copy ete3 had in 
 NCBI release, downloaded on first use); for the same taxdump the columns are the same.
 
 - Taxon ID of a row: the first number in the first '|' field of NCBITaxonomy ('562|Escherichia coli' -> 562).
+- A sample of several organisms has one 'ID|Name' term per organism, joined by '||' (MULTI_SEP; the ReDU
+  template's convention: '9606|Homo sapiens||5833|Plasmodium falciparum'). Its lineage columns and
+  OpenTreeOfLifeTaxonomyID hold one value per organism in the same order, joined by '||'
+  ('Metazoa||missing value'; aligned(); a column without a value for any of the organisms is a single
+  'missing value'), and SampleType is filled only when all organisms give the same one.
 - Each lineage column holds the scientific name (names.dmp) of the deepest ancestor at that rank, the taxon
   itself included. NCBI renamed the top rank 'superkingdom' to 'domain' in 2025; 'domain' fills
   NCBISuperkingdom.
@@ -40,6 +45,117 @@ DESIRED_RANKS = ['superkingdom', 'kingdom', 'phylum', 'class', 'order', 'family'
 RANK_ALIASES = {'domain': 'superkingdom'}
 ROOT = 1
 MAX_DEPTH = 1000  # no NCBI lineage comes close; stops a loop in a broken nodes.dmp
+
+
+# ---- several organisms in one NCBITaxonomy value ----------------------------------------------------------
+# A sample of several organisms (a co-culture, a host with its symbiont or parasite, a mixture, a pool of
+# several species) has one allowed 'ID|Name' term per organism, joined by MULTI_SEP in the order the source
+# names them, each taxon once ('6613|Euprymna scolopes||312309|Aliivibrio fischeri ES114'). The derived columns
+# (NCBIRank, NCBIDivision, the lineage, OpenTreeOfLifeTaxonomyID) hold one value per organism, aligned with
+# the terms. A test that the organism lies in a group (Metazoa, Mammalia, Viridiplantae, ...) holds for such a
+# value only when it holds for every part (all_parts); a test that it is one taxon (human) never holds
+# (single_taxid is '' for it). These helpers are used by every step that reads NCBITaxonomy.
+MULTI_SEP = '||'
+MISSING_VALUE = 'missing value'
+# a submitted value: '||' between terms, or ', ' / '; ' before the next 'ID|' ('43114|A b, 1008953|C d'); a comma
+# inside a name ('457404|Fusobacterium ulcerans, 12_1B') is no separator
+_SUBMITTED_SEP = re.compile(r'\s*\|\|\s*|\s*[,;]\s*(?=\d+\s*\|)')
+# parts of a submitted value that give no organism ('9606|Homo sapiens||missing value': the human only)
+_PLACEHOLDER_PARTS = frozenset({'nan', 'na', 'n/a', 'none', 'null', MISSING_VALUE, 'not applicable', 'not available'})
+
+
+def _missing_text(value):
+    if value is None or (isinstance(value, float) and value != value):
+        return True
+    return str(value).strip().lower() in ('', 'nan', MISSING_VALUE)
+
+
+def taxonomy_parts(value):
+    """The parts of an NCBITaxonomy value (or of a derived column's aligned value) split at MULTI_SEP,
+    stripped, empty parts dropped; [] for a missing value."""
+    if _missing_text(value):
+        return []
+    return [p.strip() for p in str(value).split(MULTI_SEP) if p.strip()]
+
+
+def submitted_taxonomy_parts(value):
+    """The parts of a submitted NCBITaxonomy value: split at '||', and at ',' / ';' directly before the next
+    'ID|' (several 'ID|Name' pairs); parts that are a placeholder ('missing value', 'NA' ...) dropped; [] for a
+    missing value."""
+    if _missing_text(value):
+        return []
+    parts = [p.strip() for p in _SUBMITTED_SEP.split(str(value)) if p.strip()]
+    if len(parts) < 2:
+        return parts
+    return [p for p in parts if p.lower() not in _PLACEHOLDER_PARTS]
+
+
+def is_multi(value):
+    """Whether an NCBITaxonomy value names several organisms."""
+    return isinstance(value, str) and MULTI_SEP in value and len(taxonomy_parts(value)) > 1
+
+
+def taxon_ids(value):
+    """The taxon ID (text before the first '|') of each part of a value."""
+    return [p.split('|', 1)[0].strip() for p in taxonomy_parts(value)]
+
+
+def single_taxid(value):
+    """The taxon ID of a value of one organism ('9606|Homo sapiens' -> '9606'); '' for a value of several
+    organisms and for a missing one."""
+    parts = taxonomy_parts(value)
+    return parts[0].split('|', 1)[0].strip() if len(parts) == 1 else ''
+
+
+def join_parts(terms, key=None):
+    """The terms (each 'ID|Name' or itself a MULTI_SEP value) as one NCBITaxonomy value: each taxon once (the
+    first; key(term) gives a term's taxon, default its ID), in the given order, joined by MULTI_SEP; a single
+    term when one taxon is left, '' for none."""
+    out, seen = [], set()
+    for term in terms:
+        for part in taxonomy_parts(term):
+            k = key(part) if key is not None else part.split('|', 1)[0].strip()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(part)
+    return MULTI_SEP.join(out)
+
+
+def aligned(values):
+    """One value per part of an NCBITaxonomy value joined by MULTI_SEP, a part without a value as
+    'missing value'; 'missing value' when no part has one."""
+    values = [MISSING_VALUE if _missing_text(v) else str(v) for v in values]
+    if not values or all(v == MISSING_VALUE for v in values):
+        return MISSING_VALUE
+    return MULTI_SEP.join(values)
+
+
+def all_parts(value, predicate):
+    """Whether predicate holds for every part of a value (an NCBITaxonomy value or an aligned derived column);
+    False for a missing value. For a value of one organism: predicate(value)."""
+    parts = taxonomy_parts(value)
+    return bool(parts) and all(predicate(p) for p in parts)
+
+
+def _per_value(series, function, dtype):
+    memo, out = {}, []
+    for v in series.tolist():
+        k = v if isinstance(v, str) else None
+        if k not in memo:
+            memo[k] = function(k)
+        out.append(memo[k])
+    return pd.Series(out, index=series.index, dtype=dtype)
+
+
+def all_parts_series(series, predicate):
+    """all_parts per cell of a Series (evaluated once per distinct value; cells that are no text: False)."""
+    return _per_value(series, lambda v: all_parts(v, predicate), bool)
+
+
+def single_taxid_series(series):
+    """single_taxid per cell of a Series (evaluated once per distinct value; cells that are no text: '')."""
+    return _per_value(series, single_taxid, object)
 
 
 class Taxonomy:
@@ -186,6 +302,10 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
         .str.split('|').str[0]
         .str.extract(r'(\d+)', expand=False)
     )
+    # values of several organisms: the taxon ID of each part
+    multi_values = [v for v in pd.unique(_df['NCBITaxonomy'].astype(str)) if is_multi(v)]
+    part_tokens = pd.Series([_part_taxid(p) for v in multi_values for p in taxonomy_parts(v)], dtype=object)
+    first_tokens = pd.concat([first_tokens[~_df['NCBITaxonomy'].astype(str).isin(multi_values)], part_tokens])
     tax_ids = (
         pd.to_numeric(first_tokens, errors='coerce')
         .dropna().astype('int64').unique()
@@ -216,6 +336,9 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
     df = df.copy()
     df['taxid'] = df['NCBITaxonomy'].apply(safe_extract_taxid).astype(str)
     df['taxid'] = df['taxid'].fillna("missing value")
+    # rows of several organisms: no single taxon (their lineage is set per part below)
+    multi = df['NCBITaxonomy'].map(is_multi).astype(bool)
+    df.loc[multi, 'taxid'] = "missing value"
 
     # --- drop any existing taxonomy columns before merging ---
     cols_to_drop = list(rank_to_col.values())
@@ -227,7 +350,25 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
 
     # Drop helper taxid column
     df.drop(columns=['taxid'], inplace=True)
+
+    # several organisms: each lineage column holds one value per part, in the order of the parts
+    if multi.any():
+        lineage_of = {t: row for t, row in zip(lineage_df['taxid'], lineage_df[cols_to_drop].itertuples(index=False, name=None))}
+        multi = multi.to_numpy()
+        for value in pd.unique(df.loc[multi, 'NCBITaxonomy']):
+            per_part = [lineage_of.get(_part_taxid(p) or '') for p in taxonomy_parts(value)]
+            rows = multi & (df['NCBITaxonomy'] == value).to_numpy()
+            for i, column in enumerate(cols_to_drop):
+                df.loc[rows, column] = aligned([lin[i] if lin is not None else None for lin in per_part])
+        print(f"{int(multi.sum())} rows of several organisms (NCBITaxonomy parts joined by '{MULTI_SEP}'): "
+              f"lineage per organism", flush=True)
     return df
+
+
+def _part_taxid(part):
+    """The taxon ID of one 'ID|Name' part (the first number before its first '|'), or None."""
+    m = re.search(r'(\d+)', str(part).split('|')[0])
+    return m.group(1) if m else None
 
 
 def update_sampletype(df):
@@ -253,9 +394,20 @@ def update_sampletype(df):
 
     # Update SampleType only if it's "missing value"
     mask = df["SampleType"] == "missing value"
-    df.loc[mask, "SampleType"] = df.loc[mask, "NCBIKingdom"].map(kingdom_to_type).fillna("missing value")
+    # (aligned values of several organisms: one type only when all parts give the same)
+    kingdoms = {k: _kingdom_type(k, kingdom_to_type) for k in pd.unique(df.loc[mask, "NCBIKingdom"]) if isinstance(k, str)}
+    df.loc[mask, "SampleType"] = df.loc[mask, "NCBIKingdom"].map(kingdoms).fillna("missing value")
 
     return df
+
+
+def _kingdom_type(kingdom, kingdom_to_type):
+    """SampleType of an NCBIKingdom value; of an aligned value (several organisms) only when every part gives the
+    same one, else None."""
+    if not isinstance(kingdom, str) or MULTI_SEP not in kingdom:
+        return kingdom_to_type.get(kingdom)
+    types = {kingdom_to_type.get(p) for p in kingdom.split(MULTI_SEP)}
+    return types.pop() if len(types) == 1 else None
 
 
 def write_tsv_atomic(df, path):
@@ -278,6 +430,18 @@ def write_tsv_atomic(df, path):
             os.remove(tmp)
         raise
     print(f"Wrote {path}: {n_rows} rows, {len(header)} columns", flush=True)
+
+
+def multi_ott(df, dt_oto_ncbi):
+    """OpenTreeOfLifeTaxonomyID of the rows of several organisms: the OTT id(s) of each part (dt_oto_ncbi: NCBI,
+    OpenTreeOfLifeTaxonomyID; one row per NCBI id), aligned with the parts."""
+    multi = df['NCBITaxonomy'].map(is_multi).astype(bool)
+    if not multi.any():
+        return df
+    ott = dict(zip(dt_oto_ncbi['NCBI'], dt_oto_ncbi['OpenTreeOfLifeTaxonomyID']))
+    values = {v: aligned([ott.get(t) for t in taxon_ids(v)]) for v in pd.unique(df.loc[multi, 'NCBITaxonomy'])}
+    df.loc[multi, 'OpenTreeOfLifeTaxonomyID'] = df.loc[multi, 'NCBITaxonomy'].map(values)
+    return df
 
 
 def _keep_previous_ott(df, previous_ott):
@@ -321,12 +485,14 @@ if __name__ == "__main__":
         dt_oto_ncbi = (dt_oto_ncbi.groupby('NCBI', sort=False)['OpenTreeOfLifeTaxonomyID']
                        .agg(lambda ids: ';'.join(sorted(set(ids)))).reset_index())
 
-        annotated_df['NCBI'] = annotated_df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if pd.notna(x) and '|' in x else None)
+        annotated_df['NCBI'] = annotated_df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if pd.notna(x) and '|' in x and not is_multi(x) else None)
 
         annotated_df = annotated_df.merge(dt_oto_ncbi, on='NCBI', how='left')
         annotated_df.drop(columns=['NCBI'], inplace=True)
 
         annotated_df['OpenTreeOfLifeTaxonomyID'] = annotated_df['OpenTreeOfLifeTaxonomyID'].fillna('missing value')
+        # several organisms: the OTT id(s) of each part, aligned with the parts
+        annotated_df = multi_ott(annotated_df, dt_oto_ncbi)
 
     except FileNotFoundError:
         print("sparql_oto_ncbi.tsv not found, skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)

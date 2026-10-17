@@ -14,6 +14,8 @@ from io import StringIO
 from REDU_conversion_functions import age_category, normalize_redu_datetime
 from blank_qc_names import apply_filename_blank_qc, blank_qc_type_from_filename
 import reference_materials
+# several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
+from ncbi_database import MULTI_SEP, aligned, is_multi, join_parts, submitted_taxonomy_parts, taxon_ids
 
 def _canonical_term(value):
     """Case-, space- and separator-insensitive form used to match submitted values to
@@ -701,7 +703,24 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         # 7) No match
                         return missing_value
 
-                    value_map = {ov: resolve_ncbi(ov) for ov in unique_values}
+                    def resolve_ncbi_value(observed_value):
+                        # several organisms ('ID|Name||ID|Name', also 'ID|Name, ID|Name'): each part as a value of
+                        # its own; all parts must resolve (a sample of A and B is not recorded as A alone); each
+                        # taxon once, in the submitter's order (ncbi_database.join_parts); placeholder parts
+                        # ('ID|Name||missing value') are no organism
+                        parts = submitted_taxonomy_parts(observed_value)
+                        if len(parts) == 1 and parts[0] != str(observed_value).strip():
+                            return resolve_ncbi(parts[0])
+                        if not parts and MULTI_SEP in str(observed_value):
+                            return missing_value
+                        if len(parts) <= 1:
+                            return resolve_ncbi(observed_value)
+                        terms = [resolve_ncbi(p) for p in parts]
+                        if any(t == missing_value for t in terms):
+                            return missing_value
+                        return join_parts(terms)
+
+                    value_map = {ov: resolve_ncbi_value(ov) for ov in unique_values}
 
                 else:
                     # MassSpectrometer: keep your original direct matching
@@ -959,6 +978,11 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'NCBIRank':
                 df['TaxonID'] = df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if '|' in x else 'missing value')
                 df['TaxonID'] = df['TaxonID'].astype(str)
+                # several organisms: no single taxon (rank and division per part, below)
+                multi_values = [v for v in df['NCBITaxonomy'].unique() if is_multi(v)]
+                multi_rows = df['NCBITaxonomy'].isin(multi_values)
+                df.loc[multi_rows, 'TaxonID'] = 'missing value'
+                part_ids = pd.Series([t for v in multi_values for t in taxon_ids(v)], dtype=object)
                 ncbi_rows = NCBIRankDivision_table
                 if ncbi_taxon_index is not None:
                     # only the table rows of these taxa: the same left merge as with the
@@ -976,6 +1000,17 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                     df['NCBIDivision'] = df['NCBIDivision'].fillna(missing_value)
                 else:
                     df['NCBIDivision'] = missing_value
+
+                if multi_values:
+                    # one rank / division per organism, in the order of the NCBITaxonomy parts
+                    part_rows = (_ncbi_rows_of(NCBIRankDivision_table, ncbi_taxon_index, part_ids)
+                                 if ncbi_taxon_index is not None else NCBIRankDivision_table[NCBIRankDivision_table['TaxonID'].isin(set(part_ids))])
+                    rank_of = dict(zip(part_rows['TaxonID'], part_rows['NCBIRank']))
+                    division_of_id = dict(zip(part_rows['TaxonID'], part_rows['NCBIDivision']))
+                    multi_rows = df['NCBITaxonomy'].isin(multi_values)
+                    for column, lookup in (('NCBIRank', rank_of), ('NCBIDivision', division_of_id)):
+                        per_value = {v: aligned([lookup.get(t) for t in taxon_ids(v)]) for v in multi_values}
+                        df.loc[multi_rows, column] = df.loc[multi_rows, 'NCBITaxonomy'].map(per_value)
 
 
 
@@ -1298,11 +1333,18 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
                 division = _cached('division', NCBIRankDivision_table, lambda: dict(zip(
                     NCBIRankDivision_table['TaxonID'].astype(str), NCBIRankDivision_table['NCBIDivision'])))
                 animal_divisions = {'Primates', 'Rodents', 'Mammals', 'Vertebrates', 'Invertebrates'}
-                taxid = df.loc[is_sub1, 'NCBITaxonomy'].astype(str).str.split('|').str[0].str.strip()
+                values = df.loc[is_sub1, 'NCBITaxonomy'].astype(str)
+                taxid = values.str.split('|').str[0].str.strip()
                 # the divisions of these taxa only: mapping with the ~3M-entry dict itself
                 # turns it into a Series on every call
                 division_here = {t: division[t] for t in taxid.unique() if t in division}
                 is_animal = taxid.map(division_here).isin(animal_divisions)
+                # several organisms ('ID|Name||ID|Name'): animal only when every organism is one
+                several = {v: submitted_taxonomy_parts(v) for v in values.unique()}
+                several = {v: all(division.get(p.split('|', 1)[0].strip()) in animal_divisions for p in parts)
+                           for v, parts in several.items() if len(parts) > 1}
+                if several:
+                    is_animal = is_animal.mask(values.isin(several), values.map(several)).astype(bool)
                 inferred = inferred.mask(moved.isin(['biofluid', 'tissue']) & is_animal, 'animal')
             df.loc[is_sub1, 'SampleType'] = inferred
             print(f"Moved {is_sub1.sum()} SampleTypeSub1 values out of SampleType")
@@ -1528,6 +1570,8 @@ def _ncbi_names_in_files(paths, allowedTerm_dict):
         for column in columns:
             for value in table[column].dropna().unique():
                 names.add(str(value).split('|', 1)[-1].strip())
+                # several organisms: the name of each part
+                names.update(p.split('|', 1)[-1].strip() for p in submitted_taxonomy_parts(value))
     return names
 
 

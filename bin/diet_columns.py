@@ -49,6 +49,8 @@ import re
 import pandas as pd
 
 from sample_groups import MISSING, is_real_sample, masst_rows, norm, parts_of
+# several organisms in one NCBITaxonomy value ('ID|Name||ID|Name'): Metazoa when all are, never human
+from ncbi_database import all_parts_series, single_taxid_series
 
 HUMAN_PATTERNS = {'omnivore', 'vegetarian', 'vegan', 'pescatarian'}
 CONTROL = 'control diet'
@@ -453,7 +455,7 @@ def subject_guard(df):
         df['SampleTypeSub1'].astype(str).str.match(r'(?i)food|beverage|reference material_animalfeed')
     culture = st.str.startswith('culture_')
     taxon_missing = df['NCBITaxonomy'].astype(str).isin([MISSING, '', 'nan'])
-    not_metazoa = df['NCBIKingdom'].astype(str) != 'Metazoa'
+    not_metazoa = ~all_parts_series(df['NCBIKingdom'].astype(str), lambda k: k == 'Metazoa')
     cell_line = df['CellLine'].astype(str) != MISSING if 'CellLine' in df.columns else pd.Series(False, index=df.index)
     other_type = st != 'animal'
     for cond, why in ((blankish, 'kind: blank / QC / standard / reference material'),
@@ -477,7 +479,7 @@ def apply(df, gfop_labels, regimen_terms):
     allowed_diet = regimens | set(gfop_labels)
     df = df.copy()
     guard = subject_guard(df)
-    human = df['NCBITaxonomy'].astype(str).str.startswith('9606|')
+    human = single_taxid_series(df['NCBITaxonomy'].astype(str)).eq('9606')
     ds = df['ATTRIBUTE_DatasetAccession'].astype(str)
 
     # 1. every factor of every row

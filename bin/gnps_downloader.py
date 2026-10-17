@@ -12,6 +12,8 @@ import re
 import json
 from ftplib import FTP_TLS, error_perm, all_errors as ftp_errors
 
+from ncbi_database import MULTI_SEP, submitted_taxonomy_parts
+
 
 CACHE_FILENAME_URL = "https://datasetcache.gnps2.org/datasette/database/filename.json"
 CACHE_SQL_URL = "https://datasetcache.gnps2.org/datasette/database.json"
@@ -301,10 +303,14 @@ _NO_INFORMATION = {'na', 'n/a', 'nan', 'not available', 'ml import: not availabl
 
 
 def _identity_value(value):
-    """Comparable form of a real value ('9606|Homo sapiens' -> '9606'), or None for placeholders."""
+    """Comparable form of a real value ('9606|Homo sapiens' -> '9606'; several organisms, 'ID|Name||ID|Name' or
+    'ID|Name, ID|Name': their distinct IDs, sorted, joined by '||'), or None for placeholders."""
     value = str(value).strip().lower()
     if value in _PLACEHOLDERS:
         return None
+    parts = submitted_taxonomy_parts(value)
+    if len(parts) > 1:
+        return MULTI_SEP.join(sorted({p.split('|')[0].strip() for p in parts}))
     return value.split('|')[0].strip() if '|' in value else value
 
 

@@ -13,6 +13,8 @@ import pandas as pd
 import tqdm
 
 from blank_qc_names import blank_qc_type_from_filename
+# several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
+from ncbi_database import is_multi, single_taxid
 
 # owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
 # declares an IRI as both a property and a class/individual. Patch _load_properties
@@ -331,17 +333,30 @@ def pinned_ncbi_current_term(ncbi_id, allowedTerm_dict):
 #      'cf.', hybrid 'x', 'and', no digits, 10 characters at least; it is no name in names.dmp
 #      itself, and the names (any class, 9+ characters) at Damerau-Levenshtein distance 1 (one
 #      character inserted, deleted or replaced, or two neighbours swapped) all belong to one taxon,
-#      at species rank or below, and include its scientific name. Nothing when names of two taxa
-#      are that close, for one-word texts and for placeholder taxa.
+#      at species rank or below, and include its scientific name, or (an old name misspelt:
+#      'Clostridium clostridioforme' for the synonym 'Clostridium clostridiiforme' of Enterocloster
+#      clostridioformis) include a synonym or equivalent name of it while no name of any other taxon
+#      lies within distance 2 of the text (optimal string alignment over all names of names.dmp: one
+#      wrong character next to an old name is no evidence where the name of another taxon is near too,
+#      'Clostridium hystolyticum' between the synonym 'histolyticum' and 'Clostridium hydrolyticum').
+#      Names of other classes (common names, 'includes', 'in-part') only count toward the one taxon.
+#      Nothing when names of two taxa are that close, for one-word texts and for placeholder taxa.
 # The names are indexed once per process, when a text first needs it: every name of names.dmp
-# (lower-cased, whitespace-normalised, 9+ characters) under two keys, its length with its first and
+# (lower-cased, whitespace-normalised, 8+ characters) under two keys, its length with its first and
 # with its last k = (length - 2) // 2 characters. A name within distance 1 of a text of length n has
 # length n - 1, n or n + 1 and shares one of its two keys with the text (an edit leaves either the
 # first or the last k characters as they are), so the texts' keys find all of them. Python's hash of
 # the keys only selects candidates (each is compared with the text), so the results do not depend on
-# PYTHONHASHSEED.
+# PYTHONHASHSEED. The names within distance 2 (only for the texts b. asks for them) are found by a
+# banded dynamic program over all names of length n - 2 to n + 2 at once (numpy), per length a matrix of
+# the names' bytes built when first needed; names with other than ASCII characters (the texts are
+# ASCII) are compared one by one.
 _STRAIN_COLLECTIONS = ('ATCC', 'DSMZ', 'DSM', 'NRRL', 'NCTC', 'JCM', 'CBS', 'CECT', 'LMG', 'NBRC', 'IFO', 'KCTC',
-                       'CCUG', 'CIP', 'NCIMB')
+                       'CCUG', 'CIP', 'NCIMB',
+                       # algae, cyanobacteria and other collections: Pasteur Culture Collection of Cyanobacteria,
+                       # NCIB (the former name of NCIMB), UTEX, CCAP, SAG (Goettingen), NIES, NCMA and its former
+                       # name CCMP, Roscoff (RCC), NCCB, BEI Resources, Nestle Culture Collection (NCC)
+                       'PCC', 'NCIB', 'UTEX', 'CCAP', 'SAG', 'NIES', 'NCMA', 'CCMP', 'RCC', 'NCCB', 'BEI', 'NCC')
 _STRAIN_DESIGNATION = re.compile(
     r'(?:^|[\s,;=/(]+)(?P<designation>(?:strain|str\.)\s+\S.*'
     r'|(?:' + '|'.join(_STRAIN_COLLECTIONS) + r')(?:\s*[®:#-])?\s*(?:[A-Z]{1,4}[\s-]?)?\d[\w./-]*™?(?:\s*\(T\)|T)?'
@@ -384,8 +399,9 @@ def _within_one_edit(a, b):
 
 
 class _NcbiNameIndex:
-    """The names of names.dmp (lower-cased, whitespace-normalised, at least _FALLBACK_MIN_LENGTH - 1
-    characters) with their taxon and name class, for names within one edit of a text (see above)."""
+    """The names of names.dmp (lower-cased, whitespace-normalised, at least _FALLBACK_MIN_LENGTH - 2
+    characters) with their taxon and name class, for names within one edit of a text, and within two (see
+    above)."""
 
     def __init__(self, names_dmp):
         import numpy as np
@@ -394,7 +410,9 @@ class _NcbiNameIndex:
         blob = bytearray()
         ends, taxa, classes = array('q'), array('i'), array('b')
         first, last = array('q'), array('q')
-        shortest = _FALLBACK_MIN_LENGTH - 1
+        # (8 characters: the names within two edits of a text of 10, the shortest text b. reads; near() compares
+        # names of 9+ only)
+        shortest = _FALLBACK_MIN_LENGTH - 2
         with open(names_dmp, encoding='utf-8', errors='replace') as handle:
             for line in handle:
                 fields = line.split('\t|\t')
@@ -423,6 +441,8 @@ class _NcbiNameIndex:
             self.keys.append((keys[order], order))
         del first, last
         self.memo = {}
+        self.by_length = {}      # byte length -> (rows, matrix of the ASCII names' bytes), built when first needed
+        self.non_ascii = None    # (rows, names) of the names with other than ASCII characters
         print(f"NCBI name index for organism texts: {len(self.ends)} names of {names_dmp} "
               f"({time.time() - t0:.1f} s)", flush=True)
 
@@ -454,6 +474,78 @@ class _NcbiNameIndex:
         out.sort()
         self.memo[text] = out
         return out
+
+    def _ascii_names_of_length(self, m):
+        import numpy as np
+        hit = self.by_length.get(m)
+        if hit is None:
+            starts = np.concatenate(([0], self.ends[:-1]))
+            lengths = self.ends - starts
+            blob = np.frombuffer(self.blob, dtype=np.uint8)
+            rows = np.nonzero(lengths == m)[0]
+            matrix = blob[starts[rows][:, None] + np.arange(m)[None, :]] if len(rows) else np.zeros((0, m), np.uint8)
+            ascii_rows = (matrix < 128).all(axis=1)
+            hit = self.by_length[m] = (rows[ascii_rows], np.ascontiguousarray(matrix[ascii_rows]))
+        return hit
+
+    def _non_ascii_names(self):
+        import numpy as np
+        if self.non_ascii is None:
+            blob = np.frombuffer(self.blob, dtype=np.uint8)
+            starts = np.concatenate(([0], self.ends[:-1])).astype(np.int64)
+            # (every name has 8+ bytes: no empty segment)
+            rows = np.nonzero(np.maximum.reduceat(blob, starts) >= 128)[0] if len(starts) else np.zeros(0, np.int64)
+            self.non_ascii = (rows, [self.name(int(i)) for i in rows])
+        return self.non_ascii
+
+    def within_two(self, text):
+        """[taxon ID] of the names within optimal string alignment distance 2 of an ASCII text (normalised)."""
+        import numpy as np
+        q = np.frombuffer(text.encode('ascii'), dtype=np.uint8)
+        n, cap = len(q), 3
+        found = []
+        for m in range(max(1, n - 2), n + 3):
+            rows, a = self._ascii_names_of_length(m)
+            if not len(rows):
+                continue
+            count = len(rows)
+            prev2 = None
+            prev = np.broadcast_to(np.minimum(np.arange(m + 1), cap).astype(np.int8), (count, m + 1)).copy()
+            for i in range(1, n + 1):
+                cur = np.full((count, m + 1), cap, dtype=np.int8)
+                cur[:, 0] = min(i, cap)
+                for j in range(max(1, i - 2), min(m, i + 2) + 1):
+                    cost = (a[:, j - 1] != q[i - 1]).astype(np.int8)
+                    v = np.minimum(np.minimum(prev[:, j] + 1, cur[:, j - 1] + 1), prev[:, j - 1] + cost)
+                    if i > 1 and j > 1:
+                        swap = (a[:, j - 1] == q[i - 2]) & (a[:, j - 2] == q[i - 1])
+                        v = np.where(swap, np.minimum(v, prev2[:, j - 2] + 1), v)
+                    cur[:, j] = np.minimum(v, cap)
+                prev2, prev = prev, cur
+            found.extend(int(t) for t in self.taxa[rows[prev[:, m] <= 2]])
+        rows, names = self._non_ascii_names()
+        for i, name in zip(rows.tolist(), names):
+            if abs(len(name) - n) <= 2 and _osa_distance(text, name, 2) <= 2:
+                found.append(int(self.taxa[i]))
+        return found
+
+
+def _osa_distance(a, b, limit):
+    """Optimal string alignment distance of a and b, or limit + 1 when it is larger than limit."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev2, prev = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                v = min(v, prev2[j - 2] + 1)
+            cur[j] = v
+        if min(cur) > limit:
+            return limit + 1
+        prev2, prev = prev, cur
+    return min(prev[-1], limit + 1)
 
 
 def _ncbi_name_index():
@@ -513,9 +605,21 @@ def _typo_taxon(text):
     if not near or any(d == 0 for t, c, d in near):
         return None
     taxon = _one_taxon({t for t, c, d in near})
-    if taxon is None or not any(c == 0 for t, c, d in near) or not _at_or_below_species(taxon):
+    if taxon is None or not _at_or_below_species(taxon):
         return None
-    return taxon
+    if any(c == 0 for t, c, d in near):
+        return taxon
+    # an old name misspelt: a synonym / equivalent name of the taxon one edit away, no other taxon within two
+    if any(c in (1, 2) for t, c, d in near) and _only_taxon_within_two(text, taxon):
+        return taxon
+    return None
+
+
+def _only_taxon_within_two(text, taxon):
+    """Whether every name of names.dmp within distance 2 of text is a name of taxon (merged IDs followed)."""
+    resolve = _PINNED_LINEAGE.taxonomy.resolve
+    others = {resolve(t) for t in _ncbi_name_index().within_two(text)} - {taxon, None}
+    return not others
 
 
 def ncbi_name_fallback(text, term_of_id, exact=None):
@@ -710,6 +814,42 @@ def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
             return [None, None]
     else:
         return [None, None]
+
+
+# separators of an organism text that lists organisms ('A; B', 'A, B', 'A + B', 'A & B', 'A and B', 'A/B' between
+# letters: not 'Mus musculus/C57' or a strain 'MHOM/IN/82'); the MetaboLights and Workbench converters
+ORGANISM_LIST = re.compile(r'[;,+&]|\band\b|(?<=[A-Za-z]{2})\s*/\s*(?=[A-Za-z]{2})', re.I)
+
+
+# culture types of one organism; a sample of organisms of several of them is a culture of several species
+_CULTURE_SAMPLE_TYPES = frozenset({'culture_bacterial', 'culture_fungal', 'culture_mammalian'})
+MULTIPLE_SPECIES_CULTURE = 'culture_multiplespecies'
+
+
+def multi_sample_type(terms, taxonomy_info=None):
+    """[SampleType, SampleTypeSub1] of a sample of several organisms (terms: their 'ID|Name' terms, e.g. the parts
+    of an NCBITaxonomy value of several organisms), from each organism's get_taxonomy_info: culture_multiplespecies
+    when all are cultures (a co-culture of two bacteria as of a bacterium and a fungus: a culture of several
+    species, as microbeMASST's communities); else the type all give, with their SampleTypeSub1 when all give the
+    same one (else 'missing value'); else [None, None] (an animal and a microbe, or an organism without a type: the
+    sample type is not that of one of them)."""
+    taxonomy_info = taxonomy_info or get_taxonomy_info
+    infos = []
+    for term in terms:
+        taxid = single_taxid(term)
+        info = taxonomy_info(taxid) if taxid else None
+        if not info or info[0] is None:
+            return [None, None]
+        infos.append(info)
+    if not infos:
+        return [None, None]
+    types = {i[0] for i in infos}
+    if len(infos) > 1 and types <= _CULTURE_SAMPLE_TYPES:
+        return [MULTIPLE_SPECIES_CULTURE, MULTIPLE_SPECIES_CULTURE]
+    if len(types) == 1:
+        subs = {i[1] for i in infos}
+        return [types.pop(), subs.pop() if len(subs) == 1 else 'missing value']
+    return [None, None]
 
 # Vendor / marketing words that carry no model information; dropped before matching an
 # instrument string against the allowed MassSpectrometer vocabulary. Shared by the MWB
@@ -994,7 +1134,9 @@ def food_term_of_organism(term, organism='', sample_type='', phrase=None):
     the product of the genus where GFOP has one ('yogurt' of Bos -> 'yogurt_cow', a 'sausage'
     (phrase) of Sus -> 'pork sausage'); None for eggs of other animals than poultry and for
     grape wine of a sample of another plant (fruit wines of Lycium samples)."""
-    genus = organism.split('|', 1)[1].strip().split(' ')[0] if isinstance(organism, str) and '|' in organism else ''
+    # (a sample of several organisms has no genus)
+    genus = organism.split('|', 1)[1].strip().split(' ')[0] if isinstance(organism, str) and '|' in organism \
+        and not is_multi(organism) else ''
     if term in _GRAPE_WINE_TERMS and sample_type == 'plant' and genus and genus != 'Vitis':
         return None
     by_genus = dict(_FOOD_TERM_OF_GENUS.get(term, {}), **_FOOD_TERM_OF_GENUS.get(phrase, {}))

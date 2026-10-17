@@ -8,6 +8,23 @@ import json
 from vladiate import Vlad
 from vladiate.validators import UniqueValidator, SetValidator, Ignore, IntValidator, RangeValidator, NotEmptyValidator
 from vladiate.inputs import LocalFile
+from vladiate.exceptions import ValidationException
+# several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
+from ncbi_database import MULTI_SEP, taxonomy_parts
+
+
+class TaxonomySetValidator(SetValidator):
+    """SetValidator for NCBITaxonomy: a value of several organisms ('ID|Name||ID|Name') is valid when each of
+    its parts is in the set"""
+
+    def validate(self, field, row={}):
+        if MULTI_SEP not in field:
+            return super(TaxonomySetValidator, self).validate(field, row)
+        parts = taxonomy_parts(field)
+        bad = [p for p in parts if p not in self.valid_set]
+        if not parts or bad:
+            self.invalid_set.add(field)
+            raise ValidationException(f"'{field}': {', '.join(repr(p) for p in bad) or 'no organism'} not allowed")
 
 def rewrite_metadata(metadata_filename):
     """
@@ -50,7 +67,7 @@ def perform_validation(filename, terms):
             SetValidator(valid_set= list(set(terms['SampleTypeSub1']["allowed_values"] + legacy_missing_values)))
         ],
         'NCBITaxonomy' : [
-            SetValidator(valid_set= list(set(terms['NCBITaxonomy']["allowed_values"] + legacy_missing_values)))
+            TaxonomySetValidator(valid_set= list(set(terms['NCBITaxonomy']["allowed_values"] + legacy_missing_values)))
         ],
         'YearOfAnalysis' : [
             IntValidator(),

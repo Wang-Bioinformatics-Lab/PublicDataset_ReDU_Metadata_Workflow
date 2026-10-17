@@ -5,6 +5,8 @@ import json
 import os
 import re
 
+from ncbi_database import taxon_ids
+
 
 # ---- same file: one identity for the copies of a file under other paths ----
 # Used by MASST_to_REDU.py (MASST files that GNPS metadata describes), the merge below (MASST
@@ -395,6 +397,11 @@ def resolve_duplicate_usis(df, source_column='MetadataFileDataset'):
     return out, conflicts
 
 
+def _taxon_id_set(value):
+    """The taxon IDs of an NCBITaxonomy value (several organisms: one per part)."""
+    return frozenset(taxon_ids(value))
+
+
 # ---- MASST supplement: fill missing fields of files that a submitter/converter described ----
 # fields filled together, only when all of them are missing on the ReDU row (name + index etc.)
 SUPPLEMENT_GROUPS = [
@@ -519,8 +526,9 @@ def supplement_from_masst(primary, supplement, columns, study_level=frozenset())
         if not same_type:
             stats['conflict_sample_type_differs'] += 1
         subject_ok = cm == 'sample' and cr in ('sample', 'missing')
+        # (several organisms: the sets of taxon IDs)
         if 'NCBITaxonomy' in redu and not _is_missing(redu['NCBITaxonomy']) and not _is_missing(row.get('NCBITaxonomy')) \
-                and str(redu['NCBITaxonomy']).split('|')[0] != str(row.get('NCBITaxonomy')).split('|')[0]:
+                and _taxon_id_set(redu['NCBITaxonomy']) != _taxon_id_set(row.get('NCBITaxonomy')):
             stats['note_taxonomy_differs_(ReDU_kept)'] += 1
         filled_any = False
         for unit in units:

@@ -36,6 +36,9 @@ import re
 import pandas as pd
 
 from ncbi_database import write_tsv_atomic
+# several organisms in one NCBITaxonomy value ('ID|Name||ID|Name', lineage columns aligned per organism): a group
+# test holds when it holds for every organism, an identity test (human) never
+from ncbi_database import MULTI_SEP, all_parts_series, single_taxid_series
 import reference_materials
 # (the food track's marker of a digest of a food: in vitro digestion, colonic fermentation)
 from REDU_conversion_functions import _FOOD_DIGEST_RE
@@ -115,7 +118,8 @@ def life_stage_humans_only(df):
     """LifeStage holds human age brackets ('Infancy (<2 yrs)', ...): 'missing value' on every row
     whose organism is not Homo sapiens, i.e. NCBITaxonomy not taxon 9606 ('9606|Homo sapiens') and
     NCBISpecies (the lineage of ncbi_database.py) not Homo sapiens (its subspecies, e.g.
-    '63221|Homo sapiens neanderthalensis'); a row without an organism is not taken for human. GNPS
+    '63221|Homo sapiens neanderthalensis'); a row without an organism is not taken for human, nor a row of
+    several organisms of which one is not human ('9606|Homo sapiens||5833|Plasmodium falciparum'). GNPS
     sheets give the submitter's LifeStage for any organism (mice, cats, fish, bacteria, offices),
     Workbench a stated one ('newborn', 'adolescent') for any organism. Run before
     sex_from_body_part, which reads LifeStage (a second pass then changes nothing). Returns the
@@ -123,9 +127,9 @@ def life_stage_humans_only(df):
     stats = collections.Counter()
     if 'LifeStage' not in df.columns or 'NCBITaxonomy' not in df.columns:
         return df, stats
-    human = df['NCBITaxonomy'].fillna('').astype(str).str.split('|', n=1).str[0].str.strip() == HUMAN_TAXON_ID
+    human = single_taxid_series(df['NCBITaxonomy'].fillna('').astype(str)) == HUMAN_TAXON_ID
     if 'NCBISpecies' in df.columns:
-        human |= df['NCBISpecies'] == 'Homo sapiens'
+        human |= all_parts_series(df['NCBISpecies'].fillna('').astype(str), lambda s: s == 'Homo sapiens')
     clear = ~human & (df['LifeStage'] != MISSING)
     source = df['DataSource'] if 'DataSource' in df.columns else pd.Series('', index=df.index)
     for s, n in source[clear].value_counts().sort_index().items():
@@ -170,7 +174,7 @@ def sex_from_body_part(df, parts):
 
     candidate = (sex != '') & unrecorded
     reasons = [
-        ('not_a_mammal', df['NCBIClass'] != 'Mammalia'),
+        ('not_a_mammal', ~all_parts_series(df['NCBIClass'].fillna('').astype(str), lambda c: c == 'Mammalia')),
         ('not_SampleType_animal', df['SampleType'] != 'animal'),
         ('food', ~_missing(df['FoodOntologyTerm']) if 'FoodOntologyTerm' in df.columns else None),
         ('cell_line', ~_missing(df['CellLine']) if 'CellLine' in df.columns else None),
@@ -451,9 +455,20 @@ def _organism_group(df):
     sample_type = df['SampleType'] if 'SampleType' in df.columns else pd.Series('', index=df.index)
     no_organism = _missing(df['NCBITaxonomy']) if 'NCBITaxonomy' in df.columns else pd.Series(True, index=df.index)
     group = pd.Series('', index=df.index)
-    group[(kingdom == 'Viridiplantae') | (no_organism & (sample_type == 'plant'))] = 'plant'
-    group[(kingdom == 'Metazoa') | (no_organism & (sample_type == 'animal'))] = 'animal'
+    # (several organisms: all of them plants / animals)
+    kingdom = kingdom.fillna('').astype(str)
+    plant = all_parts_series(kingdom, lambda k: k == 'Viridiplantae')
+    animal = all_parts_series(kingdom, lambda k: k == 'Metazoa')
+    group[plant | (no_organism & (sample_type == 'plant'))] = 'plant'
+    group[animal | (no_organism & (sample_type == 'animal'))] = 'animal'
     return group
+
+
+def _all_are(value, name):
+    """whether a lineage cell is `name` (an aligned cell of several organisms: every part)"""
+    if not isinstance(value, str):
+        return False
+    return value == name or (MULTI_SEP in value and all(p == name for p in value.split(MULTI_SEP)))
 
 
 def plant_ontology_terms(ontology):
@@ -536,7 +551,8 @@ def plant_body_parts(df, ontology):
     for (label, term), idx in df[rows].groupby([name[rows], index[rows]], sort=True).groups.items():
         if term == EAR_UBERON:
             for i in idx:
-                po = (MAIZE_EAR_PO if genus[i] == MAIZE_GENUS else EAR_PO) if family[i] == GRASS_FAMILY else None
+                # (several organisms: all of them grasses / maize)
+                po = (MAIZE_EAR_PO if _all_are(genus[i], MAIZE_GENUS) else EAR_PO) if _all_are(family[i], GRASS_FAMILY) else None
                 new_index[i], new_name[i] = (po, labels[po]) if po in labels else (MISSING, MISSING)
             continue
         po = po_of(label) if term != EXUDATE_UBERON[1] else None

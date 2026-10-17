@@ -16,6 +16,7 @@ import collections
 import pandas as pd
 
 import diet_columns
+from ncbi_database import single_taxid
 from blank_qc_names import blank_qc_type_from_filename, name_tokens
 from reference_materials import EVIDENCE_COLUMN as REFMAT_EVIDENCE_COLUMN, encode_evidence as refmat_encode_evidence
 
@@ -568,7 +569,7 @@ def _assign_interventions(out, vocab, stats):
             files[i] = (ivs, [vocab.chemical_exposure(k[2]) for k in ivs])
             diets[i], _ = diet_columns.row_diet([diet_columns.map_value('Intervention', k[1], gfop, masst_type=k[0])
                                                  for k in ivs if _is_diet(k)],
-                                                human=str(out.at[i, 'NCBITaxonomy']).startswith('9606|'))
+                                                human=single_taxid(str(out.at[i, 'NCBITaxonomy'])) == '9606')
         if diet_columns.study_level_diet(diets.values()):
             stats['microbiome_datasets_study_level_Diet_not_used'] += 1
             diets = {}

@@ -24,6 +24,9 @@ from REDU_conversion_functions import find_column_after_target_column
 from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, food_ontology_term
 from REDU_conversion_functions import normalize_redu_datetime
+from REDU_conversion_functions import multi_sample_type, ORGANISM_LIST
+# several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
+from ncbi_database import all_parts_series, is_multi, join_parts, single_taxid, single_taxid_series, taxonomy_parts
 from ms_instrument_matching import match_mass_spectrometer
 import diet_columns
 from blank_qc_names import blank_qc_type_from_filename
@@ -1581,6 +1584,11 @@ def _accession_ids(series, ontology):
     return ids.fillna('').map(lambda x: f'{ontology}:{x}' if x else '')
 
 
+# every NCBITaxon ID of an accession cell, in their order ('http://purl.obolibrary.org/obo/NCBITaxon_9031;
+# http://purl.obolibrary.org/obo/NCBITaxon_9823' -> '9031', '9823'; _accession_ids keeps the last one only)
+_NCBI_ACCESSION_IN_CELL = re.compile(r'(?i)(?:^|[/#:\s;,|])NCBITaxon[_:/](\d+)(?![A-Za-z0-9])')
+
+
 _ncbi_by_id = {}
 
 
@@ -1629,7 +1637,8 @@ def _ncbi_term_by_id(allowedTerm_dict):
 # ASF519 1235803) are no series.
 # ---------------------------------------------------------------------------------------------
 _DRAG_FILL_RUN = 3
-_ORGANISM_LIST = re.compile(r'[;,+&]|\band\b|(?<=[A-Za-z]{2})\s*/\s*(?=[A-Za-z]{2})', re.I)
+# ('a; b', 'a, b', 'a and b', 'a/b' ...: REDU_conversion_functions.ORGANISM_LIST)
+_ORGANISM_LIST = ORGANISM_LIST
 
 
 def _organism_key(text):
@@ -1787,18 +1796,227 @@ def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_nc
     return out
 
 
-def _organism_text_accession(df):
+# ---------------------------------------------------------------------------------------------
+# Samples of several organisms
+#
+# An organism text that lists organisms ('Gallus gallus; Sus scrofa; Bos taurus', 'Homo sapiens;NCBITAXON:Plasmodium
+# vivax', 'A and B', 'A/B': _ORGANISM_LIST) and names no taxon as a whole (the NCBI taxon 'Homo sapiens/Mus musculus
+# xenograft' is one) gives the sample an NCBITaxonomy of several organisms, one allowed 'ID|Name' term per organism
+# joined by '||' (ncbi_database.MULTI_SEP; the ReDU template's convention), when
+#   * the text has two parts at least (split at _ORGANISM_LIST, an old ISA source prefix 'NCBITAXON:' / 'EFO:' dropped);
+#   * each part names an allowed taxon as an organism text does (allowed name, the alias sheet, ml_organism_fallback); a
+#     part with its own accession (the cell holds as many NCBITaxon IDs as the text has parts, in that order) is decided
+#     by organism_accession_terms over the part-level (text, accession) pairs of the whole sample sheet, so drag-fills,
+#     several accessions of one text and the microbe exception are judged per part;
+#   * no part is a placeholder taxon or NCBI's 'blank sample';
+#   * the parts name two taxa at least (each taxon once, in the text's order; one taxon left: that term);
+#   * evidence that the organism was written per sample: one of the taxa is the organism another row of the sample
+#     sheet, whose text lists no organisms, has (as the converter reads it). The list then describes this sample (a
+#     mixture, a pool, a co-culture, an infected host whose controls name the host alone). The same list on every row
+#     (a host and its parasite named for baseline and infected samples alike, a community none of whose members was
+#     sampled alone) is a list of the study's organisms, not of the sample's: no organism, as before.
+#     The evidence row must be a sample of the study's subjects (ml_sheet_row_roles): not a pooled QC, blank, standard
+#     or reference material (a reference plasma naming the host says nothing about the subjects' samples). Where the
+#     sample rows with the list carry factor values (the study design: time points, groups), the evidence row must
+#     carry a factor value too: a control of the design. Rows outside the design naming the host alone do not tell
+#     that the list was written per sample (a host and its parasite named for baseline and infected time points
+#     alike, next to undescribed host plasma).
+# ---------------------------------------------------------------------------------------------
+_ORGANISM_SOURCE_PREFIX = re.compile(r'(?i)^\s*(?:ncbitaxon|efo)\s*:\s*')
+_NOT_AN_ORGANISM_TAXA = frozenset({2582415})   # NCBI 'blank sample'
+_LAST_NCBI_ACCESSION = re.compile(r'(?i)(?:^|[/#:\s])NCBITaxon[_:/]([A-Za-z0-9]+)\s*$')
+
+
+def _organism_list_parts(text):
+    """The organisms an organism text lists (split at _ORGANISM_LIST, source prefixes dropped, empty parts dropped)."""
+    parts = [_ORGANISM_SOURCE_PREFIX.sub('', p).strip() for p in _ORGANISM_LIST.split(str(text))]
+    return [p for p in parts if p]
+
+
+def _is_organism_list(text, text_term):
+    """Whether an organism text lists organisms and names no taxon as a whole (text_term(text) is None)."""
+    return isinstance(text, str) and bool(_ORGANISM_LIST.search(text)) and text_term(text) is None
+
+
+def _last_accession_id(cell):
+    """The NCBITaxon ID at the end of an accession cell, as _accession_ids reads it ('' if none)."""
+    m = _LAST_NCBI_ACCESSION.search(str(cell).strip()) if isinstance(cell, str) else None
+    return m.group(1) if m else ''
+
+
+def ml_multi_organism_terms(sheet_pairs, text_term, accession_term, pairs=None, is_ancestor=_ncbi_is_ancestor,
+                            microbe_group=_ncbi_microbe_group, placeholder_taxa=None, subject_rows=None,
+                            factor_rows=None):
+    """NCBITaxonomy term of each (organism text, accession cell) pair whose text lists organisms, by the rules of the
+    block comment above: 'ID|Name||ID|Name', one 'ID|Name' when the parts name one taxon, or None (no organism).
+
+    sheet_pairs: (text, accession cell as given, '' if none) of every row of the study's sample sheet, in sheet order
+    (the evidence); pairs: further pairs to decide (default: those of sheet_pairs); text_term(text): the allowed term
+    the text names, or None; accession_term(ID): the allowed term of a taxon ID, or None; is_ancestor, microbe_group:
+    as for organism_accession_terms; placeholder_taxa: taxon IDs no part may be (default: the NCBI placeholder taxa
+    and 'blank sample'); subject_rows, factor_rows: per sheet row, whether it is a sample of the study's subjects and
+    whether it carries a factor value (ml_sheet_row_roles; default: every row a subject, none with a factor value).
+    Returns {(text, cell): term or None} for the pairs whose text lists organisms."""
+    if placeholder_taxa is None:
+        import REDU_conversion_functions
+        placeholder_taxa = set(REDU_conversion_functions._NCBI_PLACEHOLDER_TAXA) | _NOT_AN_ORGANISM_TAXA
+    memo = {}
+
+    def term_of_text(text):
+        if text not in memo:
+            memo[text] = text_term(text)
+        return memo[text]
+
+    def cell_ids(cell):
+        return tuple(_NCBI_ACCESSION_IN_CELL.findall(cell)) if isinstance(cell, str) else ()
+
+    sheet_pairs = list(sheet_pairs)
+    subject = [True] * len(sheet_pairs) if subject_rows is None else [bool(s) for s in subject_rows]
+    factor = [False] * len(sheet_pairs) if factor_rows is None else [bool(f) for f in factor_rows]
+    if len(subject) != len(sheet_pairs) or len(factor) != len(sheet_pairs):
+        raise ValueError('subject_rows / factor_rows: one value per sheet row')
+    listed = {text: _is_organism_list(text, term_of_text) for text in dict.fromkeys(t for t, _ in sheet_pairs)}
+    # the organism of each sheet row as the converter reads it (organism_accession_terms over (text, last ID))
+    row_samples = [(text, _last_accession_id(cell)) for text, cell in sheet_pairs]
+    row_decided = organism_accession_terms(row_samples, term_of_text, accession_term, is_ancestor=is_ancestor,
+                                           microbe_group=microbe_group)
+    # the part-level pairs of the sheet: the parts of a list with their aligned accessions, other rows as above
+    part_samples = []
+    for (text, cell), row in zip(sheet_pairs, row_samples):
+        parts = _organism_list_parts(text) if listed[text] else []
+        if len(parts) < 2:
+            part_samples.append(row)
+            continue
+        ids = cell_ids(cell)
+        part_samples.extend(zip(parts, ids if len(ids) == len(parts) else ('',) * len(parts)))
+    part_decided = organism_accession_terms(part_samples, term_of_text, accession_term, is_ancestor=is_ancestor,
+                                            microbe_group=microbe_group)
+    # evidence: the taxa of the subjects' sample rows whose text lists no organisms (of those with a factor value:
+    # for the list texts of sample rows with a factor value)
+    evidence, design_evidence = set(), set()
+    for (text, _), (_, acc), is_subject, has_factor in zip(sheet_pairs, row_samples, subject, factor):
+        if listed[text] or not is_subject:
+            continue
+        term = row_decided.get((text, acc)) if acc else None
+        if term is None:
+            term = term_of_text(text)
+        if term and term != 'missing value':
+            evidence.add(single_taxid(term))
+            if has_factor:
+                design_evidence.add(single_taxid(term))
+    evidence.discard('')
+    design_evidence.discard('')
+    in_design = {text for (text, _), is_subject, has_factor in zip(sheet_pairs, subject, factor)
+                 if listed[text] and is_subject and has_factor}
+    out = {}
+    for text, cell in dict.fromkeys(sheet_pairs + list(pairs or [])):
+        if not listed.get(text, _is_organism_list(text, term_of_text)):
+            continue
+        parts = _organism_list_parts(text)
+        if len(parts) < 2:
+            out[(text, cell)] = None
+            continue
+        ids = cell_ids(cell)
+        terms = []
+        for part, acc in zip(parts, ids if len(ids) == len(parts) else ('',) * len(parts)):
+            term = part_decided.get((part, acc)) if acc else None
+            if term is None:
+                term = term_of_text(part)
+            terms.append(term)
+        taxa = [single_taxid(t) if t and t != 'missing value' else '' for t in terms]
+        if any(not t or not t.isdigit() or int(t) in placeholder_taxa for t in taxa):
+            out[(text, cell)] = None
+            continue
+        joined = join_parts(terms)
+        found = design_evidence if text in in_design else evidence
+        if is_multi(joined) and not found.intersection(single_taxid(p) for p in taxonomy_parts(joined)):
+            out[(text, cell)] = None
+            continue
+        out[(text, cell)] = joined
+    return out
+
+
+_SAMPLE_TYPE_COLUMN = re.compile(r'Samples_Sample type(?:_\d+)?', re.I)
+_SHEET_NAME_COLUMN = re.compile(r'Samples_(?:Source Name|Sample Name)(?:[._]\d+)?')
+_NOT_A_FACTOR_LABEL = re.compile(r'diet|feed|food', re.I)
+# factor cells that give no value ('none' does: 'Infection: none' is the design's control)
+_NO_FACTOR_VALUE = ('', 'nan', 'missing value', 'not applicable', 'not available', 'n/a', 'na')
+
+
+def ml_sheet_row_roles(sheet, kinds):
+    """Per row of a sample sheet (the 'Samples_' columns of df_samples, repeated headers renamed; kinds: the field type
+    of each column by position, 'Characteristics', 'Factor Value', 'basic' ...): (subject, factor), two lists of bool.
+
+    subject is False for a row that is no sample of the study's subjects: a pooled QC or a blank by its 'Sample type'
+    (_sample_type_qc), a pooled QC by the pool_QC labels of _QC_BLANK_LABELS in its 'Sample type', factor values or
+    organism part (as the converter's QC labels read them), a culture-medium blank by its organism part
+    (_MEDIA_BLANK_PARTS), a blank or pooled QC by the words of its sample or source name (blank_qc_names, the rule for
+    file names), or a reference material, reference pool or purchased pool named by its names, characteristics or
+    factor values (reference_materials.row_evidence). factor is True for a row with a factor value."""
+    n = len(sheet)
+    subject, factor = [True] * n, [False] * n
+    if n == 0:
+        return subject, factor
+    columns = [str(c) for c in sheet.columns]
+    kinds = list(kinds)[:len(columns)] + [None] * max(0, len(columns) - len(kinds))
+    values = [sheet.iloc[:, j].map(lambda v: '' if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)).tolist()
+              for j in range(len(columns))]
+
+    def given(v):
+        return v.strip().lower() not in _MISSING_VALUES
+
+    def pool_label(v):
+        return _QC_BLANK_LABELS.get(_label(v)) == 'pool_QC'
+
+    tests = []
+    for j, (c, k) in enumerate(zip(columns, kinds)):
+        if _SAMPLE_TYPE_COLUMN.fullmatch(c):
+            tests.append((j, lambda v: _sample_type_qc(v) is not None or pool_label(v)))
+        elif k == 'Factor Value' and not _NOT_A_FACTOR_LABEL.search(c):
+            tests.append((j, pool_label))
+        if c == 'Samples_Organism part':
+            tests.append((j, lambda v: pool_label(v) or _label(v) in _MEDIA_BLANK_PARTS))
+        if _SHEET_NAME_COLUMN.fullmatch(c):
+            tests.append((j, lambda v: blank_qc_type_from_filename(v) is not None))
+    for j, test in tests:
+        memo = {}
+        for i, v in enumerate(values[j]):
+            if subject[i] and v and given(v):
+                if v not in memo:
+                    memo[v] = bool(test(v))
+                if memo[v]:
+                    subject[i] = False
+    factor_columns = [j for j, k in enumerate(kinds) if k == 'Factor Value']
+    for i in range(n):
+        factor[i] = any(values[j][i].strip().lower() not in _NO_FACTOR_VALUE for j in factor_columns)
+    # reference materials, reference pools, purchased pools (the fields ml_refmat_evidence reads)
+    fields = [j for j, (c, k) in enumerate(zip(columns, kinds))
+              if c.startswith('Samples_') and (k in _REFMAT_SAMPLE_KINDS or _SHEET_NAME_COLUMN.fullmatch(c))]
+    for i in range(n):
+        if not subject[i]:
+            continue
+        row = [(re.sub(r'^Samples_', '', columns[j]), values[j][i]) for j in fields]
+        if not any(reference_materials.CANDIDATE_RE.search(v) for _, v in row if v):
+            continue
+        ev = reference_materials.row_evidence(row)
+        if ev.any_rm() or ev.inhouse or ev.purchased:
+            subject[i] = False
+    return subject, factor
+
+
+def _organism_text_accession(df, cells=False):
     """Organism text and NCBITaxon accession ID per row of a frame with the sample sheet's
     'Samples_' columns: 'Samples_Organism', or where that is blank the first alias column
     (Species, Bacteria, Genus, ...), with the accession of the same column (as the converter
-    reads them)."""
+    reads them). cells=True: the accession cells as they are (a cell may hold several IDs)."""
     alias_columns = ['Samples_Species', 'Samples_species', 'Samples_Bacteria',
                      'Samples_Genus', 'Samples_genus', 'Samples_organism']
+    ids = (lambda s: s.fillna('').astype(str)) if cells else (lambda s: _accession_ids(s, 'NCBITaxon'))
     text = df['Samples_Organism'].copy() if 'Samples_Organism' in df.columns else pd.Series(np.nan, index=df.index, dtype=object)
     accession = pd.Series('', index=df.index, dtype=object)
     column = _accession_column(df, 'Samples_Organism')
     if column:
-        accession = _accession_ids(df[column], 'NCBITaxon')
+        accession = ids(df[column])
     for c in alias_columns:
         if c in df.columns:
             blank = text.isna() | text.astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value'])
@@ -1807,8 +2025,8 @@ def _organism_text_accession(df):
             text.loc[blank] = df.loc[blank, c]
             alias_accession = _accession_column(df, c)
             if alias_accession:
-                accession.loc[blank] = _accession_ids(df.loc[blank, alias_accession], 'NCBITaxon')
-    return text, accession.str.replace('NCBITaxon:', '', regex=False)
+                accession.loc[blank] = ids(df.loc[blank, alias_accession])
+    return text, (accession if cells else accession.str.replace('NCBITaxon:', '', regex=False))
 
 
 _ncbi_by_name = {}
@@ -2045,6 +2263,12 @@ def _uberon_lookups(ontology_table, allowedTerm_dict):
             'anatomy': set(t['Label'].astype(str).str.strip().str.lower()) | set(t['Synonym'].astype(str).str.strip().str.lower()),
         }
     return _uberon_cache[key]
+
+
+def _all_mammals(taxonomy, NCBIRankDivision_table):
+    """Per row: the NCBITaxonomy is a mammal taxon (_mammal_taxids); a value of several organisms when all are."""
+    mammals = _mammal_taxids(NCBIRankDivision_table)
+    return all_parts_series(taxonomy.astype(str), lambda p: p.split('|', 1)[0] in mammals)
 
 
 def _mammal_taxids(NCBIRankDivision_table):
@@ -3213,9 +3437,10 @@ def Metabolights2REDU(study_id, **kwargs):
         # the kind of every sample column by position (a characteristic and a factor can
         # have the same header, e.g. 'Sample type' and 'Sample type_1')
         _sample_table = study_details['content']['sampleTable']
-        _sample_kind_pos = dict(zip(df_samples.columns, _table_headers(
+        _sample_kinds = _table_headers(
             {'fields': {k: dict(f, header=str(f.get('fieldType'))) for k, f in _sample_table['fields'].items()},
-             'data': _sample_table['data']}, '')))
+             'data': _sample_table['data']}, '')
+        _sample_kind_pos = dict(zip(df_samples.columns, _sample_kinds))
     
         # Sample names are typed by hand in both sheets; ignore surrounding whitespace
         df_assays['Assay_Sample Name'] = df_assays['Assay_Sample Name'].astype(str).str.strip()
@@ -3310,9 +3535,12 @@ def Metabolights2REDU(study_id, **kwargs):
             # NCBITaxon accession recorded with the organism (taken from the same column
             # as the organism value)
             _tax_accession = pd.Series('', index=df_study.index, dtype=object)
+            # (the accession cells as given: a text that lists organisms may carry one ID per organism)
+            _tax_accession_cell = pd.Series('', index=df_study.index, dtype=object)
             _acc_col = _accession_column(df_study, 'Samples_Organism')
             if _acc_col:
                 _tax_accession = _accession_ids(df_study[_acc_col], 'NCBITaxon')
+                _tax_accession_cell = df_study[_acc_col].fillna('').astype(str)
             if any(c in df_study.columns for c in _tax_alias_cols):
                 if 'Samples_Organism' not in df_study.columns:
                     df_study['Samples_Organism'] = np.nan
@@ -3323,6 +3551,7 @@ def Metabolights2REDU(study_id, **kwargs):
                         _alias_acc = _accession_column(df_study, _c)
                         if _alias_acc:
                             _tax_accession.loc[_blank] = _accession_ids(df_study.loc[_blank, _alias_acc], 'NCBITaxon')
+                            _tax_accession_cell.loc[_blank] = df_study.loc[_blank, _alias_acc].fillna('').astype(str)
 
             if 'Samples_Organism' in df_study.columns:
                 # same lookup as get_taxonomy_id_from_name__allowedTerms(org) (first allowed 'id|name' with that
@@ -3352,17 +3581,17 @@ def Metabolights2REDU(study_id, **kwargs):
                 # organism text (same taxon or a strain of it) or the text names no taxon, and
                 # it is not a drag-filled series (organism_accession_terms); the whole sample
                 # sheet is the evidence for drag-fills
-                if (_tax_accession != '').any():
-                    _by_id = _ncbi_term_by_id(allowedTerm_dict)
+                _by_id = _ncbi_term_by_id(allowedTerm_dict)
 
-                    def _text_term(text):
-                        term = _by_name.get(str(text).lower())
-                        if term is None:
-                            term = _org_alias.get(str(text).strip().lower())
-                        if term is None:
-                            term = ml_organism_fallback(text, allowedTerm_dict, _org_alias, study_id)
-                        return term
-                    _as_text = lambda v: '' if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
+                def _text_term(text):
+                    term = _by_name.get(str(text).lower())
+                    if term is None:
+                        term = _org_alias.get(str(text).strip().lower())
+                    if term is None:
+                        term = ml_organism_fallback(text, allowedTerm_dict, _org_alias, study_id)
+                    return term
+                _as_text = lambda v: '' if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
+                if (_tax_accession != '').any():
                     _row_pairs = list(zip(df_study['Samples_Organism'].map(_as_text),
                                           _tax_accession.str.replace('NCBITaxon:', '', regex=False)))
                     # the sample sheet with repeated headers renamed as in df_study ('Organism_1')
@@ -3373,12 +3602,38 @@ def Metabolights2REDU(study_id, **kwargs):
                     _from_acc = pd.Series([_decided.get(pair, np.nan) for pair in _row_pairs], index=df_study.index, dtype=object)
                     _use = _from_acc.notna()
                     df_study.loc[_use, 'NCBITaxonomy'] = _from_acc[_use]
-                
+
+                # samples of several organisms: a text that lists organisms, each named, one of them named alone on
+                # another row of the sample sheet (ml_multi_organism_terms)
+                _listed = df_study['NCBITaxonomy'].eq('missing value') & \
+                    df_study['Samples_Organism'].map(lambda t: _is_organism_list(t, _text_term)).astype(bool)
+                if _listed.any():
+                    _sheet = rename_duplicated_column_names(df_samples.copy())
+                    _sheet_text, _sheet_cell = _organism_text_accession(_sheet, cells=True)
+                    # (the evidence comes from the subjects' sample rows; from those with a factor value where the
+                    # list's sample rows have one: ml_sheet_row_roles)
+                    _subject_rows, _factor_rows = ml_sheet_row_roles(_sheet, _sample_kinds)
+                    _cell_pairs = list(zip(df_study['Samples_Organism'].map(_as_text), _tax_accession_cell))
+                    _multi = ml_multi_organism_terms(list(zip(_sheet_text.map(_as_text), _sheet_cell)), _text_term, _by_id.get,
+                                                     pairs=[p for p, l in zip(_cell_pairs, _listed) if l],
+                                                     subject_rows=_subject_rows, factor_rows=_factor_rows)
+                    _from_list = pd.Series([_multi.get(p) if l else None for p, l in zip(_cell_pairs, _listed)],
+                                           index=df_study.index, dtype=object)
+                    _use = _from_list.notna()
+                    if _use.any():
+                        df_study.loc[_use, 'NCBITaxonomy'] = _from_list[_use]
+                        print(f"[NCBITaxonomy] {study_id}: {int(_use.sum())} rows whose organism text lists organisms: "
+                              + '; '.join(f'{t!r} -> {v}' for t, v in sorted(set(zip(df_study.loc[_use, 'Samples_Organism'].astype(str),
+                                                                                     _from_list[_use])))))
+                    if (_listed & ~_use).any():
+                        print(f"[NCBITaxonomy] {study_id}: {int((_listed & ~_use).sum())} rows whose organism text lists organisms "
+                              f"keep no organism: {sorted(set(df_study.loc[_listed & ~_use, 'Samples_Organism'].astype(str)))}")
+
                 df_study.loc[:, ['SampleType', 'SampleTypeSub1']] = 'missing value'
 
                 processed_taxonomy = {taxonomy.split('|')[0]: get_taxonomy_info(taxonomy.split('|')[0])
                                     for taxonomy in df_study['NCBITaxonomy'].unique()
-                                    if '|' in taxonomy}
+                                    if '|' in taxonomy and not is_multi(taxonomy)}
                 
                 print(f'Found {len(processed_taxonomy)} unique taxonomy IDs.')
 
@@ -3387,6 +3642,14 @@ def Metabolights2REDU(study_id, **kwargs):
                                                                     if '|' in x else pd.NA)
                 df_study.loc[:,'SampleTypeSub1'] = df_study['NCBITaxonomy'].map(lambda x: processed_taxonomy.get(x.split('|')[0], [pd.NA, pd.NA])[1]
                                                                         if '|' in x else pd.NA)
+                # several organisms: the sample type they share (multi_sample_type)
+                _multi_values = {t: multi_sample_type(taxonomy_parts(t)) for t in df_study['NCBITaxonomy'].unique() if is_multi(t)}
+                if _multi_values:
+                    _is_m = df_study['NCBITaxonomy'].isin(list(_multi_values))
+                    df_study.loc[_is_m, 'SampleType'] = df_study.loc[_is_m, 'NCBITaxonomy'].map(
+                        lambda x: _multi_values[x][0] if _multi_values[x][0] is not None else pd.NA)
+                    df_study.loc[_is_m, 'SampleTypeSub1'] = df_study.loc[_is_m, 'NCBITaxonomy'].map(
+                        lambda x: _multi_values[x][1] if _multi_values[x][1] is not None else pd.NA)
 
                 # the row-wise rule on the three columns it reads (a row-wise apply builds a
                 # Series of all ~300 columns per row), expanded into two columns as .apply(pd.Series) did
@@ -4207,13 +4470,15 @@ def Metabolights2REDU(study_id, **kwargs):
             if (_doid_tab is not None and len(_doid_tab) and allowedTerm_dict['DOIDCommonName']['allowed_values']
                     and 'NCBITaxonomy' in df_study.columns and 'SampleType' in df_study.columns):
                 _idx = _doid_index(_doid_tab, allowedTerm_dict, kwargs.get('doid_parents'), kwargs.get('disease_aliases'))
-                _taxid = df_study['NCBITaxonomy'].astype(str).str.split('|').str[0]
+                # (a sample of several organisms: mammal when all are; never counted as human)
+                _taxid = single_taxid_series(df_study['NCBITaxonomy'].astype(str))
+                _mammal = _all_mammals(df_study['NCBITaxonomy'], NCBIRankDivision_table)
                 # cell types (CL) other than blood and germ cells are cultured cells
                 _cl = pd.Series(False, index=df_study.index)
                 if 'UBERONOntologyIndex' in df_study.columns and 'UBERONBodyPartName' in df_study.columns:
                     _cl = (df_study['UBERONOntologyIndex'].astype(str).str.startswith('CL:')
                            & ~df_study['UBERONBodyPartName'].astype(str).str.contains(_D_PRIMARY_CELLS))
-                _eligible = (_real_sample & (df_study['SampleType'] == 'animal') & _taxid.isin(_mammal_taxids(NCBIRankDivision_table))
+                _eligible = (_real_sample & (df_study['SampleType'] == 'animal') & _mammal
                              & ~_disease_not_subject(df_study) & ~_cl)
                 _human = bool((_taxid[_eligible] == '9606').mean() > 0.5) if _eligible.any() else False
                 _content = study_details['content']
@@ -4280,8 +4545,8 @@ def Metabolights2REDU(study_id, **kwargs):
                 _hextra = {k: _hidx.term(f) for k, f in _habbr.items()}
                 _hextra = {k: t for k, t in _hextra.items() if t and not _hidx.foreign(t)}
                 _hidx = _StudyTerms(_hidx, _habbr) if _habbr else _hidx
-                _taxid = df_study['NCBITaxonomy'].astype(str).str.split('|').str[0]
-                _eligible = _not_cells & (df_study['SampleType'] == 'animal') & _taxid.isin(_mammal_taxids(NCBIRankDivision_table))
+                _taxid = single_taxid_series(df_study['NCBITaxonomy'].astype(str))
+                _eligible = _not_cells & (df_study['SampleType'] == 'animal') & _all_mammals(df_study['NCBITaxonomy'], NCBIRankDivision_table)
                 _human = bool((_taxid[_eligible] == '9606').mean() > 0.5) if _eligible.any() else False
                 # animals given a human microbiota: condition labels describe the donors
                 if not _human and re.search(_D_MICROBIOTA_RECIPIENT, f"{_content.get('title') or ''} {_content.get('description') or ''}"):
@@ -4402,7 +4667,8 @@ def Metabolights2REDU(study_id, **kwargs):
             if _var_cols and 'NCBITaxonomy' in df_study.columns:
                 for _c in _var_cols:
                     def _refine(term, variant):
-                        if not isinstance(term, str) or '|' not in term:
+                        # (not for a sample of several organisms)
+                        if not isinstance(term, str) or '|' not in term or is_multi(term):
                             return None
                         species = term.split('|', 1)[1].strip().lower()
                         v = re.sub(r'\s+', ' ', str(variant)).strip()
