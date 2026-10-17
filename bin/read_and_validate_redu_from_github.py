@@ -79,6 +79,58 @@ def _cached_for_table(name, table, build):
     return value
 
 
+class PinnedNcbiRelations:
+    """Lineage relations of the pinned NCBI taxonomy (REDU_conversion_functions.use_pinned_ncbi_taxonomy):
+    is_ancestor(a, t) whether taxon ID a is a proper ancestor of t; microbe_group(t) 'Bacteria', 'Archaea',
+    'Fungi' or 'Viruses' when t is that group or below it, else None (merged IDs followed; the same rules as
+    Metabolights2REDU._ncbi_is_ancestor / _ncbi_microbe_group)."""
+    MICROBE_GROUPS = {2: 'Bacteria', 2157: 'Archaea', 4751: 'Fungi', 10239: 'Viruses'}
+
+    def __init__(self, pinned):
+        self.taxonomy = pinned.taxonomy
+
+    def _node(self, taxid):
+        try:
+            return self.taxonomy.resolve(int(str(taxid).strip()))
+        except (TypeError, ValueError):
+            return None
+
+    def is_ancestor(self, ancestor, taxon):
+        a, node = self._node(ancestor), self._node(taxon)
+        if a is None or node is None or a == node:
+            return False
+        parent = self.taxonomy.parent
+        for _ in range(1000):
+            up = parent[node]
+            if up == node or up < 0:
+                return False
+            if up == a:
+                return True
+            node = up
+        return False
+
+    def microbe_group(self, taxon):
+        node = self._node(taxon)
+        if node is None:
+            return None
+        parent = self.taxonomy.parent
+        for _ in range(1000):
+            if node in self.MICROBE_GROUPS:
+                return self.MICROBE_GROUPS[node]
+            up = parent[node]
+            if up == node or up < 0:
+                return None
+            node = up
+        return None
+
+
+def pinned_ncbi_relations():
+    """PinnedNcbiRelations of the pinned NCBI taxonomy, or None when the caller did not load one."""
+    import REDU_conversion_functions
+    pinned = REDU_conversion_functions._PINNED_LINEAGE
+    return PinnedNcbiRelations(pinned) if pinned is not None else None
+
+
 _NCBI_COLUMNS = ('TaxonID', 'NCBIRank', 'NCBIDivision')
 # The NCBI rank/division table last prepared by _prepare_ncbi_table (one entry)
 _NCBI_PREPARED = {}
@@ -340,6 +392,10 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     # resolves NCBI names that are not allowed scientific names (synonyms, merged taxa,
     # strains) to an allowed term, or returns None
     ncbi_name_resolver = kwargs.get('NCBI_name_resolver')
+    # lineage relations of the pinned NCBI taxonomy for an 'ID|Name' whose two parts name different taxa
+    # (name_over_id): only where the caller asks for it (the GNPS harmonize step, which loads the pinned taxonomy
+    # from --path_to_ncbi_nodes_dmp); the converters' terms are allowed terms already
+    ncbi_lineage = pinned_ncbi_relations() if kwargs.get('ncbi_name_over_id') else None
 
     # Cellosaurus table (build_cellosaurus_table.py): checks CellLine, gives CellLineIndex
     cellosaurus_table = kwargs.get('CellLineIndex_table')
@@ -553,6 +609,37 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         same_division = [t for t in terms if division and division_of(t.split("|", 1)[0].strip()) == division]
                         return same_division[0] if len(same_division) == 1 else None
 
+                    def name_over_id(oid, oname, a_term):
+                        # An 'ID|Name' whose name names another taxon than its ID (a_term): the name wins, as
+                        # Metabolights2REDU.organism_accession_terms decides organism text vs NCBITaxon accession
+                        # (user decision: trust the name, for microbes the ID). The ID stays when it is below the
+                        # named taxon (a strain or subspecies of the species), and for microbes (both in Bacteria,
+                        # Archaea, Fungi or Viruses, the ID not above the name's taxon: strains of a collection
+                        # reclassified since, 'Gardnerella vaginalis' with the ID of 'Gardnerella pickettii JCP7659';
+                        # unlike MetaboLights, one species name with many strain IDs is no copy-paste in GNPS strain
+                        # collections). A name that only names.dmp lists (a synonym) wins only over an ID above it
+                        # or over the genus it names; the ID also stays without the pinned NCBI taxonomy
+                        # (--path_to_ncbi_nodes_dmp).
+                        if not oname or ncbi_lineage is None:
+                            return a_term
+                        direct = name_hit(oname, oid)
+                        t_term = direct or (ncbi_name_resolver(oname) if ncbi_name_resolver is not None else None)
+                        if not t_term or t_term == a_term:
+                            return a_term
+                        a_id, t_id = a_term.split("|", 1)[0].strip(), t_term.split("|", 1)[0].strip()
+                        if ncbi_lineage.is_ancestor(t_id, a_id):
+                            return a_term
+                        group = ncbi_lineage.microbe_group(t_id)
+                        if group is not None and ncbi_lineage.microbe_group(a_id) == group \
+                                and not ncbi_lineage.is_ancestor(a_id, t_id):
+                            return a_term
+                        if direct:
+                            return t_term
+                        a_name = a_term.split("|", 1)[1].strip().lower()
+                        if ncbi_lineage.is_ancestor(a_id, t_id) or a_name == oname.split()[0].lower():
+                            return t_term
+                        return a_term
+
                     def resolve_ncbi(observed_value: str) -> str:
                         # observed_value like '1931|Streptomyces sp.' or '1883|Streptomyces' or just 'Streptomyces sp.'
                         oid, oname = _split_id_name(observed_value)
@@ -568,9 +655,9 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         if observed_value in allowed_set:
                             return observed_value
 
-                        # 3) Same ID → allowed term
+                        # 3) Same ID → allowed term (unless the name names another taxon: name_over_id)
                         if oid and oid in allowed_by_id:
-                            return allowed_by_id[oid]
+                            return name_over_id(oid, oname, allowed_by_id[oid])
 
                         # 4) Same Name (case-insensitive) → allowed term
                         if oname:
@@ -1492,6 +1579,11 @@ if __name__ == '__main__':
     parser.add_argument('--path_to_exposure_csv', default='none')
     parser.add_argument('--path_to_ncbi_names_dmp', default='none',
                         help='NCBI names.dmp; resolves synonyms, merged taxa and strains of NCBITaxonomy names')
+    parser.add_argument('--path_to_ncbi_nodes_dmp', default='none',
+                        help='NCBI nodes.dmp of the pinned taxdump (with --path_to_ncbi_names_dmp and '
+                             '--path_to_ncbi_merged_dmp): an ID|Name whose name names another taxon takes the name '
+                             '(except strains of the named species and microbes); without it the ID wins')
+    parser.add_argument('--path_to_ncbi_merged_dmp', default='none', help='NCBI merged.dmp of the pinned taxdump')
     parser.add_argument('--path_to_cellosaurus_tsv', default='none',
                         help='Cellosaurus table from build_cellosaurus_table.py; checks CellLine and gives CellLineIndex')
     args = parser.parse_args()
@@ -1529,6 +1621,11 @@ if __name__ == '__main__':
     all_metadata_files = sorted(glob.glob(f"{args.path_to_github_metadata}/*.tsv"))
 
     print("Processing", len(all_metadata_files), "files")
+
+    if 'none' not in (args.path_to_ncbi_nodes_dmp, args.path_to_ncbi_names_dmp, args.path_to_ncbi_merged_dmp):
+        import REDU_conversion_functions
+        REDU_conversion_functions.use_pinned_ncbi_taxonomy(args.path_to_ncbi_nodes_dmp, args.path_to_ncbi_names_dmp,
+                                                           args.path_to_ncbi_merged_dmp)
 
     ncbi_name_resolver = None
     if args.path_to_ncbi_names_dmp != 'none':
@@ -1582,6 +1679,7 @@ if __name__ == '__main__':
                                               attempt_adding_file_extensions=True,
                                               case_insensitive_terms=True,
                                               NCBI_name_resolver=ncbi_name_resolver,
+                                              ncbi_name_over_id=True,
                                               CellLineIndex_table=cellosaurus_table,
                                               life_stage_as_submitted=True)
             

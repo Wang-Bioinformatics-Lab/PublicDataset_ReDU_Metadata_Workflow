@@ -18,7 +18,7 @@ digestive tract,tissue
 duodenum,tissue
 ear,tissue
 esophagus,tissue
-gall bladder,tissue
+gallbladder,tissue
 head or neck skin,tissue
 heart,tissue
 ileum,tissue
@@ -60,7 +60,7 @@ compound eye,tissue
 gill filament,tissue
 jejunal epithelium,tissue
 lamina,tissue
-larval thorax,tissue
+insect larval thorax,tissue
 multicellular organism,tissue
 muscle of Aristotle's lantern,tissue
 nuptial pad,tissue
@@ -70,7 +70,7 @@ post-embryonic organism,tissue
 renal cortex artery,tissue
 renal medulla,tissue
 retina,tissue
-skeletal muscle organ,tissue
+"skeletal muscle organ, vertebrate",tissue
 skin of prepuce of penis,tissue
 vitreous humor,tissue
 zygote stage,tissue

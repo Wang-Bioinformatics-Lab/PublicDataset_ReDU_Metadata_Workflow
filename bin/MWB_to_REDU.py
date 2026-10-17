@@ -3947,6 +3947,7 @@ def assign_cell_lines(MWB_table):
 # COLLECTION SAMPLE_TYPE and SUBJECT_TYPE of the analysis being converted (create_dataframe_outer_dict)
 _ANALYSIS_SAMPLE_TYPE = ''
 _ANALYSIS_SUBJECT_TYPE = ''
+_ANALYSIS_TAXON = None   # the analysis' NCBITaxonomy term (create_dataframe_outer_dict), for sample_body_parts
 _NOT_CULTURE_SAMPLE_RE = re.compile(r'(?i)fraction|microsom|\bs9\b|homogen|tissue|\borgans?\b|biops|plasma|serum|'
                                     r'\bblood\b|urine|feces|faeces|stool|\bmilk\b|saliva')
 
@@ -4806,6 +4807,576 @@ def sample_food_terms(df):
     return df['filename'].map(terms)
 
 
+# ---- standard injections ----------------------------------------------------------------------------
+# A sample whose own value says it is an injection of standards (a standard mixture, calibration standards, an
+# external standard; the Workbench sample source '_STD_') is SampleType 'molecular_standards' with SampleTypeSub1
+# 'defined_standards' (the terms Metabolights2REDU uses); complete_and_fill_REDU_table then clears its organism,
+# body part and subject fields. Values as qc_sample_type reads them (_norm_value), text in brackets dropped
+# ('standards (STD)'). Phrases that only name standards count under the keys that say what a sample is or
+# which group it belongs to, and as the Subject ID ('Synthetic Standard'); bare words ('Standard', 'STD 3',
+# 'Amino acid standard', 'Internal Std') only under the keys that say what the sample is: 'GROUP: Standard' (a
+# standard-care group of patients), 'Genotype: Standard', 'timing of metabolite extract addition: standard' are
+# no standards. Not after words that make it a
+# sample of the study or a QC ('plasma based standard', 'pooled reference standard', 'quality control standard'), also
+# in brackets ('Standard (plasma)'); 'reference standard' only under the sample-kind keys.
+# Only for samples no QC / blank value typed (qc_sample_type; its 'QC externalstandard' stays blank_QC). Kept
+# apart from qc_sample_type, which also decides which samples the file matching treats as no study samples.
+STANDARD_SAMPLE_TYPE = ('molecular_standards', 'defined_standards')
+STANDARD_SAMPLE_SOURCE = '_std_'
+_STANDARD_KIND_KEYS = {'sample source', 'sample type', 'sampletype', 'samle type', 'type', 'sample class', 'class',
+                       'matrix', 'sample matrix', 'material', 'sample material', 'specimen', 'specimen type',
+                       'category', 'sample category'}
+_STANDARD_PHRASE_KEYS = _STANDARD_KIND_KEYS | {'group', 'sample group', 'treatment', 'treatment group', 'factor',
+                                               'factor group', 'condition', 'source', 'origin', 'subject id'}
+_STD_WORD = r'(?:standards?|stds?)'
+_STD_NUM = r'(?: [0-9]+[a-z]?)?'
+_STANDARD_PHRASE_RE = re.compile(
+    rf'{_STD_WORD} (?:mix|mixes|mixture|mixtures|cocktail|solution|solutions){_STD_NUM}'
+    rf'|(?:mix|mixture) of {_STD_WORD}'
+    rf'|(?:calibration|calibrant|external|authentic|analytical|chemical|synthetic|reference|retention time|alkane) '
+    rf'{_STD_WORD}(?: (?:mix|mixture|solution))?{_STD_NUM}'
+    rf'|(?:calibration|standard) curve(?: (?:point|sample|level))?{_STD_NUM}'
+    rf'|calibration (?:point|level|sample|samples|solution|solutions){_STD_NUM}')
+_STANDARD_WORD_RE = re.compile(rf'(?:[a-z0-9+]+ ){{0,3}}{_STD_WORD}{_STD_NUM}|{_STD_WORD} (?=[a-z]*[0-9])[0-9a-z]{{1,5}}'
+                               rf'|istds?|internal {_STD_WORD}')
+_NOT_STANDARD_WORDS = {'pool', 'pooled', 'plasma', 'serum', 'urine', 'blood', 'tissue', 'based', 'gold', 'qc', 'quality',
+                       'diet', 'care', 'chow', 'growth', 'protocol', 'nist', 'srm', 'study', 'patient', 'patients',
+                       'control', 'controls', 'treatment', 'sample', 'samples', 'group'}
+
+
+def standard_sample_type(key, value):
+    """STANDARD_SAMPLE_TYPE[0] if a sample's item (key, value) says it is a standard injection, else None."""
+    k = _norm_value(key)
+    if k not in _STANDARD_PHRASE_KEYS:
+        return None
+    # the words of the whole value, text in brackets too ('Standard (plasma)', 'Reference standard (NIST plasma)')
+    if set(_norm_value(value).split()) & _NOT_STANDARD_WORDS:
+        return None
+    v = _norm_value(re.sub(r'\([^()]*\)', ' ', str(value)))
+    if not v:
+        return None
+    if _STANDARD_PHRASE_RE.fullmatch(v):
+        # 'reference standard' only says what a sample is under the sample-kind keys ('Group: Reference standard' is a
+        # positive-control drug group)
+        if v.startswith('reference ') and k not in _STANDARD_KIND_KEYS:
+            return None
+        return STANDARD_SAMPLE_TYPE[0]
+    if k in _STANDARD_KIND_KEYS and _STANDARD_WORD_RE.fullmatch(v):
+        return STANDARD_SAMPLE_TYPE[0]
+    return None
+
+
+# ---- the sample's own organism --------------------------------------------------------------------------
+# The organism comes from the analysis' SUBJECT_SPECIES / TAXONOMY_ID; a sample's own items can name another
+# one (a multi-species study: ST003799 cultures of several bacteria under one SUBJECT_SPECIES, ST005015 human
+# and rat samples in a mouse study). Items: mwTab factors and additional sample data whose key is about the
+# organism of the sample itself (_OWN_ORGANISM_KEY_RE: Species, Organism, Strain, Taxon, Genus, Bacteria, ...),
+# not about another organism (_NOT_OWN_ORGANISM_KEY_RE: 'Infection', 'Colonized bacteria', 'Inoculum', 'Host',
+# 'Treatment', 'Diet', co-culture partners, cultivars, 'mouse strain', ...). A value names a taxon when it is an
+# allowed NCBI scientific name (case-insensitive) or a names.dmp synonym of one taxon (pinned taxonomy:
+# 'Clostridium bolteae' -> Enterocloster bolteae); a one-word value only when written as NCBI writes the name
+# ('Rattus', not the epithet 'melanogaster', which is a fungus genus), never under strain keys ('Strain:
+# Valencia'); no virus, no placeholder taxon. Decided per analysis (apply_own_organisms), only when the
+# analysis' species resolves (else the older per-sample lookup of translate_MWB_to_REDU_from_csv runs):
+#   * own taxa of another kind than the analysis' taxon (animal / plant / virus / microbe) are not used: a host
+#     whose items name a microbe (an infection, its microbiota) keeps the host;
+#   * a sample's own taxon above or equal to the analysis' taxon keeps the analysis' (more specific) one, one
+#     below it (a strain of the species, a species of the genus) is used;
+#   * the analysis is multi-species when its samples name two taxa of that kind that are not on one lineage;
+#     then every sample with its own taxon gets it, and a sample without one (no value, a value that names no
+#     taxon or several) gets no organism (the analysis' species is not the one of every sample: media controls,
+#     co-cultures 'S. aureus and C. striatum', unresolved names), unless all the own taxa lie below the analysis'
+#     taxon (ST001688 'Bacteria' over the genera of a strain collection; 'Enterobacter sp.' read as its genus):
+#     then it holds for every sample and the sample keeps it;
+#   * otherwise a sample's own taxon on another lineage is used, except for microbes (bacteria, archaea, fungi,
+#     protists): the analysis' TAXONOMY_ID wins over a name (the user's decision: microbiology curators pick IDs
+#     with care).
+#   * for animals and plants the own taxon must lie in the analysis taxon's NCBI class ('Species: Schistosoma
+#     mansoni' in a mouse study is a parasite; 'Genus: Major' an insect genus);
+#   * pooled QCs, blanks and reference materials keep the analysis' organism (pooled QCs keep it: user decision).
+# SampleType / SampleTypeSub1 follow the new taxon where they came from the analysis' taxon.
+_OWN_ORGANISM_KEY_RE = re.compile(
+    r'(?:^|[^a-z])(?:species|organisms?|strains?|taxon|taxonomy|genus|isolates?|serovar|serotype|bacteria|bacterium|'
+    r'microorganisms?|microbes?)(?:[^a-z]|$)')
+_OWN_STRAIN_KEY_RE = re.compile(r'(?:^|[^a-z])(?:strains?|isolates?|serovar|serotype)(?:[^a-z]|$)')
+_NOT_OWN_ORGANISM_KEY_RE = re.compile(
+    r'treat|infect|coloni[sz]|inocul|diet|feed|\bfed\b|supplement|co ?cultur|partner|host|donor|recipient|gavage|'
+    r'probiotic|prebiotic|expos|challeng|pathogen|parasit|virus|viral|phage|symbion|transplant|\bwith\b|cultivar|'
+    r'variet|breed|\bpart\b|antibod|vector|plasmid|knock|mutant|genotype|background|reference|control|media\b|medium|'
+    r'source|origin|prey|food|target|competitor|mouse|mice|\brats?\b|human|animal|plant|\bcells?\b|number|count|'
+    r'\bid\b|code|abundance|percent|ratio|\bod\b|density|load')
+_NO_ORGANISM_VALUES = {'', '-', '--', 'na', 'n/a', 'nan', 'none', 'null', 'not applicable', 'not available', 'unknown',
+                       'not specified', 'unspecified', 'missing', 'missing value', 'nd', 'n.a.', 'blank', 'control',
+                       'qc', 'pool', 'pooled', 'mixed', 'mix', 'all'}
+# NCBI taxa whose descendants form a kind for apply_own_organisms ('microbe': every other cellular organism)
+_ORGANISM_KIND_TAXA = {33208: 'animal', 33090: 'plant', 10239: 'virus'}
+OWN_TAXA_SEP = ';'
+
+
+def _taxon_node(taxid):
+    pinned = _rcf._PINNED_LINEAGE
+    if pinned is None:
+        return None
+    try:
+        return pinned.taxonomy.resolve(int(str(taxid).split('|')[0]))
+    except (TypeError, ValueError):
+        return None
+
+
+def taxon_kind(taxid):
+    """'animal' (Metazoa), 'plant' (Viridiplantae), 'virus' or 'microbe' (any other cellular organism:
+    bacteria, archaea, fungi, protists) of an NCBI taxon ID or 'ID|Name' term (pinned taxonomy), else None."""
+    node = _taxon_node(taxid)
+    if node is None:
+        return None
+    parent = _rcf._PINNED_LINEAGE.taxonomy.parent
+    for _ in range(1000):
+        if node in _ORGANISM_KIND_TAXA:
+            return _ORGANISM_KIND_TAXA[node]
+        if node == 131567:   # cellular organisms
+            return 'microbe'
+        up = parent[node]
+        if up == node or up < 0:
+            return None
+        node = up
+    return None
+
+
+def taxon_is_ancestor(ancestor, taxon):
+    """Whether NCBI taxon `ancestor` is a proper ancestor of `taxon` (IDs or 'ID|Name' terms; pinned taxonomy)."""
+    a, t = _taxon_node(ancestor), _taxon_node(taxon)
+    if a is None or t is None or a == t:
+        return False
+    parent = _rcf._PINNED_LINEAGE.taxonomy.parent
+    node = t
+    for _ in range(1000):
+        up = parent[node]
+        if up == node or up < 0:
+            return False
+        if up == a:
+            return True
+        node = up
+    return False
+
+
+_CLASS_COLUMN = 3   # ncbi_database.DESIRED_RANKS: superkingdom, kingdom, phylum, class, ...
+
+
+def taxon_class(taxid):
+    """The NCBI class (taxon ID) a taxon ID / 'ID|Name' term lies in or is, else None (pinned taxonomy)."""
+    node = _taxon_node(taxid)
+    if node is None:
+        return None
+    tax = _rcf._PINNED_LINEAGE.taxonomy
+    for _ in range(1000):
+        code = tax.rank[node]
+        if code >= 0 and tax.column[code] == _CLASS_COLUMN:
+            return node
+        up = tax.parent[node]
+        if up == node or up < 0:
+            return None
+        node = up
+    return None
+
+
+def _qc_like_rows(df):
+    """rows of pooled QCs, blanks and reference materials (the converter's own sample type, or the file name)"""
+    st = df['SampleType_inner'].astype(str) if 'SampleType_inner' in df.columns else pd.Series('', index=df.index)
+    qc = st.isin(['pool_QC', 'blank_QC', 'reference material']) | st.str.contains('blank', case=False)
+    if 'filename' in df.columns:
+        qc |= df['filename'].map(lambda f: bool(f) and isinstance(f, str) and blank_qc_type_from_filename(f) is not None)
+    return qc.fillna(False).astype(bool)
+
+
+def _same_taxon(a, b):
+    return _taxon_node(a) is not None and _taxon_node(a) == _taxon_node(b)
+
+
+def is_own_organism_key(key):
+    k = _norm_key(key)
+    return bool(k) and bool(_OWN_ORGANISM_KEY_RE.search(k)) and not _NOT_OWN_ORGANISM_KEY_RE.search(k) \
+        and not is_variant_raw_file_key(str(key).lower()) and str(key).lower() not in _EXACT_RAW_KEYS
+
+
+def own_taxon_term(key, value, allowedTerm_dict):
+    """The allowed 'ID|Name' NCBITaxonomy term the value of an own-organism item names (see the block comment
+    above), else None."""
+    v = ' '.join(str(value).split())
+    if v.lower() in _NO_ORGANISM_VALUES or not re.search(r'[A-Za-z]{3}', v):
+        return None
+    term = _ncbi_name_lookup(allowedTerm_dict).get(v.lower())
+    if term is None and len(v.split()) > 1:
+        term = _rcf.pinned_ncbi_synonym_term(v, allowedTerm_dict)
+    if term is None:
+        return None
+    if len(v.split()) == 1 and (_OWN_STRAIN_KEY_RE.search(_norm_key(key)) or term.split('|', 1)[1] != v):
+        return None
+    node = _taxon_node(term)
+    if node is None or node in _rcf._NCBI_PLACEHOLDER_TAXA or taxon_kind(term) in (None, 'virus'):
+        return None
+    return term
+
+
+def sample_own_taxa(df_items, allowedTerm_dict):
+    """Sample ID -> the distinct taxa its own-organism items name (own_taxon_term), joined by OWN_TAXA_SEP in
+    sorted order; df_items: the mwTab items (columns filename = Sample ID, Key, Value as given)."""
+    out = {}
+    if df_items is None or not len(df_items) or _rcf._PINNED_LINEAGE is None:
+        return out
+    keys = df_items['Key'].astype(str)
+    use = keys.map(is_own_organism_key)
+    memo = {}
+    for sid, k, v in zip(df_items.loc[use, 'filename'], keys[use], df_items.loc[use, 'Value']):
+        if (k, v) not in memo:
+            memo[(k, v)] = own_taxon_term(k, v, allowedTerm_dict)
+        t = memo[(k, v)]
+        if t is not None:
+            out.setdefault(str(sid), set()).add(t)
+        else:
+            out.setdefault(str(sid), set())
+    return {s: OWN_TAXA_SEP.join(sorted(ts)) for s, ts in out.items()}
+
+
+def _one_lineage(terms):
+    """The deepest of terms that all lie on one lineage, else None."""
+    terms = sorted(set(terms))
+    if not terms:
+        return None
+    deepest = terms[0]
+    for t in terms[1:]:
+        if _same_taxon(t, deepest) or taxon_is_ancestor(t, deepest):
+            continue
+        if taxon_is_ancestor(deepest, t):
+            deepest = t
+            continue
+        return None
+    return deepest
+
+
+def apply_own_organisms(df, study_term, column='MWB_own_taxa'):
+    """NCBITaxonomy (and SampleType / SampleTypeSub1 where they came from the analysis' taxon) of the rows of one
+    analysis from the samples' own taxa (column `column`, from sample_own_taxa), by the rules of the block
+    comment above. Returns the frame and the number of rows changed."""
+    if column not in df.columns or not isinstance(study_term, str) or '|' not in study_term \
+            or _rcf._PINNED_LINEAGE is None:
+        return df, 0
+    kind = taxon_kind(study_term)
+    if kind is None:
+        return df, 0
+    own = df[column].fillna('').astype(str)
+    # pooled QCs, blanks and reference materials keep the analysis' organism (pooled QCs keep it: the user's
+    # decision; blanks lose it later): their own values are neither used nor counted
+    exempt = _qc_like_rows(df)
+    own = own.where(~exempt, '')
+    study_class = taxon_class(study_term) if kind in ('animal', 'plant') else None
+
+    def usable(t):
+        # an own taxon of the analysis' kind; for animals and plants also of its NCBI class (a parasite named in a
+        # mouse study, 'Species: Schistosoma mansoni', does not replace the host; nor 'Genus: Major', an insect)
+        if taxon_kind(t) != kind:
+            return False
+        if kind not in ('animal', 'plant'):
+            return True
+        if study_class is None:
+            return taxon_is_ancestor(study_term, t) or _same_taxon(t, study_term)
+        return taxon_class(t) == study_class
+    per_value = {}
+    for value in own.unique():
+        terms = [t for t in value.split(OWN_TAXA_SEP) if t and usable(t)]
+        per_value[value] = (_one_lineage(terms) if terms else None, bool(terms))
+    taxa = {t for t, _ in per_value.values() if t}
+    multi = any(not (_same_taxon(a, b) or taxon_is_ancestor(a, b) or taxon_is_ancestor(b, a))
+                for a in taxa for b in taxa if a < b)
+    # the analysis' taxon holds for every sample when all own taxa lie below it ('Bacteria' over the genera of a
+    # strain collection; an 'X sp.' taxon stands for its genus X here); then a sample without an own taxon keeps it
+    anchor = _taxon_node(study_term)
+    sp = re.fullmatch(r'([A-Z][a-z]+) spp?\.?', study_term.split('|', 1)[-1].strip())
+    if anchor is not None and sp:
+        node, parent, names = anchor, _rcf._PINNED_LINEAGE.taxonomy.parent, _rcf._PINNED_LINEAGE.names
+        for _ in range(50):
+            node = int(parent[node])
+            if node < 0 or names.get(node) == sp.group(1):
+                break
+        anchor = node if node >= 0 and names.get(node) == sp.group(1) else anchor
+    all_below = anchor is not None and all(_taxon_node(t) == anchor or taxon_is_ancestor(anchor, t) for t in taxa)
+    study_type = get_taxonomy_info(study_term.split('|')[0])
+    new = {}
+    for value, (t, named) in per_value.items():
+        if t is not None:
+            if _same_taxon(t, study_term) or taxon_is_ancestor(t, study_term):
+                new[value] = study_term
+            elif taxon_is_ancestor(study_term, t) or multi or kind != 'microbe':
+                new[value] = t
+            else:
+                new[value] = study_term
+        elif multi and not all_below:
+            new[value] = None
+        else:
+            new[value] = study_term
+    target = own.map(new).where(~exempt, study_term)
+    changed = target.ne(study_term)
+    if not changed.any():
+        return df, 0
+    df = df.copy()
+    df.loc[changed, 'NCBITaxonomy'] = target[changed]
+    if study_type and study_type[0] is not None and {'SampleType', 'SampleTypeSub1'} <= set(df.columns):
+        sub1 = df['SampleTypeSub1']
+        sub1_missing = sub1.isna() | sub1.astype(str).isin(['', 'nan', 'None', 'missing value'])
+        from_taxon = df['SampleType'].astype(str).eq(str(study_type[0])) & (
+            sub1.astype(str).eq(str(study_type[1])) if study_type[1] is not None else sub1_missing)
+        for t in sorted(set(target[changed].dropna())):
+            info = get_taxonomy_info(t.split('|')[0])
+            if not info or info[0] is None:
+                continue
+            rows = changed & from_taxon & target.eq(t)
+            df.loc[rows, 'SampleType'] = info[0]
+            df.loc[rows, 'SampleTypeSub1'] = info[1] if info[1] is not None else np.nan
+    return df, int(changed.sum())
+
+
+# ---- the sample's own body part ---------------------------------------------------------------------------
+# UBERONBodyPartName came from the REST record's sample_source, which in many studies is one value for every
+# sample (the study's sample type: ST002254 'Liver' on liver, plasma and muscle samples; ST001808 'Liver' on
+# serum samples), and where that did not translate from the analysis' SAMPLE_TYPE (ST005015 'BAT' / 'eWAT' samples
+# labelled pancreas). sample_body_parts() decides per sample from its own values, each translated by
+# body_part_of_value (UBERONBodyPartName.csv, else an exact UBERON/CL/PO label or synonym (no taxon-specific class),
+# else _BODY_PART_ABBREVIATIONS as written; also with '_' read as a space, and the sheet tissue left without species
+# words; only allowed labels, generic ones such as tissue, organ, cell are no body part here):
+#   own: the first of P1 the mwTab 'Sample source' item of the sample, P3 its items under body-part keys
+#   (_OWN_BODY_PART_KEYS: Organ, Tissue, Sample type, Matrix, Specimen, ...; all of them agreeing), P4 its Subject ID
+#   if that is exactly a body part ('serum'; only while the REST sample_source has one value for all of the
+#   analysis' samples: a study-level value) that names one body part; REST: the REST sample_source's body part.
+#   The own one wins over the REST one where its level tells the analysis' samples apart (two or more values over
+#   the samples: per-sample information; ST001467 'Sample Source: muscle / plasma' under one REST 'Blood (plasma)')
+#   or where it is the REST one made more specific (its words include the REST label's: 'blood plasma' over
+#   'blood'); otherwise (a study-level own value against another study-level REST value: ST003112 'Brain' against
+#   REST 'Brain cortex') the REST one stays, as before. An own value never replaces a more specific REST value, nor,
+#   where the REST record gives none (pooled QCs 'Sample source: blood' under '_QC_'), the study-level SAMPLE_TYPE's
+#   (broader / more specific by _broader_body_part's refinement table: the table of the run has no is_a / part_of).
+# A REST value that differs between the analysis' samples is the sample's own record: an own value only refines it.
+# The study-level SAMPLE_TYPE no longer fills a sample of a multi-tissue analysis (a sample's own tissue is neither
+# the SAMPLE_TYPE's nor a refinement of it, and other samples name the SAMPLE_TYPE's tissue themselves) whose own body
+# part is unknown (its source does not translate, or it has none): left missing rather than given another tissue. QC / blank / standard sample sources (_QC_, _POOLED_, _BLANK_, _STD_) keep the
+# earlier handling (pooled QCs keep the study's body part).
+_OWN_BODY_PART_KEYS = {'sample matrix', 'client matrix', 'matrix', 'material', 'sample material', 'biological material',
+                       'specimen type', 'specimen', 'tissue', 'tissues', 'tissue type', 'tissuetype', 'tissue location',
+                       'tissue region', 'organ', 'organs', 'organism part', 'body site', 'anatomical site', 'body part',
+                       'sample type', 'sampletype', 'sample type matrix', 'tissue fluid', 'tissue serum', 'biofluid',
+                       'biospecimen', 'biospecimen type', 'plant organ', 'plant organs', 'plant part', 'plant tissue',
+                       'sample tissue', 'tissue sample', 'organ tissue', 'tissue organ'}
+_OWN_SAMPLE_SOURCE_KEYS = {'sample source', 'samplesource'}
+_QC_SOURCE_MARKERS = {'_qc_', '_pooled_', '_blank_', STANDARD_SAMPLE_SOURCE}
+# common tissue abbreviations, written as they are written (case-sensitive: 'Bat' / 'bat' is the animal), that name
+# one body part (eWAT: epididymal or epigonadal white fat, both a gonadal fat pad; gWAT gonadal; iWAT inguinal; sWAT /
+# scWAT subcutaneous; BAT / iBAT brown, interscapular brown), and short names (any case)
+_BODY_PART_ABBREVIATIONS = {'BAT': 'brown adipose tissue', 'iBAT': 'brown adipose tissue', 'WAT': 'white adipose tissue',
+                            'eWAT': 'gonadal fat pad', 'gWAT': 'gonadal fat pad', 'iWAT': 'inguinal fat pad',
+                            'sWAT': 'subcutaneous adipose tissue', 'scWAT': 'subcutaneous adipose tissue'}
+_BODY_PART_SHORT_NAMES = {'adipose': 'adipose tissue'}
+# species words around a sheet tissue ('human_liver', 'mouse spinal cord') and the NCBI taxon each names (the taxon or
+# one below it): the rest is looked up in the sheet only, and only where every such word names the row's organism
+# (the analysis' or the sample's own; 'Pooled_human_plasma' in a mouse study is not translated)
+_BODY_PART_SPECIES_WORDS = {'human': 9606, 'humans': 9606, 'mouse': 10088, 'mice': 10088, 'murine': 10088, 'rat': 10114,
+                            'rats': 10114, 'porcine': 9823, 'pig': 9823, 'bovine': 9903, 'cow': 9913, 'canine': 9611,
+                            'dog': 9615, 'feline': 9681, 'cat': 9685, 'ovine': 9935, 'sheep': 9940, 'caprine': 9922,
+                            'goat': 9925, 'equine': 9789, 'horse': 9796, 'rabbit': 9986, 'hamster': 10026,
+                            'macaque': 9539, 'baboon': 9554, 'chicken': 9031, 'zebrafish': 7955}
+# (with _UBERON_TOO_GENERIC) labels that name no particular body part
+_GENERIC_BODY_PARTS = {'tissue', 'organ', 'cell', 'multicellular organism', 'organism substance', 'anatomical entity',
+                       'material anatomical entity', 'adult organism', 'whole organism', 'post-embryonic organism',
+                       'cell cluster', 'not applicable', 'not specified', 'ml import: not available'}
+# body part -> its refinements (subtypes and parts a sample of it is often given as), for _broader_body_part: the
+# UBERON/CL/PO table of the run has no is_a / part_of links, and label words alone mistake 'blood vessel' for a kind of
+# blood. Dataset-agnostic; only allowed labels count.
+_ADIPOSE_DEPOTS = {'subcutaneous adipose tissue', 'subcutaneous abdominal adipose tissue', 'visceral abdominal adipose tissue',
+                   'gonadal fat pad', 'epididymal fat pad', 'parametrial fat pad', 'periovarian fat pad', 'inguinal fat pad',
+                   'retroperitoneal fat pad', 'mesenteric fat pad', 'abdominal fat pad', 'perirenal fat', 'omental fat pad'}
+_BODY_PART_REFINEMENTS = {
+    'blood': {'blood plasma', 'blood serum', 'umbilical cord blood', 'venous blood', 'arterial blood'},
+    'adipose tissue': {'brown adipose tissue', 'white adipose tissue', 'interscapular fat pad', 'mammary gland fat',
+                       'epicardial fat'} | _ADIPOSE_DEPOTS,
+    'white adipose tissue': _ADIPOSE_DEPOTS,
+    'gonadal fat pad': {'epididymal fat pad', 'parametrial fat pad', 'periovarian fat pad'},
+    'bone tissue': {'compact bone tissue', 'spongy bone tissue'},
+    'lung': {'left lung', 'right lung'},
+    'skeletal muscle organ, vertebrate': {'gastrocnemius', 'soleus muscle', 'quadriceps femoris', 'tibialis anterior',
+                                          'vastus lateralis', 'extensor digitorum longus', 'plantaris'},
+    'zone of skin': {'skin of back', 'skin of body', 'skin of leg', 'skin of trunk', 'arm skin', 'axilla skin', 'scalp',
+                     'skin of manus', 'skin of pes', 'head or neck skin', 'skin of prepuce of penis'},
+}
+
+
+def _is_generic_body_part(label):
+    low = str(label).strip().lower()
+    return low in _GENERIC_BODY_PARTS or low in _UBERON_TOO_GENERIC
+
+
+def _body_part_lookups(path_to_csvs, ontology_table, allowedTerm_dict):
+    """(sheet, exact names, abbreviations, short names): value -> allowed specific UBERONBodyPartName label (keys
+    lower-cased, abbreviations as written). A sheet value whose label is no allowed one or a generic one gets none
+    here (False: the older sheet path keeps it); a sheet value with an empty label (None: 'BAT') is looked up by its
+    exact name and abbreviation."""
+    allowed = set((allowedTerm_dict.get('UBERONBodyPartName') or {}).get('allowed_values') or [])
+    exact = _uberon_exact_lookup(ontology_table, allowed) if ontology_table is not None and 'Synonym' in ontology_table.columns else {}
+    keep = lambda l: l if isinstance(l, str) and l in allowed and not _is_generic_body_part(l) else False
+    sheet = _read_sheet(os.path.join(path_to_csvs, 'UBERONBodyPartName.csv'), encoding="ISO-8859-1", dtype=str)
+    sheet_map = {}
+    for k, v in zip(sheet['MWB'].astype(str).str.lower(), sheet['REDU']):
+        label = v.strip() if isinstance(v, str) and v.strip() else None
+        sheet_map.setdefault(' '.join(k.split()), None if label is None else keep(label))
+    exact = {k: keep(v) for k, v in exact.items()}
+    abbreviations = {k: keep(v) for k, v in _BODY_PART_ABBREVIATIONS.items()}
+    short = {k: keep(v) for k, v in _BODY_PART_SHORT_NAMES.items()}
+    return sheet_map, exact, abbreviations, short
+
+
+def _species_word_fits(word, organisms):
+    """Whether a species word names one of the organisms (NCBI terms / IDs: the taxon or one below it)"""
+    taxon = _BODY_PART_SPECIES_WORDS[word]
+    return any(_same_taxon(o, taxon) or taxon_is_ancestor(taxon, o) for o in organisms if o)
+
+
+def body_part_of_value(value, lookups, organisms=()):
+    """The allowed specific UBERONBodyPartName label a sample's value names (sheet, exact UBERON/CL/PO name,
+    abbreviation as written, short name; also with '_' read as a space; else the sheet tissue left once species
+    words that name the row's organism (organisms: NCBI terms) are taken out: 'human_liver' -> liver in a human
+    sample), else None."""
+    sheet_map, exact, abbreviations, short = lookups[:4]
+    raw = ' '.join(str(value).split())
+    low = raw.lower()
+    if not low or low in _UBERON_PLACEHOLDERS or low in _QC_SOURCE_MARKERS:
+        return None
+    for cand, cand_raw in dict.fromkeys([(low, raw), (' '.join(low.replace('_', ' ').split()),
+                                                      ' '.join(raw.replace('_', ' ').split()))]):
+        hit = sheet_map.get(cand)
+        if hit is False:   # the sheet's label for it is generic or no allowed label
+            return None
+        hit = hit or exact.get(cand) or abbreviations.get(cand_raw) or short.get(cand)
+        if hit:
+            return hit
+    words = [w for w in re.split(r'[\s_\-./]+', low) if w]
+    species = [w for w in words if w in _BODY_PART_SPECIES_WORDS]
+    rest = [w for w in words if w not in _BODY_PART_SPECIES_WORDS]
+    if rest and species and all(_species_word_fits(w, organisms) for w in species):
+        hit = sheet_map.get(' '.join(rest))
+        if hit:
+            return hit
+    return None
+
+
+def _sheet_lists(value, lookups):
+    """Whether the translation sheet gives the value a label (as the older sheet path reads it: lower case, '_' as a
+    space), allowed or not"""
+    low = ' '.join(str(value).lower().split())
+    return any(lookups[0].get(c) is not None for c in (low, ' '.join(low.replace('_', ' ').split())))
+
+
+def _broader_body_part(a, b):
+    """Whether body part label b is a refinement of label a (_BODY_PART_REFINEMENTS: 'blood' / 'blood serum',
+    'adipose tissue' / 'brown adipose tissue')."""
+    return isinstance(a, str) and isinstance(b, str) and b in _BODY_PART_REFINEMENTS.get(a, ())
+
+
+def sample_body_parts(df_items, rest_sources, study_sample_type, lookups, study_taxon=None, own_taxa=None):
+    """Sample ID -> (UBERONBodyPartName label of the sample's own values or None, whether the study-level
+    SAMPLE_TYPE may not fill it), by the rules of the block comment above. df_items: the analysis' mwTab items
+    (filename = Sample ID, SubjectIdentifierAsRecorded, Key, Value); rest_sources: Sample ID -> REST
+    sample_source (the analysis' samples); study_taxon: the analysis' NCBI term; own_taxa: Sample ID -> the taxa
+    the sample's own items name (sample_own_taxa), for the species words."""
+    if df_items is None:
+        df_items = pd.DataFrame(columns=['filename', 'SubjectIdentifierAsRecorded', 'Key', 'Value'])
+    keyn = df_items['Key'].astype(str).map(_norm_key)
+    own_taxa = own_taxa or {}
+    memo = {}
+
+    def organisms_of(sid):
+        found = [t for t in str(own_taxa.get(sid, '') or '').split(OWN_TAXA_SEP) if t]
+        return tuple(sorted(set(found) | ({study_taxon} if isinstance(study_taxon, str) and '|' in study_taxon else set())))
+
+    def bp(v, sid):
+        key = (v, organisms_of(sid))
+        if key not in memo:
+            memo[key] = body_part_of_value(v, lookups, key[1])
+        return memo[key]
+    levels = {}
+    for sid, k, v in zip(df_items['filename'].astype(str), keyn, df_items['Value']):
+        if k in _OWN_SAMPLE_SOURCE_KEYS:
+            levels.setdefault(sid, {}).setdefault('P1', set()).add(str(v))
+        elif k in _OWN_BODY_PART_KEYS:
+            levels.setdefault(sid, {}).setdefault('P3', set()).add(str(v))
+    if 'SubjectIdentifierAsRecorded' in df_items.columns:
+        for sid, subj in zip(df_items['filename'].astype(str), df_items['SubjectIdentifierAsRecorded']):
+            if isinstance(subj, str) and subj.strip() and subj.strip() != '-':
+                levels.setdefault(sid, {}).setdefault('P4', set()).add(subj.strip())
+    rest_sources = {str(s): v for s, v in rest_sources.items()}
+    marked = {sid for sid, src in rest_sources.items() if str(src).strip().lower() in _QC_SOURCE_MARKERS}
+    real_rest = {str(src).strip().lower() for sid, src in rest_sources.items()
+                 if sid not in marked and str(src).strip().lower() not in _UBERON_PLACEHOLDERS}
+    rest_study_level = len(real_rest) <= 1
+    # levels whose values tell the analysis' samples apart: P1 / P3 by their values, P4 by its body parts
+    told_apart = {}
+    for level in ('P1', 'P3', 'P4'):
+        vals = set()
+        for sid, lv in levels.items():
+            if sid in marked:
+                continue
+            for v in lv.get(level, ()):
+                low = ' '.join(str(v).lower().split())
+                if level == 'P4':
+                    low = bp(v, sid)
+                if low and low not in _UBERON_PLACEHOLDERS:
+                    vals.add(low)
+        told_apart[level] = len(vals) >= 2
+    out = {}
+    for sid in set(levels) | set(rest_sources):
+        lv = levels.get(sid, {})
+        rest = bp(rest_sources[sid], sid) if isinstance(rest_sources.get(sid), str) else None
+        own = own_level = None
+        for level in ('P1', 'P3', 'P4'):
+            if level == 'P4' and not rest_study_level:
+                break
+            labels = {bp(v, sid) for v in lv.get(level, ())} - {None}
+            if len(labels) == 1:
+                own, own_level = next(iter(labels)), level
+                break
+        if own is None or own == rest:
+            out[sid] = rest
+        elif rest is None or _broader_body_part(rest, own):
+            out[sid] = own    # no REST body part, or the own value refines it ('blood serum' / REST 'blood')
+        elif _broader_body_part(own, rest) or not rest_study_level:
+            # the own value is a broader form of the REST one, or the REST value differs between the samples (it is
+            # the sample's own record: ST003077 pools 'Heart' / 'Kidney' with a copied 'Sample type: Plasma')
+            out[sid] = rest
+        elif told_apart[own_level]:
+            out[sid] = own
+        else:
+            out[sid] = rest
+    study_bp = body_part_of_value(study_sample_type, lookups,
+                                  (study_taxon,) if isinstance(study_taxon, str) else ()) \
+        if isinstance(study_sample_type, str) else None
+    # a value that is a broader form of the study-level SAMPLE_TYPE's tissue where the translation sheet gives the REST
+    # record none (pooled QCs 'Sample source: blood' under '_QC_'; REST 'Mouse blood', read by the species-word rule, in
+    # a 'Blood (serum)' study): the study-level fill stays, as before
+    broader_than_study = set()
+    if study_bp is not None:
+        for sid, l in out.items():
+            rest = rest_sources.get(sid)
+            if l is not None and _broader_body_part(l, study_bp) \
+                    and (not isinstance(rest, str) or not _sheet_lists(rest, lookups)):
+                broader_than_study.add(sid)
+    for sid in broader_than_study:
+        out[sid] = None
+    # the SAMPLE_TYPE does not fill: a multi-tissue analysis (a sample's own tissue is neither the study tissue nor a
+    # refinement of it) where other samples name the study tissue (or a refinement) themselves; where none does, the
+    # SAMPLE_TYPE describes the samples without a translated value (ST003472 'Ventricle' in a 'Heart' study with
+    # plasma samples) and fills them
+    named = {l for s, l in out.items() if l and s not in marked}
+    multi = study_bp is not None and any(l != study_bp and not _broader_body_part(study_bp, l) for l in named) \
+        and any(l == study_bp or _broader_body_part(study_bp, l) for l in named)
+    return {sid: (l, bool(multi and l is None and sid not in marked and sid not in broader_than_study))
+            for sid, l in out.items()}
+
+
 def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
     
     ontology_table = kwargs['ontology_table']
@@ -5474,6 +6045,26 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         print(f"Could not check Subject IDs: {type(e).__name__}: {e}")
         df['SubjectIdentifierAsRecorded'] = ''
     df = get_key_info_into_outer(df, key_vars=["Sample Source"], new_col="MWB_sampleSource")
+    # the sample's own body part and whether the study-level SAMPLE_TYPE may fill it (sample_body_parts); a
+    # problem here must never cost the study its rows
+    try:
+        _rest_sources = {}
+        for _rec in (rest_response.values() if isinstance(rest_response, dict) else []):
+            if isinstance(_rec, dict) and _rec.get('local_sample_id') is not None:
+                _rest_sources.setdefault(str(_rec.get('local_sample_id')), _rec.get('sample_source'))
+        _sids = set(df['filename'].astype(str))
+        _rest_sources = {s: v for s, v in _rest_sources.items() if s in _sids}
+        _bp = sample_body_parts(df_additional[df_additional['filename'].astype(str).isin(_sids)], _rest_sources,
+                                _ANALYSIS_SAMPLE_TYPE, _body_part_lookups(path_to_csvs, ontology_table, allowedTerm_dict),
+                                study_taxon=_ANALYSIS_TAXON, own_taxa=sample_own_taxa(df_additional, allowedTerm_dict))
+        df['MWB_own_bodypart'] = df['filename'].astype(str).map(lambda s: _bp.get(s, (None, False))[0])
+        df['MWB_no_study_bodypart'] = df['filename'].astype(str).map(lambda s: _bp.get(s, (None, False))[1])
+        print(f"[own body part] {df.loc[df['MWB_own_bodypart'].notna(), 'filename'].nunique()} samples with their own "
+              f"body part, {df.loc[df['MWB_no_study_bodypart'], 'filename'].nunique()} not filled from the study level")
+    except Exception as e:
+        print(f"Could not read the samples' own body parts: {type(e).__name__}: {e}")
+        df['MWB_own_bodypart'] = None
+        df['MWB_no_study_bodypart'] = False
     # the food or beverage product a sample is (FoodOntologyTerm); a problem here must never
     # cost the study its rows
     try:
@@ -5704,6 +6295,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
            (df['MWB_sampleSource'] == 'adipocyte media') |
            (df['MWB_sampleSource'] == 'media'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['blank_culturemedia', 'blank_culturemedia']
     df.loc[(df['MWB_sampleSource'] == 'bacterial cells'), ['SampleType_inner', 'SampleTypeSub1_inner']] = ['culture_bacterial', 'culture_bacterial']
+    # the Workbench's sample source of standard injections
+    df.loc[df['MWB_sampleSource'] == STANDARD_SAMPLE_SOURCE, ['SampleType_inner', 'SampleTypeSub1_inner']] = list(STANDARD_SAMPLE_TYPE)
 
     # QC pools, blanks and reference materials named by a sample's values (sample type
     # 'Study Pool', group 'QC', 'process blank', 'NIST SRM 1950', ...); only samples
@@ -5725,12 +6318,36 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             print(f"QC/blank/reference samples from their values: {df.loc[_set, 'filename'].nunique()}")
     except Exception as e:
         print(f"Could not detect QC/blank samples: {type(e).__name__}: {e}")
+    # standard injections named by a sample's values (standard_sample_type): only samples that got no sample type
+    # above and have no QC / blank / reference-material value
+    try:
+        _std = pd.Series([standard_sample_type(k, v) for k, v in zip(df['Key'], df['Value'])], index=df.index, dtype=object)
+        # the Subject ID as given ('Synthetic Standard'): the phrases only
+        _std_samples = set(df.loc[_std.notna(), 'filename'])
+        _std_samples |= {str(s_) for s_, subj in zip(df_additional['filename'], df_additional['SubjectIdentifierAsRecorded'])
+                         if isinstance(subj, str) and standard_sample_type('subject id', subj)}
+        if _std_samples:
+            _qc_named = set(df.loc[[qc_sample_type(k, v) is not None for k, v in zip(df['Key'], df['Value'])], 'filename'])
+            _typed = df.groupby('filename')['SampleType_inner'].transform(lambda s: s.notna().any())
+            _set = ~_typed & df['filename'].astype(str).isin(_std_samples - _qc_named)
+            if _set.any():
+                df.loc[_set, ['SampleType_inner', 'SampleTypeSub1_inner']] = list(STANDARD_SAMPLE_TYPE)
+                print(f"standard injections from their values: {df.loc[_set, 'filename'].nunique()}")
+    except Exception as e:
+        print(f"Could not detect standard injections: {type(e).__name__}: {e}")
     # the sample-level items that can name a reference material, by raw file (MWB_to_REDU_study_wrapper)
     mwb_note_refmat_evidence(df)
    
    #add environemntal columns
     
     df['MWB_envo_exact'] = envo_material_exact_name(df['MWB_sampleSource'], allowedTerm_dict).values
+    # the taxa the samples' own organism items name (apply_own_organisms, in create_dataframe_outer_dict)
+    try:
+        _own_taxa = sample_own_taxa(df_additional, allowedTerm_dict)
+        df['MWB_own_taxa'] = df['filename'].astype(str).map(_own_taxa).fillna('')
+    except Exception as e:
+        print(f"Could not read the samples' own organisms: {type(e).__name__}: {e}")
+        df['MWB_own_taxa'] = ''
     df = df.drop(columns=['Key', 'Value', 'Longitude', 'Latitude', 'MWB_sampleSource'])
     df = df.drop_duplicates().reset_index(drop=True)
 
@@ -6018,8 +6635,10 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     # unit of ages given without one: the study's AGE_OR_AGE_RANGE unit, else years in
     # human studies, else unclear (no age)
     _ANALYSIS_AGE_UNIT = study_age_unit(entry['SUBJECT_AGE'])
-    global _ANALYSIS_SUBJECT_TEXTS, _ANALYSIS_SAMPLE_TYPE, _ANALYSIS_SUBJECT_TYPE
+    global _ANALYSIS_SUBJECT_TEXTS, _ANALYSIS_SAMPLE_TYPE, _ANALYSIS_SUBJECT_TYPE, _ANALYSIS_TAXON
     _ANALYSIS_SAMPLE_TYPE = entry['SAMPLE_TYPE'] if isinstance(entry['SAMPLE_TYPE'], str) else ''
+    # the analysis' organism, for the species words of body-part values (sample_body_parts)
+    _ANALYSIS_TAXON = df_outer['NCBITaxonomy'].iloc[0] if not add_to_cols else None
     _ANALYSIS_SUBJECT_TYPE = entry['SUBJECT_TYPE'] if isinstance(entry['SUBJECT_TYPE'], str) else ''
     _ANALYSIS_SUBJECT_TEXTS = [str(v) for v in (entry['SAMPLE_TYPE'], entry['SUBJECT_SPECIES'], entry['SUBJECT_TYPE'],
                                                 _section(MWB_mwTAB_dict, 'SUBJECT').get('GENOTYPE_STRAIN', ''))
@@ -6057,6 +6676,20 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
 
     df_outer = pd.concat([df_outer] * len(df_inner_SUBJECT_SAMPLE_FACTORS), ignore_index=True)
     df_outer_inner = pd.concat([df_outer, df_inner_SUBJECT_SAMPLE_FACTORS], axis=1)
+
+    # the samples' own organisms where the analysis' species resolved (apply_own_organisms); a problem here must
+    # never cost the study its rows
+    if not add_to_cols and 'MWB_own_taxa' in df_outer_inner.columns and 'NCBITaxonomy' in df_outer_inner.columns \
+            and len(df_outer_inner):
+        try:
+            df_outer_inner, _n_own = apply_own_organisms(df_outer_inner, df_outer_inner['NCBITaxonomy'].iloc[0])
+            if _n_own:
+                print(f"[own organism] {_n_own} rows take their samples' own organism (analysis species "
+                      f"{df_outer['NCBITaxonomy'].iloc[0]}): "
+                      + ', '.join(f'{t}: {n}' for t, n in df_outer_inner['NCBITaxonomy'].fillna('none').value_counts().sort_index().items()))
+        except Exception as e:
+            print(f"Could not check the samples' own organisms: {type(e).__name__}: {e}")
+    df_outer_inner = df_outer_inner.drop(columns=['MWB_own_taxa'], errors='ignore')
 
     df_outer_inner.loc[df_outer_inner['SampleType_inner'].notnull(), 'SampleType'] = df_outer_inner['SampleType_inner']
     df_outer_inner.loc[df_outer_inner['SampleTypeSub1_inner'].notnull(), 'SampleTypeSub1'] = df_outer_inner[
@@ -6110,15 +6743,24 @@ _UBERON_TOO_GENERIC = {'cell', 'tissue', 'organ', 'anatomical entity', 'material
 _UBERON_LOOKUP_CACHE = {}
 
 
+# taxon-specific UBERON ranges (teleost 2xxxxxx, amphibian 3xxxxxx, insect 6xxxxxx; 4xxxxxx are vertebrate skeletal
+# terms and stay): 'corpus' there is an amphibian skull bone, not the corpus of the stomach. Left out of the
+# exact-name lookup (the translation sheet may still name them)
+_TAXON_SPECIFIC_UBERON = re.compile(r'^UBERON:[236]\d{6}$')
+
+
 def _uberon_exact_lookup(ontology_table, allowed):
     """lower-cased label / synonym (> 3 characters) -> label, for names that point to
-    exactly one allowed, non-obsolete label. Labels win over synonyms."""
+    exactly one allowed, non-obsolete label (no taxon-specific UBERON class). Labels win over synonyms."""
     key = (id(ontology_table), len(ontology_table))
     if key in _UBERON_LOOKUP_CACHE:
         return _UBERON_LOOKUP_CACHE[key]
     labels, synonyms = {}, {}
-    for label, syn in ontology_table[['Label', 'Synonym']].itertuples(index=False):
-        if not isinstance(label, str) or label not in allowed or label.lower().startswith('obsolete'):
+    index = ontology_table['UBERONOntologyIndex'] if 'UBERONOntologyIndex' in ontology_table.columns \
+        else pd.Series('', index=ontology_table.index)
+    for label, syn, idx in zip(ontology_table['Label'], ontology_table['Synonym'], index.astype(str)):
+        if not isinstance(label, str) or label not in allowed or label.lower().startswith('obsolete') \
+                or _TAXON_SPECIFIC_UBERON.match(idx.strip()):
             continue
         labels.setdefault(label.strip().lower(), set()).add(label)
         if isinstance(syn, str) and len(syn.strip()) > 3:
@@ -6324,6 +6966,10 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
                 MWB_table = MWB_table.merge(df_translations, left_on='_mkey', right_on='MWB', how='left')
                 MWB_table = MWB_table.drop(columns=['_mkey'])
                 MWB_table[col_csv_name] = MWB_table.groupby('filename')['REDU'].transform('first')
+                if col_csv_name == 'UBERONBodyPartName' and 'MWB_own_bodypart' in MWB_table.columns:
+                    # the sample's own body part (sample_body_parts) wins over the REST sample_source
+                    _own = MWB_table['MWB_own_bodypart']
+                    MWB_table.loc[_own.notna(), col_csv_name] = _own[_own.notna()]
                 if col_csv_name == 'UBERONBodyPartName':
                     # Sample Source is not the only key carrying a body part. Where it
                     # yielded nothing, fill from other per-sample body-part keys
@@ -6400,6 +7046,9 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
             MWB_table[origin_cols[index]] = MWB_table[origin_cols[index]].str.lower()
             MWB_table = pd.merge(MWB_table, df_translations, left_on=origin_cols[index], right_on='MWB', how='left')
             MWB_table['REDU'] = MWB_table['REDU'].fillna('missing value')
+            if col_csv_name == 'UBERONBodyPartName' and 'MWB_no_study_bodypart' in MWB_table.columns:
+                # not for samples of a multi-tissue analysis whose own body part is unknown (sample_body_parts)
+                MWB_table.loc[MWB_table['MWB_no_study_bodypart'].fillna(False).astype(bool), 'REDU'] = 'missing value'
             MWB_table[col_csv_name] = MWB_table[col_csv_name].fillna(MWB_table['REDU'])
             if col_csv_name == 'UBERONBodyPartName':
                 MWB_table = MWB_table.drop(columns=['REDU_UBERONOntologyIndex'])
@@ -6407,6 +7056,32 @@ def translate_MWB_to_REDU_from_csv(MWB_table,
 
 
     return MWB_table
+
+
+# UBERONBodyPartName.csv translates muscle values ('Muscle', 'muscles') to the vertebrate term; the muscle of any
+# other organism (a shrimp) is a 'muscle organ' (UBERON:0001630; missing if that is no allowed label)
+VERTEBRATE_MUSCLE = 'skeletal muscle organ, vertebrate'
+OTHER_MUSCLE = 'muscle organ'
+VERTEBRATA = 7742
+
+
+def non_vertebrate_muscle(t):
+    """rows with VERTEBRATE_MUSCLE whose NCBITaxonomy is no vertebrate (or none) get OTHER_MUSCLE"""
+    if 'UBERONBodyPartName' not in t.columns or _rcf._PINNED_LINEAGE is None:
+        return t
+    rows = t['UBERONBodyPartName'].astype(str).eq(VERTEBRATE_MUSCLE)
+    if not rows.any():
+        return t
+    tax = t['NCBITaxonomy'] if 'NCBITaxonomy' in t.columns else pd.Series(None, index=t.index, dtype=object)
+    vertebrate = tax.map(lambda x: isinstance(x, str) and '|' in x and taxon_is_ancestor(VERTEBRATA, x))
+    change = rows & ~vertebrate.astype(bool)
+    if change.any():
+        allowed = set((allowedTerm_dict.get('UBERONBodyPartName') or {}).get('allowed_values') or [])
+        t = t.copy()
+        t.loc[change, 'UBERONBodyPartName'] = OTHER_MUSCLE if OTHER_MUSCLE in allowed else np.nan
+        print(f"[muscle] {int(change.sum())} rows of no vertebrate: {VERTEBRATE_MUSCLE} -> "
+              f"{OTHER_MUSCLE if OTHER_MUSCLE in allowed else 'missing'}")
+    return t
 
 
 def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets'):
@@ -6575,7 +7250,15 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
     for col in ['MWB_uberon_exact', 'STUDY_uberon_exact']:
         if col in MWB_table.columns:
             fill = _is_missing('UBERONBodyPartName') & MWB_table[col].notna() & _sub1_open
+            if col == 'STUDY_uberon_exact' and 'MWB_no_study_bodypart' in MWB_table.columns:
+                fill &= ~MWB_table['MWB_no_study_bodypart'].fillna(False).astype(bool)
             MWB_table.loc[fill, 'UBERONBodyPartName'] = MWB_table.loc[fill, col]
+
+    # the vertebrate skeletal-muscle term only on vertebrates (non_vertebrate_muscle)
+    try:
+        MWB_table = non_vertebrate_muscle(MWB_table)
+    except Exception as e:
+        print(f"Could not check muscle labels against the organism: {type(e).__name__}: {e}")
 
     df_translations = _read_sheet(path_to_csvs + "/biofluid_tissue_distinction.csv", encoding="ISO-8859-1", dtype=str)
 
@@ -6685,7 +7368,7 @@ def apply_sex_distribution_guard(redu_df_final, rest_response, study_id=''):
 
 
 # subject fields of the rows that are no samples of the study's subjects (blanks, pooled QCs, reference
-# materials); blanks also lose the organism and body part, pooled QCs keep the study's species and their
+# materials, standards); blanks and standards also lose the organism and body part, pooled QCs keep the study's species and their
 # body part (a pool of the study's samples), reference materials get those of the material
 # (reference_materials.py, in complete_and_fill_REDU_table)
 _MWB_SUBJECT_COLUMNS = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'DOIDOntologyIndex',
@@ -6697,10 +7380,12 @@ _MWB_ORGANISM_COLUMNS = ['NCBITaxonomy', 'UBERONBodyPartName', 'UBERONOntologyIn
 def mwb_clear_not_subject_rows(redu_df_final):
     sample_type = redu_df_final['SampleType'].astype(str)
     blank = sample_type.str.contains('blank', case=False)
-    not_subject = sample_type.isin(['pool_QC', 'reference material']) | blank
+    # standard injections (standard_sample_type) are no sample of an organism either
+    no_organism = blank | sample_type.eq(STANDARD_SAMPLE_TYPE[0])
+    not_subject = sample_type.isin(['pool_QC', 'reference material']) | no_organism
     if not_subject.any():
         redu_df_final.loc[not_subject, [c for c in _MWB_SUBJECT_COLUMNS if c in redu_df_final.columns]] = 'missing value'
-        redu_df_final.loc[blank, [c for c in _MWB_ORGANISM_COLUMNS if c in redu_df_final.columns]] = 'missing value'
+        redu_df_final.loc[no_organism, [c for c in _MWB_ORGANISM_COLUMNS if c in redu_df_final.columns]] = 'missing value'
     return redu_df_final
 
 

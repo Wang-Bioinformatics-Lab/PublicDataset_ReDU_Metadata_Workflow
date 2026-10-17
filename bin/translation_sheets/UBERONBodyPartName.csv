@@ -15,7 +15,7 @@ bladder organ,bladder organ,UBERON:0018707
 Blastocysts,blastocyst,
 blood,blood,UBERON:0000178
 Blood (whole),blood,UBERON:0000178
-cord blood,blood,UBERON:0000178
+cord blood,umbilical cord blood,UBERON:0012168
 baboon plasma,blood plasma,UBERON:0001969
 Baseline plasma,blood plasma,UBERON:0001969
 Blood (plasma),blood plasma,UBERON:0001969
@@ -127,7 +127,7 @@ Stool,feces,UBERON:0001988
 follicular fluid,follicular fluid,
 forelimb,forelimb,
 Fungal cells,fungal cell,
-gall bladder,gall bladder,UBERON:0002110
+gall bladder,gallbladder,UBERON:0002110
 gastrocnemius,gastrocnemius,
 gill,gill,
 gill filament,gill filament,UBERON:0009120
@@ -154,7 +154,7 @@ kidney tissue,kidney,UBERON:0002113
 lamina,lamina,UBERON:0000957
 larva,larva,
 Larvae,larva,
-larval thorax,larval thorax,UBERON:6001741
+larval thorax,insect larval thorax,UBERON:6001741
 leg,leg,
 baboon liver,liver,UBERON:0002107
 Fetal Female Liver,liver,UBERON:0002107
@@ -230,11 +230,12 @@ sebum,sebum,
 Seeds,seed,
 Seedlings,seedling,
 Seminal plasma,seminal fluid,
-Muscle,skeletal muscle organ,UBERON:0014892
-muscle tissue,skeletal muscle organ,UBERON:0014892
-"muscle, skeletal",skeletal muscle organ,UBERON:0014892
-muscles,skeletal muscle organ,UBERON:0014892
-skeletal muscle organ,skeletal muscle organ,UBERON:0014892
+Muscle,"skeletal muscle organ, vertebrate",UBERON:0014892
+muscle tissue,muscle tissue,UBERON:0002385
+"muscle, skeletal","skeletal muscle organ, vertebrate",UBERON:0014892
+muscles,"skeletal muscle organ, vertebrate",UBERON:0014892
+skeletal muscle organ,"skeletal muscle organ, vertebrate",UBERON:0014892
+skeletal muscle,"skeletal muscle organ, vertebrate",UBERON:0014892
 Skeleton,skeleton,
 skin of back,skin of back,UBERON:0001068
 skin of body,skin of body,UBERON:0002097

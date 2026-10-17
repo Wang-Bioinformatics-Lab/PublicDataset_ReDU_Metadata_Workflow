@@ -489,6 +489,8 @@ process gnpsHarmonize {
     path exposure_csv
     path names_dmp
     path cellosaurus_tsv
+    path nodes_dmp
+    path merged_dmp
 
     output:
     file 'adjusted_metadata_folder'
@@ -507,6 +509,8 @@ process gnpsHarmonize {
     --path_to_hpo_csv ${hpo_csv} \
     --path_to_exposure_csv ${exposure_csv} \
     --path_to_ncbi_names_dmp ${names_dmp} \
+    --path_to_ncbi_nodes_dmp ${nodes_dmp} \
+    --path_to_ncbi_merged_dmp ${merged_dmp} \
     --path_to_cellosaurus_tsv ${cellosaurus_tsv} \
     || { echo "WARNING: gnpsHarmonize failed or timed out; GNPS rows from earlier runs are kept" >&2; true; }
     """
@@ -815,7 +819,7 @@ workflow {
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
     // the dataset cache's file table for the name matching steps, after the MassIVE listing
     dataset_cache = fetchDatasetCache(file_paths_ch)
-    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names, cellosaurus)
+    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names, cellosaurus, ref.nodes, ref.merged)
     gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms, dataset_cache.table)
     gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
