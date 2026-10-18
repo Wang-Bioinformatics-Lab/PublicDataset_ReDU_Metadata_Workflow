@@ -13,6 +13,7 @@ import weakref
 from io import StringIO
 from REDU_conversion_functions import age_category, normalize_redu_datetime
 from REDU_conversion_functions import pinned_genus_term, sp_generic_label, sp_other_strain
+from REDU_conversion_functions import bare_sp_id_term, _GENUS_LEVEL_SP, NCBI_COLLECTING_TAXON
 from blank_qc_names import apply_filename_blank_qc, blank_qc_type_from_filename
 import reference_materials
 # several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
@@ -200,12 +201,12 @@ def _ncbi_rows_of(table, taxon_index, taxon_ids):
 
 
 # an organism name at genus level: 'Genus sp.', 'Genus spp.', also with NCBI's note on the genus name ('Bacillus sp.
-# (in: firmicutes)' for a name of two genera, 'Saccharimonas sp. (SeqCode)') (complete_and_fill_REDU_table, NCBITaxonomy)
-_GENUS_LEVEL_SP = re.compile(r'(?i)\S+ spp?\.?(?: \((?:in: [^()]*|SeqCode)\))?')
+# (in: firmicutes)' for a name of two genera, 'Saccharimonas sp. (SeqCode)') (complete_and_fill_REDU_table,
+# NCBITaxonomy): REDU_conversion_functions._GENUS_LEVEL_SP, imported above.
 # NCBI's taxa that collect the unnamed members of a taxon ('unclassified Sulfitobacter', 'Pseudomonas environmental
 # samples') and its placeholders for organisms known by a sequence only ('uncultured Streptomyces sp.', 'unidentified
-# Pseudomonas'): no one organism either
-_NCBI_COLLECTING_TAXON = re.compile(r'(?i)(?:unclassified|uncultured|unidentified) \S.*|(?:\S.* )?environmental samples')
+# Pseudomonas'): no one organism either (REDU_conversion_functions.NCBI_COLLECTING_TAXON)
+_NCBI_COLLECTING_TAXON = NCBI_COLLECTING_TAXON
 
 _DOID_ITEM = re.compile(r'(?i)^DOID[:_]?(\d+)$')
 
@@ -407,6 +408,11 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     # (name_over_id): only where the caller asks for it (the GNPS harmonize step, which loads the pinned taxonomy
     # from --path_to_ncbi_nodes_dmp); the converters' terms are allowed terms already
     ncbi_lineage = pinned_ncbi_relations() if kwargs.get('ncbi_name_over_id') else None
+    # the pinned NCBI taxonomy for a bare 'Genus sp.' with the ID of a species or strain of that genus
+    # (REDU_conversion_functions.bare_sp_id_term): the caller's (kwargs 'ncbi_taxonomy', a PinnedNcbiLineage:
+    # MASST_to_REDU), else the one the caller loaded with use_pinned_ncbi_taxonomy (GNPS harmonize, the converters)
+    import REDU_conversion_functions as _rcf_pinned
+    bare_sp_taxonomy = kwargs.get('ncbi_taxonomy') or _rcf_pinned._PINNED_LINEAGE
     # names no lookup resolves: other white space, a strain designation at the end, one wrong character
     # (REDU_conversion_functions.ncbi_name_fallback); only where the caller asks for it (the GNPS harmonize
     # step, with the pinned NCBI taxonomy)
@@ -710,10 +716,19 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         #    of another genus, one at genus level, NCBI's 'unclassified Genus' or 'uncultured Genus sp.',
                         #    an ID of another strain). A designation that is a lab's numbering ('Bacillus sp. 1',
                         #    'Streptomyces sp. 12': REDU_conversion_functions.sp_generic_label) names the genus only,
-                        #    unless the given ID is that taxon (NCBI lists such names for other submitters' isolates)
+                        #    unless the given ID is that taxon (NCBI lists such names for other submitters' isolates).
+                        #    A 'Genus sp.' / 'Genus spp.' with the ID of a species or strain of that genus names that
+                        #    organism, the ID being more specific ('502558|Eggerthella sp' is 'Eggerthella sp. YY7918';
+                        #    REDU_conversion_functions.bare_sp_id_term, pinned NCBI taxonomy)
                         sp_genus = None
                         generic = False
                         if oname and _is_sp_or_spp(oname):
+                            if oid and _genus_level_sp(oname):
+                                own = bare_sp_id_term(oname, oid, allowed_by_id.get,
+                                                      lambda n: allowed_by_name_ci.get(str(n).strip().lower()),
+                                                      bare_sp_taxonomy)
+                                if own:
+                                    return own
                             sp_genus = name_hit(_genus_from_name(oname), oid)
                             if sp_genus and _genus_level_sp(oname):
                                 return sp_genus  # e.g., '1883|Streptomyces'

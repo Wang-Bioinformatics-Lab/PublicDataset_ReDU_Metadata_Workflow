@@ -25,7 +25,7 @@ from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, food_ontology_term
 from REDU_conversion_functions import normalize_redu_datetime
 from REDU_conversion_functions import multi_sample_type, ORGANISM_LIST
-from REDU_conversion_functions import sp_name_term
+from REDU_conversion_functions import sp_name_term, bare_sp_id_term
 # several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
 from ncbi_database import all_parts_series, is_multi, join_parts, single_taxid, single_taxid_series, taxonomy_parts
 from ms_instrument_matching import match_mass_spectrometer
@@ -1634,6 +1634,14 @@ def _ncbi_term_by_id(allowedTerm_dict):
 #     applies to GNPS 'ID|Name'): a designation that is a lab's numbering ('Bacillus sp. 1')
 #     names the genus only (T is the genus); where A wins above but is a strain of another
 #     designation ('Streptomyces sp. 1' with the accession of 'Streptomyces sp. 12'), the genus
+#   * before all of these, a bare 'Genus sp.' ('Streptomyces sp.', 'Mus sp.', 'Bacillus spp', 'Bacillus sp. (in:
+#     firmicutes)') with the accession of a species or strain of that genus that is not part of a drag-fill series:
+#     A, the more specific organism (REDU_conversion_functions.bare_sp_id_term, the rule the validator applies to GNPS
+#     'ID|Name'; user decision 2026-10-18); also where the text carries several such accessions in the study (each
+#     sample its own strain of the genus) and for non-microbes ('Mus sp.' with the house mouse's accession). Not where
+#     the text carries an accession that another organism text of the study also carries (a copy from that row: an
+#     'Acinetobacter sp.' row with the 'Acinetobacter junii' ID 40215 of the row above; then none of the text's
+#     accessions is taken as its evidence): the rules below decide, as for any text
 # A drag-fill series: at least _DRAG_FILL_RUN sample rows next to each other in the sample sheet
 # whose accession counts up by one from row to row while the organism text stays the same (up to
 # its numbers: 'ATCC 31823', 'ATCC 31824' ...), or at least _DRAG_FILL_RUN consecutive taxon IDs
@@ -1771,6 +1779,8 @@ def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_nc
             ids_of_text.setdefault(_organism_key(text), set()).add(acc)
             texts_of_id.setdefault(acc, set()).add(_organism_key(text))
     runs_of_text = {key: _consecutive_runs([int(a) for a in ids if a.isdigit()]) for key, ids in ids_of_text.items()}
+    # texts that carry an accession another organism text of the study also carries
+    shares_accession = {key for key, ids in ids_of_text.items() if any(texts_of_id[a] != {key} for a in ids)}
     dragged = _drag_filled(samples)
     out = {}
     for text, acc in dict.fromkeys(list(samples) + list(pairs or [])):
@@ -1781,6 +1791,13 @@ def organism_accession_terms(samples, text_term, accession_term, is_ancestor=_nc
             continue
         key = _organism_key(text)
         in_series = (text, acc) in dragged or (acc.isdigit() and int(acc) in runs_of_text.get(key, ()))
+        # (a bare 'Genus sp.' with the accession of a species or strain of that genus, not drag-filled, no accession of the
+        # text shared with another organism text: that taxon)
+        copied = key in shares_accession or bool(texts_of_id.get(acc, set()) - {key})
+        own = None if in_series or copied else bare_sp_id_term(text, acc, accession_term, text_term)
+        if own:
+            out[(text, acc)] = own
+            continue
         t_term = text_term(text)
         a_id, _, a_name = a_term.partition('|')
         if t_term:

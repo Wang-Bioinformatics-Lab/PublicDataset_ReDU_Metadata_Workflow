@@ -4002,8 +4002,42 @@ def _sp_name_term(text, term, given_id, allowedTerm_dict):
     if not term or not _rcf.sp_designation(text):
         return term
     by_id, by_name = _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
-    text_term = by_name.get(' '.join(str(text).lower().split())) or _rcf.pinned_ncbi_synonym_term(str(text), allowedTerm_dict)
-    return _rcf.sp_name_term(text, term, given_id, by_id.get, lambda n: by_name.get(str(n).lower()), text_term)
+    return _rcf.sp_name_term(text, term, given_id, by_id.get, lambda n: by_name.get(str(n).lower()),
+                             _sp_text_term(text, allowedTerm_dict))
+
+
+def _sp_text_term(text, allowedTerm_dict):
+    """The term an organism text names by its allowed name or a names.dmp synonym (white space normalised), else None."""
+    _, by_name = _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
+    return by_name.get(' '.join(str(text).lower().split())) or _rcf.pinned_ncbi_synonym_term(str(text), allowedTerm_dict)
+
+
+def _sp_given_id(text, term, given_ids, allowedTerm_dict):
+    """The ID of `term` where it is the term of the analysis' TAXONOMY_ID (its ID one of given_ids) and, for a text
+    'Genus sp. <designation>', that ID is the text's own taxon (_sp_text_term) or lies in the text's genus (the pinned
+    NCBI genus of its taxon has the text's genus name: _rcf.pinned_genus_term), as the validator and MetaboLights take an
+    ID over such a text; else '' (_sp_name_term: an ID of an unrelated taxon, 'Streptomyces sp. 12' with 9606, is no
+    evidence that the text names the isolate NCBI lists under that name)."""
+    taxid = term.split('|', 1)[0].strip()
+    if taxid not in given_ids:
+        return ''
+    if not _rcf.sp_designation(text):
+        return taxid
+    by_id, _ = _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
+    if _rcf.pinned_genus_term(taxid, str(text).split()[0], by_id.get) or _sp_text_term(text, allowedTerm_dict) == term:
+        return taxid
+    return ''
+
+
+def _bare_sp_term(species, given_ids, allowedTerm_dict):
+    """The term of the analysis' TAXONOMY_ID (one of given_ids) where SUBJECT_SPECIES is a bare 'Genus sp.' and the ID
+    that of a species or strain of that genus (_rcf.bare_sp_id_term; one such term), else None."""
+    if not _rcf.genus_level_sp(species):
+        return None
+    by_id, by_name = _rcf._taxonomy_term_index(allowedTerm_dict['NCBITaxonomy']['allowed_values'])
+    terms = {_rcf.bare_sp_id_term(species, i, by_id.get, lambda n: by_name.get(str(n).strip().lower()))
+             for i in sorted(given_ids) if i.isdigit()} - {None}
+    return terms.pop() if len(terms) == 1 else None
 
 
 _organism_fallback_memo = {}
@@ -6635,7 +6669,9 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     #######
     unique_species = set(df_outer['SUBJECT_SPECIES'])
     unique_species_ncbiIDs = set(df_outer['TAXONOMY_ID'])
-    processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, ncbi_id=unique_species_ncbiIDs, allowedTerm_dict=allowedTerm_dict) for species in unique_species}
+    # (a copy of the IDs per lookup: get_taxonomy_id_from_name__allowedTerms pops the ID from the set it is given, and the
+    # rules below need the analysis' TAXONOMY_ID)
+    processed_species = {species: get_taxonomy_id_from_name__allowedTerms(species, ncbi_id=set(unique_species_ncbiIDs), allowedTerm_dict=allowedTerm_dict) for species in unique_species}
     # names the lookup above misses for formatting reasons only: 'NCBI:txid51953',
     # 'Oat (Avena sativa L.)', 'Lactuca sativa L.'
     processed_species = {sp: (term if term is not None else study_species_variant_term(sp, df_outer['TAXONOMY_ID'].iloc[0], allowedTerm_dict))
@@ -6651,13 +6687,23 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
                               mwb_organism_fallback(sp, allowedTerm_dict, f"{entry['STUDY_ID']} SUBJECT_SPECIES"))
                          for sp, term in processed_species.items()}
     # 'Genus sp. <designation>': the genus for a lab's numbering ('Bacillus sp. 1') without its own TAXONOMY_ID, and
-    # for a TAXONOMY_ID of another strain (_sp_name_term)
+    # for a TAXONOMY_ID of another strain (_sp_name_term); a TAXONOMY_ID of an unrelated taxon is no ID of the text's
+    # isolate (_sp_given_id)
     _given_ids = {str(i).strip() for i in unique_species_ncbiIDs}
+    _given_ids |= {m.group(1) for m in map(_TXID_RE.match, _given_ids) if m}   # ('NCBI:txid51953')
     _given_ids |= {str(_taxon_node(i)) for i in _given_ids if _taxon_node(i) is not None}   # (merged IDs: the current one)
-    processed_species = {sp: (_sp_name_term(sp, term, term.split('|', 1)[0].strip()
-                                            if term.split('|', 1)[0].strip() in _given_ids else '', allowedTerm_dict)
+    processed_species = {sp: (_sp_name_term(sp, term, _sp_given_id(sp, term, _given_ids, allowedTerm_dict), allowedTerm_dict)
                               if term is not None else None)
                          for sp, term in processed_species.items()}
+    # a bare 'Genus sp.' ('Streptomyces sp.', 'Bacillus spp', 'Bacillus sp. (in: firmicutes)') with the TAXONOMY_ID of a
+    # species or strain of that genus: that taxon, also where the ID is written 'NCBI:txid...' or was merged
+    # (_bare_sp_term; user decision 2026-10-18)
+    for sp, term in list(processed_species.items()):
+        own = _bare_sp_term(sp, _given_ids, allowedTerm_dict)
+        if own and own != term:
+            print(f"[NCBITaxonomy] {entry['STUDY_ID']}: SUBJECT_SPECIES {sp!r} with TAXONOMY_ID "
+                  f"{df_outer['TAXONOMY_ID'].iloc[0]!r}: {own} (was {term})")
+        processed_species[sp] = own or term
     df_outer['NCBITaxonomy'] = df_outer['SUBJECT_SPECIES'].map(processed_species)
     attempt_taxa_extraction_from_inner = False
     if all(value is None for value in processed_species.values()):

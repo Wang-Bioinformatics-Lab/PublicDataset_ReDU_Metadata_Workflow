@@ -773,6 +773,165 @@ def sp_name_term(text, term, given_id, term_of_id, term_of_name=None, text_term=
     return found or None
 
 
+# ---- a bare 'Genus sp.' with the ID of a species or strain of that genus -------------------------------------------
+# An organism text at genus level (genus_level_sp: 'Genus sp.', 'Genus spp.', the period optional, also NCBI's own
+# genus-level names 'Bacillus sp. (in: firmicutes)', 'Saccharimonas sp. (SeqCode)') that comes with the taxon ID of a
+# species or strain of that genus names that organism: the ID is more specific than the text and agrees with it (user
+# decision 2026-10-18, "if there is a more specific id take the id"; in every source: the validator's 'ID|Name' of GNPS
+# and MASST, MetaboLights' organism text and its accession, Workbench's SUBJECT_SPECIES and TAXONOMY_ID). In the pinned
+# NCBI taxonomy (bare_sp_id_term), the ID's taxon (merged IDs followed)
+#   * has rank species or lies below a species (a strain, a subspecies), and is none of NCBI's placeholders at genus
+#     level ('Streptomyces sp.', 'Bacillus sp. (in: firmicutes)', 'uncultured Streptomyces sp.', 'unidentified
+#     Pseudomonas': NCBI_COLLECTING_TAXON);
+#   * lies in the genus the text names: the ID's NCBI genus has the text's genus name (case-insensitive; the ID tells
+#     which genus of a name that several genera share: 'Mallotus sp.' with the capelin's ID is the capelin, not a plant;
+#     'Mus sp.' with the house mouse's ID the house mouse, 'Mus' also naming a subgenus); or, where the text's genus
+#     name is the scientific name of no taxon of the pinned taxonomy (names.dmp, any rank: a word that names a genus
+#     there names that genus, also a genus without species, and one of another rank names that taxon: 'Bacillus sp.'
+#     with the ID of Priestia megaterium, a species NCBI moved out of Bacillus, is an ID of another genus; 'Micromonas'
+#     is a green alga, not the bacterial synonym 'Micromonas <firmicutes>' of Parvimonas; 'Bacteria sp.', 'Fungi sp.'
+#     are no genus texts) nor an allowed name of a taxon of another rank, names.dmp lists that name as a synonym /
+#     equivalent name of the ID's NCBI genus (a renamed genus: 'Verrucosispora' of Micromonospora, 'Hypocrea' of
+#     Trichoderma) or the binomial of the ID's species under the text's genus name (a species of a genus name NCBI no
+#     longer has; the first two words of the names.dmp name, also with another Latin gender ending of the epithet);
+#   * for NCBI's qualified name 'Genus sp. (in: <group>)', lies in the NCBI genus of the taxon of that name (the note
+#     tells which genus: 'Bacillus sp. (in: walking sticks)' with a bacterium's ID is no such pair).
+# Otherwise None, and each source decides as before: an ID of the genus itself, of a taxon between the genus and its
+# species (a subgenus, 'unclassified Streptomyces') or of NCBI's 'Genus sp.' gives the genus; an ID of another genus or
+# above the genus follows the source's own rules. A drag-filled MetaboLights accession is no ID of the text
+# (Metabolights2REDU.organism_accession_terms). 'Genus sp. <strain, isolate, clone>' is no text at genus level
+# (sp_name_term above).
+_GENUS_LEVEL_SP = re.compile(r'(?i)\S+ spp?\.?(?: \((?:in: [^()]*|SeqCode)\))?')
+_QUALIFIED_SP = re.compile(r'(?i)\S+ spp?\.? \((?:in: [^()]*|SeqCode)\)')
+# names.dmp synonyms / equivalent names (lower-cased) for bare_sp_id_term, read once where needed: one-word names -> taxon
+# IDs, (genus, epithet stem) of the first two words of a name ('Lactobacillus plantarum (Orla-Jensen 1919) Bergey et
+# al. 1923 ...') -> taxon IDs; and the one-word scientific names (lower-cased) of all taxa
+_GENUS_SYNONYMS = None
+# NCBI's taxa that collect the unnamed members of a taxon ('unclassified Sulfitobacter', 'Pseudomonas environmental
+# samples') and its placeholders for organisms known by a sequence only ('uncultured Streptomyces sp.', 'unidentified
+# Pseudomonas'): no one organism either
+NCBI_COLLECTING_TAXON = re.compile(r'(?i)(?:unclassified|uncultured|unidentified) \S.*|(?:\S.* )?environmental samples')
+
+
+def genus_level_sp(name):
+    """Whether an organism name is an answer at genus level: 'Genus sp.' / 'Genus spp.' (the period optional) with nothing
+    after it but NCBI's note on the genus name ('Bacillus sp. (in: firmicutes)', 'Saccharimonas sp. (SeqCode)'); white
+    space normalised."""
+    return isinstance(name, str) and _GENUS_LEVEL_SP.fullmatch(' '.join(name.split())) is not None
+
+
+def _species_of(tax, node):
+    """The taxon itself or its ancestor of rank species where taxon `node` has rank species or lies below a species,
+    else None (a genus, a rank above it, a taxon between a genus and its species)."""
+    for _ in range(1000):
+        column = tax.column[tax.rank[node]]
+        if column == _SPECIES_COLUMN:
+            return node
+        if column is not None:
+            return None
+        up = tax.parent[node]
+        if up == node or up < 0:
+            return None
+        node = up
+    return None
+
+
+def _genus_synonyms(names_dmp):
+    global _GENUS_SYNONYMS
+    if _GENUS_SYNONYMS is None:
+        t0 = time.time()
+        words, binomials, scientific = {}, {}, set()
+        with open(names_dmp, encoding='utf-8') as handle:
+            for line in handle:
+                if 'scientific name' not in line and 'synonym' not in line and 'equivalent name' not in line:
+                    continue
+                fields = line.split('\t|\t')
+                if len(fields) < 4:
+                    continue
+                name_class = fields[3].rstrip('|\t\r\n').strip()
+                if name_class == 'scientific name':
+                    name = fields[1].split()
+                    if len(name) == 1:
+                        scientific.add(name[0].lower())
+                    continue
+                if name_class not in _NCBI_SYNONYM_CLASSES:
+                    continue
+                name = fields[1].lower().split()
+                if len(name) == 1:
+                    words.setdefault(name[0], set()).add(int(fields[0]))
+                elif len(name) > 1:
+                    key = _binomial_key(' '.join(name[:2]))
+                    if key is not None:
+                        binomials.setdefault(key, set()).add(int(fields[0]))
+        _GENUS_SYNONYMS = (words, binomials, frozenset(scientific))
+        print(f"names.dmp names for genus-level organism texts: {len(words)} one-word synonyms, {len(binomials)} "
+              f"binomials, {len(scientific)} one-word scientific names ({time.time() - t0:.1f} s)", flush=True)
+    return _GENUS_SYNONYMS
+
+
+def _genus_of_term(tax, term):
+    """The NCBI genus (pinned taxonomy, merged IDs followed) of the taxon of an allowed 'ID|Name' term, else None."""
+    try:
+        node = tax.resolve(int(str(term).split('|', 1)[0].strip()))
+    except (TypeError, ValueError):
+        return None
+    return tax.lineage_ids(node)[_GENUS_COLUMN] if node is not None else None
+
+
+def bare_sp_id_term(text, given_id, term_of_id, term_of_name, pinned=None):
+    """The allowed term of the taxon of `given_id` where `text` is a bare 'Genus sp.' and the ID that of a species or
+    strain of that genus (block comment above), else None. term_of_id(ID): the allowed term of a taxon ID or None;
+    term_of_name(name): the source's exact name lookup (allowed name, case-insensitive) or None; pinned: the pinned
+    taxonomy (PinnedNcbiLineage; default the one use_pinned_ncbi_taxonomy loaded; without one, None)."""
+    pinned = pinned if pinned is not None else _PINNED_LINEAGE
+    if pinned is None or not genus_level_sp(text):
+        return None
+    tax = pinned.taxonomy
+    try:
+        node = tax.resolve(int(str(given_id).strip()))
+    except (TypeError, ValueError):
+        return None
+    species = _species_of(tax, node) if node is not None else None
+    if species is None:
+        return None
+    term = term_of_id(str(node))
+    if not term or is_multi(term):
+        return None
+    name = term.split('|', 1)[-1].strip()
+    if genus_level_sp(name) or NCBI_COLLECTING_TAXON.fullmatch(name):
+        return None
+    genus = tax.lineage_ids(node)[_GENUS_COLUMN]
+    if genus is None:
+        return None
+    text = ' '.join(text.split())
+    if _QUALIFIED_SP.fullmatch(text):
+        named = term_of_name(text)
+        return term if named and not is_multi(named) and _genus_of_term(tax, named) == genus else None
+    word = text.split()[0].lower()
+    if pinned.names.get(genus, '').lower() == word:
+        return term
+    # the names.dmp readings: a genus name that is the scientific name of no taxon (that taxon: another genus, a taxon of
+    # another rank) and no allowed name of a taxon of another rank than genus
+    words, binomials, scientific = _genus_synonyms(tax.names_dmp)
+    if word in scientific:
+        return None
+    named = term_of_name(word)
+    if named:
+        try:
+            named_node = tax.resolve(int(named.split('|', 1)[0].strip()))
+        except (TypeError, ValueError):
+            named_node = None
+        if named_node is None or tax.column[tax.rank[named_node]] != _GENUS_COLUMN:
+            return None
+    if genus in words.get(word, ()):
+        return term
+    species_name = (name if species == node else pinned.names.get(species, '')).lower().split()
+    key = _binomial_key(f'{word} {species_name[1]}') if len(species_name) == 2 else None
+    if key is not None and species in {tax.resolve(i) for i in binomials.get(key, ())}:
+        return term
+    return None
+
+
 # NCBI allows 3 requests/s without an API key; going faster returns HTTP 429
 _NCBI_MIN_INTERVAL = 0.4
 _ncbi_last_request = [0.0]

@@ -30,6 +30,7 @@ import os
 import pandas as pd
 
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table, build_ncbi_name_resolver
+from REDU_conversion_functions import PinnedNcbiLineage
 from masst_tables import (read_table, food_rows, personal_care_rows, microbiome_rows, Vocab, load_gfop)
 from merge_metadata import link_same_files, NameCopies, name_copy_datasets
 
@@ -402,6 +403,12 @@ def main():
         kwargs['DOIDOntologyIndex_table'] = doid_table
     if exposure_table is not None:
         kwargs['ExposureIndex_table'] = exposure_table
+    # the pinned NCBI taxonomy, for a bare 'Genus sp.' with the taxid of a species or strain of that genus (the validator
+    # gives that taxon: REDU_conversion_functions.bare_sp_id_term); passed to the validator only (this step does not call
+    # use_pinned_ncbi_taxonomy, so its other lookups stay as they were)
+    paths = (args.path_ncbi_nodes, args.path_ncbi_names, args.path_ncbi_merged)
+    if all(p and p != 'none' and os.path.exists(p) for p in paths):
+        kwargs['ncbi_taxonomy'] = PinnedNcbiLineage(*paths)
     df_massts_filled = complete_and_fill_REDU_table(df_massts, allowedTerm_dict=allowed_terms,
                                                     NCBIRankDivision_table=NCBIRankDivision_table,
                                                     NCBI_name_resolver=ncbi_name_resolver, keep_usi=True, **kwargs)
