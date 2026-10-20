@@ -6,6 +6,10 @@ dependencies:
   - pandas=2.0.3
   - openpyxl=3.1.2
   - xlrd=2.0.1
+  # Parquet copy of the final table (add_cache_columns.py). 10.0.1 is the newest conda-forge pyarrow
+  # that installs next to python 3.8.8 (later builds need openssl 3); the pip wheel loads the
+  # system libstdc++ and then breaks 'import pandas' on older hosts
+  - pyarrow=10.0.1
   - pip
   - pip:
       - xmltodict

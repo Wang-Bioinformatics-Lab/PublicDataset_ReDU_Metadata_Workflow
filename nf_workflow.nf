@@ -67,7 +67,7 @@ process fetchReferenceData {
 // 20-90 min per run; a query that timed out dropped all rows of its dataset). It is fetched once the
 // MassIVE listing is done (so the dataset cache is asked one request at a time), while gnpsHarmonize
 // runs. If the download fails or is incomplete the file is left empty and the name matching steps
-// query the cache per dataset, as before.
+// query the cache per dataset, as before. add_cache_columns uses it if its own download fails.
 process fetchDatasetCache {
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -664,14 +664,22 @@ process add_cache_columns {
 
     input:
     file merged_ch
+    // the dataset cache's file table fetched earlier in this run (empty if that download failed),
+    // used if the dataset cache cannot be fetched now
+    path files_table
 
     output:
     file 'merged_metadata.tsv'
+    // the same table as Parquet for the web app (required: if it cannot be written the task fails and
+    // neither file is published)
+    path 'merged_metadata.parquet'
 
     """
     python $TOOL_FOLDER/add_cache_columns.py \
+    --parquet_output merged_metadata.parquet \
     ${merged_ch} \
-    merged_metadata.tsv
+    merged_metadata.tsv \
+    --files_table ${files_table}
     """
 }
 
@@ -866,6 +874,6 @@ workflow {
     merged_with_text_ch = finalizeTextColumns(merged_with_rules_ch, allowed_terms, exposure_onto)
 
     // Add Cache columns
-    cache_enriched_metadata = add_cache_columns(merged_with_text_ch)
+    cache_enriched_metadata = add_cache_columns(merged_with_text_ch, dataset_cache.table)
 
 }
