@@ -1018,11 +1018,59 @@ def handle_duplicates(ordered_pairs):
 # studies). The document of the study is taken; a broken SUBJECT_SAMPLE_FACTORS list is
 # replaced by the one of the mwTab text format (/mwtab/txt). Everything else still comes
 # from the JSON.
+# Up to 2026-10-18 the Workbench answered with the bare document(s) ('{...}', several as
+# '{...}\n\n{...}', none as ''); by 2026-10-21 it wraps them in a list ('[\n{...}\n,\n{...}\n]',
+# none as '[\n'). Both forms are read.
 _MWTAB_FIELD_RE = re.compile(r'^[A-Z]{2}:([A-Za-z0-9_]+)[ ]*\t(.*)$')
 _MWTAB_SECTIONS = {'PROJECT', 'STUDY', 'SUBJECT', 'COLLECTION', 'TREATMENT', 'SAMPLEPREP', 'CHROMATOGRAPHY',
                    'ANALYSIS', 'MS', 'NMR'}
-_MWTAB_JSON_DOC_SPLIT_RE = re.compile(r'\n\}\n\n(?=\{\n"METABOLOMICS WORKBENCH")')
+_MWTAB_JSON_DOC_SPLIT_RE = re.compile(r'\n\}\n,?\n(?=\{\n"METABOLOMICS WORKBENCH")')
 _MWTAB_SSF_END_RE = re.compile(r'\n\],\n"[A-Z][A-Z_ ]*":')
+
+
+def _mwtab_documents_text(text):
+    """The text of the mwTab JSON document(s) without the list the Workbench wraps them in."""
+    t = text.strip()
+    if t.startswith('['):
+        t = t[1:]
+        if t.endswith(']'):
+            t = t[:-1]
+    return t.strip()
+
+
+def _study_documents(parsed, n_docs, study_id):
+    """The distinct (document, broken) pairs of the study among the parsed documents of one
+    response (n_docs documents in all)."""
+    def _study_of(d):
+        head = d.get('METABOLOMICS WORKBENCH') if isinstance(d, dict) else None
+        return head.get('STUDY_ID') if isinstance(head, dict) else None
+    # with several documents, the study's are those whose header names it; a single document
+    # is taken as it is, as the JSON path does (some headers name another study or none)
+    mine = [(d, broken) for d, broken in parsed if isinstance(d, dict) and (n_docs == 1 or _study_of(d) == study_id)]
+    with_samples = [(d, broken) for d, broken in mine if broken or d.get('SUBJECT_SAMPLE_FACTORS')]
+    if with_samples:
+        mine = with_samples
+    distinct = []
+    for d, broken in mine:
+        if not any(d == e and broken == b for e, b in distinct):
+            distinct.append((d, broken))
+    return distinct
+
+
+def mwtab_from_document_list(docs, study_id, analysis_id):
+    """The mwTab of an analysis whose JSON response is a list of documents, or None (with the
+    reason in the log)."""
+    if not docs:
+        _drop_analysis(study_id, analysis_id, 'the Workbench answered with an empty mwTab')
+        return None
+    distinct = _study_documents([(d, False) for d in docs], len(docs), study_id)
+    if len(distinct) != 1:
+        _drop_analysis(study_id, analysis_id, f"the mwTab JSON has {len(distinct)} usable documents of the study "
+                                              f"(of {len(docs)} documents)")
+        return None
+    if len(docs) > 1:
+        print(f"mwTab JSON of {analysis_id} has {len(docs)} documents: read with the document of {study_id}")
+    return distinct[0][0]
 
 
 def _mwtab_value(v):
@@ -1144,7 +1192,8 @@ def _drop_analysis(study_id, analysis_id, reason):
 def mwtab_from_invalid_json(text, study_id, analysis_id, error, get_text=None):
     """The mwTab of an analysis whose JSON response json.loads rejected, or None (with the
     reason in the log). get_text(url) returns the text of a Workbench response."""
-    if not text.strip():
+    text = _mwtab_documents_text(text)
+    if not text:
         _drop_analysis(study_id, analysis_id, 'the Workbench answered with an empty mwTab')
         return None
     docs = _MWTAB_JSON_DOC_SPLIT_RE.split(text)
@@ -1166,19 +1215,7 @@ def mwtab_from_invalid_json(text, study_id, analysis_id, error, get_text=None):
             parsed.append((json.loads(rest, strict=False, object_pairs_hook=handle_duplicates), True))
         except ValueError as e:
             problems.append(f"{type(e).__name__}: {e}")
-    def _study_of(d):
-        head = d.get('METABOLOMICS WORKBENCH') if isinstance(d, dict) else None
-        return head.get('STUDY_ID') if isinstance(head, dict) else None
-    # with several documents, the study's are those whose header names it; a single document
-    # is taken as it is, as the JSON path does (some headers name another study or none)
-    mine = [(d, broken) for d, broken in parsed if isinstance(d, dict) and (len(docs) == 1 or _study_of(d) == study_id)]
-    with_samples = [(d, broken) for d, broken in mine if broken or d.get('SUBJECT_SAMPLE_FACTORS')]
-    if with_samples:
-        mine = with_samples
-    distinct = []
-    for d, broken in mine:
-        if not any(d == e and broken == b for e, b in distinct):
-            distinct.append((d, broken))
+    distinct = _study_documents(parsed, len(docs), study_id)
     if len(distinct) != 1:
         _drop_analysis(study_id, analysis_id, f"the mwTab JSON is not valid JSON and has {len(distinct)} usable "
                                               f"documents of the study ({error}; of {len(docs)} documents: {problems[:3]})")
@@ -1201,6 +1238,18 @@ def mwtab_from_invalid_json(text, study_id, analysis_id, error, get_text=None):
         mwtab['SUBJECT_SAMPLE_FACTORS'] = factors
         how = ('' if len(docs) == 1 else how + '; ') + f'its {len(factors)} samples (SUBJECT_SAMPLE_FACTORS) from the mwTab text'
     print(f"mwTab JSON of {analysis_id} is not valid JSON ({error}): read with {how}")
+    return mwtab
+
+
+def mwtab_from_response(text, study_id, analysis_id, get_text=None):
+    """The mwTab of an analysis from the text of the Workbench's /mwtab response, or None (with
+    the reason in the log)."""
+    try:
+        mwtab = json.loads(text, object_pairs_hook=handle_duplicates)
+    except json.JSONDecodeError as e:
+        return mwtab_from_invalid_json(text, study_id, analysis_id, e, get_text=get_text)
+    if isinstance(mwtab, list):
+        return mwtab_from_document_list(mwtab, study_id, analysis_id)
     return mwtab
 
 
@@ -7790,15 +7839,11 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                            f"could not get the mwTab ({type(e).__name__}: {e})")
             return None
 
-        try:
-            mwTab_json = json.loads(mwb_anlysis_req.text, object_pairs_hook=handle_duplicates)
+        mwTab_json = mwtab_from_response(mwb_anlysis_req.text, str(Massive_ID).split('|')[0], str(MWB_analysis_ID),
+                                         get_text=lambda url: _mwb_get(url).text)
+        if mwTab_json is None:
+            return None
 
-        except json.JSONDecodeError as e:
-            mwTab_json = mwtab_from_invalid_json(mwb_anlysis_req.text, str(Massive_ID).split('|')[0], str(MWB_analysis_ID),
-                                                 e, get_text=lambda url: _mwb_get(url).text)
-            if mwTab_json is None:
-                return None
-        
     # reference materials the analysis' mwTab sections name by number (reference_materials.py)
     mwb_note_refmat_study_text(mwTab_json)
     allowedTerm_dict = kwargs['allowedTerm_dict']
