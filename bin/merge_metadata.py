@@ -421,6 +421,8 @@ SUPPLEMENT_GROUPS = [
     ['ENVOBroadScale', 'ENVOBroadScaleIndex'],
     ['ENVOLocalScale', 'ENVOLocalScaleIndex'],
     ['ENVOMediumScale', 'ENVOMediumScaleIndex'],
+    ['IsolationSourceUBERONBodyPartName', 'IsolationSourceUBERONOntologyIndex'],
+    ['IsolationSourceENVOEnvironmentMaterial', 'IsolationSourceENVOEnvironmentMaterialIndex'],
 ]
 # never filled from MASST
 SUPPLEMENT_NEVER = {'USI', 'filename', 'ATTRIBUTE_DatasetAccession', 'MassiveID', 'DataSource'}
@@ -429,7 +431,8 @@ SUPPLEMENT_SUBJECT = {'NCBITaxonomy', 'UBERONBodyPartName', 'DOIDCommonName', 'H
                       'CellLine', 'LatitudeandLongitude', 'AgeInYears', 'SubjectIdentifierAsRecorded',
                       'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus',
                       'SmokingStatus', 'BodyMassIndex', 'Diet', 'TimePointHoursRelativeToEvent', 'FastingStatus',
-                      'ColonizationStatus', 'ComorbidityListDOIDIndex', 'SampleGroupFreeText', 'TermsofPosition'}
+                      'ColonizationStatus', 'ComorbidityListDOIDIndex', 'SampleGroupFreeText', 'TermsofPosition',
+                      'IsolationSourceNCBITaxonomy', 'IsolationSourceUBERONBodyPartName', 'IsolationSourceENVOEnvironmentMaterial'}
 # fields that do not depend on what the sample is: filled even when the sample types disagree
 SUPPLEMENT_TYPE_INDEPENDENT = {'ProductCategory', 'Country', 'SampleCollectionDateandTime'}
 # disease fields: MASST tables often give one disease for all files of a study, so a disease is
@@ -629,7 +632,8 @@ def main():
                                 .reindex(columns=columns_to_use))
     masst_rows = merged_df[from_masst]
     links = link_same_files(masst_rows['USI'], merged_df.loc[~from_masst, 'USI'])
-    copy_of_described = pd.Series([bool(t) for t in links], index=masst_rows.index)
+    # (bool also without MASST rows: a failed MASST step leaves an empty table)
+    copy_of_described = pd.Series([bool(t) for t in links], index=masst_rows.index, dtype=bool)
     fill_target = [t[0] if len(t) == 1 else '' for t in links]
     linked = masst_rows.assign(USI=fill_target)[[bool(t) for t in fill_target]]
     supplement_parts.append(linked)

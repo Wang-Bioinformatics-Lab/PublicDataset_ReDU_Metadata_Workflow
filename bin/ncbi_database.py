@@ -22,6 +22,10 @@ NCBI release, downloaded on first use); for the same taxdump the columns are the
   'missing value' in all lineage columns, as with ete3. Both kinds are listed in the log.
 - Names are used as they are in names.dmp. (ete3 also cut '"' at either end of a name, which changed 4 names
   in the 2026-10-01 release, e.g. 'Exapion sp. "malvae"' -> 'Exapion sp. "malvae'.)
+- IsolationSourceNCBITaxonomy (the organism an isolate was isolated from, a value like NCBITaxonomy's) gets
+  IsolationSourceNCBIKingdom and IsolationSourceNCBIPhylum the same way (one value per organism, '||'). An
+  organism of it that is also in the row's NCBITaxonomy (same taxon ID) is left out first, as when the sheet
+  was validated (without_taxa_of), so this holds for every row, also those of earlier runs.
 
 Only two small arrays over all ~3M taxa are held (parent and rank per taxon ID); names are read for the
 taxa that are needed only.
@@ -45,6 +49,11 @@ DESIRED_RANKS = ['superkingdom', 'kingdom', 'phylum', 'class', 'order', 'family'
 RANK_ALIASES = {'domain': 'superkingdom'}
 ROOT = 1
 MAX_DEPTH = 1000  # no NCBI lineage comes close; stops a loop in a broken nodes.dmp
+# the organism a cultured organism (an isolate) was isolated from: a value like NCBITaxonomy's (its allowed terms,
+# read_and_validate_redu_from_github.complete_and_fill_REDU_table), and the lineage columns of it in the table (so
+# 'isolated from a plant / sponge / coral' can be selected), from NCBIKingdom / NCBIPhylum of its taxa
+ISOLATION_SOURCE = 'IsolationSourceNCBITaxonomy'
+ISOLATION_SOURCE_LINEAGE = {'NCBIKingdom': 'IsolationSourceNCBIKingdom', 'NCBIPhylum': 'IsolationSourceNCBIPhylum'}
 
 
 # ---- several organisms in one NCBITaxonomy value ----------------------------------------------------------
@@ -136,6 +145,28 @@ def all_parts(value, predicate):
     False for a missing value. For a value of one organism: predicate(value)."""
     parts = taxonomy_parts(value)
     return bool(parts) and all(predicate(p) for p in parts)
+
+
+def without_taxa_of(value, other):
+    """value (an NCBITaxonomy value) without its organisms whose taxon ID is one of other's (another NCBITaxonomy
+    value), the others in their order; 'missing value' when none is left. A value without such an organism (also a
+    missing one) is returned as it is."""
+    parts = taxonomy_parts(value)
+    drop = set(taxon_ids(other))
+    kept = [p for p in parts if p.split('|', 1)[0].strip() not in drop]
+    if len(kept) == len(parts):
+        return value
+    return MULTI_SEP.join(kept) if kept else MISSING_VALUE
+
+
+def without_taxa_of_series(values, others):
+    """without_taxa_of per row of two aligned Series (evaluated once per distinct pair)."""
+    memo, out = {}, []
+    for pair in zip(values.tolist(), others.tolist()):
+        if pair not in memo:
+            memo[pair] = without_taxa_of(*pair)
+        out.append(memo[pair])
+    return pd.Series(out, index=values.index, dtype=object)
 
 
 def _per_value(series, function, dtype):
@@ -292,6 +323,14 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
     print("annotate_taxonomy got a totoal of", len(df), "rows", flush=True)
     taxonomy = Taxonomy(nodes_dmp, names_dmp, merged_dmp)
 
+    # the organisms the isolates were isolated from, without the isolates themselves (their taxa are looked up with
+    # those of NCBITaxonomy, their lineage is added below)
+    source = None
+    if ISOLATION_SOURCE in df.columns:
+        source = without_taxa_of_series(df[ISOLATION_SOURCE], df['NCBITaxonomy'])
+        dropped = int((source.fillna('') != df[ISOLATION_SOURCE].fillna('')).sum())
+        print(f"{ISOLATION_SOURCE}: {dropped} rows without the organisms that are also in their NCBITaxonomy", flush=True)
+
     _df = df.copy()
     _df.dropna(subset=['NCBITaxonomy'], inplace=True)
 
@@ -305,6 +344,9 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
     # values of several organisms: the taxon ID of each part
     multi_values = [v for v in pd.unique(_df['NCBITaxonomy'].astype(str)) if is_multi(v)]
     part_tokens = pd.Series([_part_taxid(p) for v in multi_values for p in taxonomy_parts(v)], dtype=object)
+    if source is not None:
+        part_tokens = pd.concat([part_tokens, pd.Series([_part_taxid(p) for v in pd.unique(source.dropna().astype(str))
+                                                         for p in taxonomy_parts(v)], dtype=object)])
     first_tokens = pd.concat([first_tokens[~_df['NCBITaxonomy'].astype(str).isin(multi_values)], part_tokens])
     tax_ids = (
         pd.to_numeric(first_tokens, errors='coerce')
@@ -334,6 +376,8 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
         return m.group(1) if m else "missing value"
 
     df = df.copy()
+    if source is not None:
+        df[ISOLATION_SOURCE] = source
     df['taxid'] = df['NCBITaxonomy'].apply(safe_extract_taxid).astype(str)
     df['taxid'] = df['taxid'].fillna("missing value")
     # rows of several organisms: no single taxon (their lineage is set per part below)
@@ -342,7 +386,10 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
 
     # --- drop any existing taxonomy columns before merging ---
     cols_to_drop = list(rank_to_col.values())
-    df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors="ignore")
+    # (also those of the isolation source: they are added again after these, so the columns are in the same order
+    # whether the earlier runs' rows had them or not)
+    df = df.drop(columns=[c for c in cols_to_drop + list(ISOLATION_SOURCE_LINEAGE.values()) if c in df.columns],
+                 errors="ignore")
 
     # merge fresh lineage data
     df = df.merge(lineage_df, on='taxid', how='left')
@@ -362,6 +409,26 @@ def annotate_taxonomy(df: pd.DataFrame, nodes_dmp, names_dmp, merged_dmp) -> pd.
                 df.loc[rows, column] = aligned([lin[i] if lin is not None else None for lin in per_part])
         print(f"{int(multi.sum())} rows of several organisms (NCBITaxonomy parts joined by '{MULTI_SEP}'): "
               f"lineage per organism", flush=True)
+    if source is not None:
+        df = isolation_source_lineage(df, lineage_df)
+    return df
+
+
+def isolation_source_lineage(df, lineage_df):
+    """ISOLATION_SOURCE_LINEAGE columns: the NCBIKingdom / NCBIPhylum of IsolationSourceNCBITaxonomy, from
+    annotate_taxonomy's lineage table (lineage_df, which has its taxa); one value per organism, aligned, like the
+    lineage of NCBITaxonomy."""
+    columns = list(ISOLATION_SOURCE_LINEAGE)
+    lineage_of = {t: row for t, row in zip(lineage_df['taxid'], lineage_df[columns].itertuples(index=False, name=None))}
+    values = df[ISOLATION_SOURCE].fillna(MISSING_VALUE).astype(str)
+    per_value = {}
+    for value in pd.unique(values):
+        per_part = [lineage_of.get(_part_taxid(p) or '') for p in taxonomy_parts(value)]
+        per_value[value] = [aligned([lin[i] if lin is not None else None for lin in per_part]) for i in range(len(columns))]
+    for i, column in enumerate(ISOLATION_SOURCE_LINEAGE.values()):
+        df[column] = values.map({v: lineage[i] for v, lineage in per_value.items()})
+    named = [v for v in per_value if taxonomy_parts(v)]
+    print(f"{ISOLATION_SOURCE}: kingdom and phylum of {int(values.isin(named).sum())} rows ({len(named)} values)", flush=True)
     return df
 
 

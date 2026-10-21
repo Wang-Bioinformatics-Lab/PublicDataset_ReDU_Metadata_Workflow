@@ -2806,6 +2806,54 @@
         "source": "",
         "allowed_values": []
     },
+    "IsolationSourceNCBITaxonomy": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "For an organism cultured from a sample (an isolate, e.g. a bacterium or fungus): the organism it was isolated from, e.g. the plant, sponge or coral. Enter a Taxonomy ID and NCBI name separated by |, as in NCBITaxonomy (the same allowed terms); several organisms are separated by ||. NCBITaxonomy is the organism analyzed (the isolate); Country, LatitudeandLongitude, DepthorAltitudeMeters, SampleCollectionDateandTime and ENVOEnvironmentBiome are where and when it was collected. An organism that is also in NCBITaxonomy is left out.",
+        "example": "29655|Zostera marina",
+        "source": "https://www.ncbi.nlm.nih.gov/taxonomy",
+        "allowed_values_from": "NCBITaxonomy",
+        "allowed_values": []
+    },
+    "IsolationSourceUBERONBodyPartName": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "For an isolate: the body part of the organism in IsolationSourceNCBITaxonomy it was isolated from, e.g. leaf or root. The same allowed terms as UBERONBodyPartName (UBERON, Cell Ontology and Plant Ontology), which names the body part analyzed. For a plant, a UBERON term that has the name of a Plant Ontology term becomes that term (cortex: PO:0005708), as in UBERONBodyPartName.",
+        "example": "leaf",
+        "source": "Animal bodyparts: https://www.ebi.ac.uk/ols4/ontologies/uberon \nCell types: https://www.ebi.ac.uk/ols4/ontologies/cl \nPlant parts: https://www.ebi.ac.uk/ols4/ontologies/po",
+        "allowed_values_from": "UBERONBodyPartName",
+        "allowed_values": []
+    },
+    "IsolationSourceUBERONOntologyIndex": {
+        "generate": "True",
+        "type": "generated",
+        "missing": "missing value",
+        "description": "(automatically generated) The index of the IsolationSourceUBERONBodyPartName.",
+        "example": "PO:0025034",
+        "source": "-",
+        "allowed_values": []
+    },
+    "IsolationSourceENVOEnvironmentMaterial": {
+        "generate": "False",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "For an isolate: the environmental material it was isolated from, e.g. marine sediment or sea water. The same allowed terms as ENVOEnvironmentMaterial, which names the material analyzed.",
+        "example": "marine sediment",
+        "source": "https://github.com/EnvironmentOntology/envo/blob/master/subsets/material-hierarchy.tsv",
+        "allowed_values_from": "ENVOEnvironmentMaterial",
+        "allowed_values": []
+    },
+    "IsolationSourceENVOEnvironmentMaterialIndex": {
+        "generate": "True",
+        "type": "environmental",
+        "missing": "missing value",
+        "description": "(automatically generated) The index of the IsolationSourceENVOEnvironmentMaterial.",
+        "example": "ENVO:03000033",
+        "source": "-",
+        "allowed_values": []
+    },
     "DataSource": {
         "generate": "True",
         "type": "generated",

@@ -827,8 +827,9 @@ process sourceStatus {
 
 
 
-// Lineage columns (NCBISuperkingdom ... NCBISpecies) from the pinned NCBI taxonomy
-// (nodes/names/merged.dmp of reference_data.json), the release all other steps use
+// Lineage columns (NCBISuperkingdom ... NCBISpecies; IsolationSourceNCBIKingdom / IsolationSourceNCBIPhylum of the
+// organism an isolate was isolated from) from the pinned NCBI taxonomy (nodes/names/merged.dmp of
+// reference_data.json), the release all other steps use
 process enrich_ncbi_information {
     publishDir "./nf_output", mode: 'copy'
 

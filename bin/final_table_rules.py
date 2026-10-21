@@ -16,7 +16,8 @@ before the text columns (final_text_columns.py), so also to the rows saveOlderDa
 - plant_body_parts: Plant Ontology terms for the body parts of plants (the PO term of the same name, 'ear'
   of grasses), other UBERON terms cleared on plant rows, UBERON 'exudate' only on animal rows, PO terms
   cleared on animal rows (UBERON_CL_PO_ontology.csv of prepare_ontologies.py); runs after the pooled-QC
-  passes, so a pooled QC of plants takes the same PO term as the samples (and loses an animal term)
+  passes, so a pooled QC of plants takes the same PO term as the samples (and loses an animal term); the same
+  for the body part an isolate was isolated from (IsolationSourceUBERONBodyPartName, by IsolationSourceNCBIKingdom)
 - water_kind_from_material: SampleTypeSub1 water_* of environmental water samples whose kind of water is
   stated only in ENVOEnvironmentMaterial ('river water' -> water_surface)
 - placeholder_factor_names: SampleGroupFreeText parts whose factor name is a template placeholder
@@ -214,6 +215,13 @@ NOT_SUBJECT_COLUMNS = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsReco
                        'ENVOBroadScaleIndex', 'ENVOLocalScale', 'ENVOLocalScaleIndex', 'ENVOMediumScale', 'ENVOMediumScaleIndex',
                        'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet',
                        'CellLine', 'CellLineIndex', 'ColonizationStatus', 'LifeStage']
+# where a cultured organism was isolated from (and the columns made from it): a pooled QC keeps it with its organism,
+# a reference material has the material's organism and none (complete_and_fill_REDU_table's STRIP_ISOLATION_SOURCE)
+ISOLATION_SOURCE_COLUMNS = ['IsolationSourceNCBITaxonomy', 'IsolationSourceUBERONBodyPartName', 'IsolationSourceUBERONOntologyIndex',
+                            'IsolationSourceENVOEnvironmentMaterial', 'IsolationSourceENVOEnvironmentMaterialIndex',
+                            'IsolationSourceNCBIKingdom', 'IsolationSourceNCBIPhylum']
+# (its body part: plant_body_parts with isolation_source)
+ISOLATION_SOURCE_BODY_PART = ('IsolationSourceUBERONBodyPartName', 'IsolationSourceUBERONOntologyIndex')
 
 
 def _derived_lookup(df, column):
@@ -267,7 +275,8 @@ def reference_materials_pass(df, masst_evidence=None):
     this changes the rows of earlier runs and the GNPS rows of files whose MASST rows name a reference
     material. A row that becomes a reference material takes the material's organism and body part (and
     the lineage / index columns other rows with these values have); one that becomes a reference material
-    or an in-house pool (pool_QC) loses its subject fields. Returns the frame and a Counter."""
+    or an in-house pool (pool_QC) loses its subject fields, a reference material also its isolation source
+    (ISOLATION_SOURCE_COLUMNS). Returns the frame and a Counter."""
     stats = collections.Counter()
     if len(df) == 0 or 'SampleType' not in df.columns:
         return df, stats
@@ -311,6 +320,10 @@ def reference_materials_pass(df, masst_evidence=None):
     cleared = df.loc[changed, cols].astype(str).ne(MISSING).any(axis=1)
     df.loc[changed, cols] = MISSING
     stats['rows_subject_fields_cleared'] = int(cleared.sum())
+    cols = [c for c in ISOLATION_SOURCE_COLUMNS if c in df.columns]
+    if rm and cols:
+        stats['reference_material_isolation_source_cleared'] = int(df.loc[rm, cols].astype(str).ne(MISSING).any(axis=1).sum())
+        df.loc[rm, cols] = MISSING
     for (d, st, s1), n in pd.DataFrame({'d': dataset[changed], 'st': df.loc[changed, 'SampleType'],
                                         's1': df.loc[changed, 'SampleTypeSub1']}).value_counts().sort_index().items():
         stats[f'reference_material_or_pool {d} {st} {s1}'] = int(n)
@@ -448,11 +461,13 @@ EAR_PO, MAIZE_EAR_PO = 'PO:0009049', 'PO:0020136'
 _NOT_ORGANISM_SAMPLE = re.compile(r'(?i)blank|^pool_QC$|^reference material$|^personal care product$|^molecular_standards$')
 
 
-def _organism_group(df):
+def _organism_group(df, isolation_source=False):
     """'plant' (NCBI lineage Viridiplantae; no organism and SampleType 'plant'), 'animal' (Metazoa; no
-    organism and SampleType 'animal') or '' per row"""
-    kingdom = df['NCBIKingdom'] if 'NCBIKingdom' in df.columns else pd.Series('', index=df.index)
-    sample_type = df['SampleType'] if 'SampleType' in df.columns else pd.Series('', index=df.index)
+    organism and SampleType 'animal') or '' per row; with isolation_source, of the organism an isolate was
+    isolated from (IsolationSourceNCBIKingdom only: SampleType is the isolate's)"""
+    kingdom_column = 'IsolationSourceNCBIKingdom' if isolation_source else 'NCBIKingdom'
+    kingdom = df[kingdom_column] if kingdom_column in df.columns else pd.Series('', index=df.index)
+    sample_type = df['SampleType'] if 'SampleType' in df.columns and not isolation_source else pd.Series('', index=df.index)
     no_organism = _missing(df['NCBITaxonomy']) if 'NCBITaxonomy' in df.columns else pd.Series(True, index=df.index)
     group = pd.Series('', index=df.index)
     # (several organisms: all of them plants / animals)
@@ -507,7 +522,7 @@ def exudate_samples(df):
     return df, stats
 
 
-def plant_body_parts(df, ontology):
+def plant_body_parts(df, ontology, isolation_source=False):
     """Body parts of plants are Plant Ontology terms, UBERON (animal anatomy) terms are for animals:
     - on plant rows (_organism_group) a UBERON term whose label is also a PO term's label or synonym, or is
       the label of a PO 'plant <label>' term (PO's names for the plant structure: lamina, placenta,
@@ -522,14 +537,20 @@ def plant_body_parts(df, ontology):
       contradicts SampleType and body part, MSV000097043: a spider's taxon for a rhizome).
     CL terms are taxon-neutral cell types and are left as they are. A PO term is only used if the pinned
     ontology table (ontology: UBERON_CL_PO_ontology.csv) has it; UBERONOntologyIndex follows the name.
-    Returns the frame and a Counter."""
+    With isolation_source the same for the body part of the organism an isolate was isolated from
+    (ISOLATION_SOURCE_BODY_PART, the organism's kingdom IsolationSourceNCBIKingdom; the row's SampleType and
+    SampleTypeSub1 are the isolate's): 'ear' of a plant is PO 'inflorescence' (the table has no family or
+    genus of it), 'exudate' is kept on every organism (no SampleTypeSub1 says it) and PO terms on animals are
+    cleared. Returns the frame and a Counter."""
     stats = collections.Counter()
-    if len(df) == 0 or any(c not in df.columns for c in ('UBERONBodyPartName', 'UBERONOntologyIndex')):
+    name_column, index_column = ISOLATION_SOURCE_BODY_PART if isolation_source else ('UBERONBodyPartName', 'UBERONOntologyIndex')
+    prefix = 'isolation_source_' if isolation_source else ''
+    if len(df) == 0 or any(c not in df.columns for c in (name_column, index_column)):
         return df, stats
     labels, names, animal_terms = plant_ontology_terms(ontology)
-    group = _organism_group(df)
-    name = df['UBERONBodyPartName'].fillna('').astype(str)
-    index = df['UBERONOntologyIndex'].fillna('').astype(str)
+    group = _organism_group(df, isolation_source)
+    name = df[name_column].fillna('').astype(str)
+    index = df[index_column].fillna('').astype(str)
     # (a row without an index: the term of its name, a UBERON / CL label first: 'lamina' is both)
     by_label = {**{label: term for term, label in sorted(labels.items(), reverse=True)}, **animal_terms}
     no_index = _missing(index) & ~_missing(name)
@@ -537,7 +558,7 @@ def plant_body_parts(df, ontology):
     is_uberon = index.str.startswith('UBERON:')
     family = df['NCBIFamily'] if 'NCBIFamily' in df.columns else pd.Series('', index=df.index)
     genus = df['NCBIGenus'] if 'NCBIGenus' in df.columns else pd.Series('', index=df.index)
-    sample_type = df['SampleType'] if 'SampleType' in df.columns else pd.Series('', index=df.index)
+    sample_type = df['SampleType'] if 'SampleType' in df.columns and not isolation_source else pd.Series('', index=df.index)
 
     def po_of(label):
         key = label.strip().lower()
@@ -545,37 +566,45 @@ def plant_body_parts(df, ontology):
         return next(iter(found)) if len(found) == 1 else None
 
     # (the index only changes on the rows a rule below decides on)
-    new_index, new_name = df['UBERONOntologyIndex'].fillna('').astype(str).copy(), name.copy()
+    new_index, new_name = df[index_column].fillna('').astype(str).copy(), name.copy()
     # plant rows with a UBERON term
     rows = (group == 'plant') & is_uberon
+    if isolation_source:
+        # (an isolation source keeps 'exudate')
+        rows &= index != EXUDATE_UBERON[1]
     for (label, term), idx in df[rows].groupby([name[rows], index[rows]], sort=True).groups.items():
         if term == EAR_UBERON:
             for i in idx:
-                # (several organisms: all of them grasses / maize)
-                po = (MAIZE_EAR_PO if _all_are(genus[i], MAIZE_GENUS) else EAR_PO) if _all_are(family[i], GRASS_FAMILY) else None
+                if isolation_source:
+                    po = EAR_PO
+                else:
+                    # (several organisms: all of them grasses / maize)
+                    po = (MAIZE_EAR_PO if _all_are(genus[i], MAIZE_GENUS) else EAR_PO) if _all_are(family[i], GRASS_FAMILY) else None
                 new_index[i], new_name[i] = (po, labels[po]) if po in labels else (MISSING, MISSING)
             continue
         po = po_of(label) if term != EXUDATE_UBERON[1] else None
         new_index[idx], new_name[idx] = (po, labels[po]) if po else (MISSING, MISSING)
     # UBERON exudate on rows that are not of animals
-    other_exudate = (group != 'animal') & (group != 'plant') & (index == EXUDATE_UBERON[1])
-    new_index[other_exudate], new_name[other_exudate] = MISSING, MISSING
+    if not isolation_source:
+        other_exudate = (group != 'animal') & (group != 'plant') & (index == EXUDATE_UBERON[1])
+        new_index[other_exudate], new_name[other_exudate] = MISSING, MISSING
     # PO terms on animal rows
     po_on_animal = (group == 'animal') & index.str.startswith('PO:')
     kept = po_on_animal & (sample_type == 'plant')
-    stats['PO_on_animal_rows_kept_SampleType_plant'] = int(kept.sum())
+    if not isolation_source:
+        stats['PO_on_animal_rows_kept_SampleType_plant'] = int(kept.sum())
     clear = po_on_animal & ~kept
     new_index[clear], new_name[clear] = MISSING, MISSING
 
-    change = (new_name != name) | (new_index != df['UBERONOntologyIndex'].fillna('').astype(str))
+    change = (new_name != name) | (new_index != df[index_column].fillna('').astype(str))
     dataset = df['ATTRIBUTE_DatasetAccession'] if 'ATTRIBUTE_DatasetAccession' in df.columns else pd.Series('', index=df.index)
-    log = pd.DataFrame({'d': dataset[change], 'g': group[change], 'f': name[change] + ' ' + df.loc[change, 'UBERONOntologyIndex'].astype(str),
+    log = pd.DataFrame({'d': dataset[change], 'g': group[change], 'f': name[change] + ' ' + df.loc[change, index_column].astype(str),
                         't': new_name[change] + ' ' + new_index[change]})
     for (d, g, f, t), n in log.value_counts().sort_index().items():
-        stats[f'body_part {d} {g or "other"}: {f} -> {t}'] = int(n)
-    stats['body_part_rows_changed'] = int(change.sum())
-    df.loc[change, 'UBERONBodyPartName'] = new_name[change]
-    df.loc[change, 'UBERONOntologyIndex'] = new_index[change]
+        stats[f'{prefix}body_part {d} {g or "other"}: {f} -> {t}'] = int(n)
+    stats[f'{prefix}body_part_rows_changed'] = int(change.sum())
+    df.loc[change, name_column] = new_name[change]
+    df.loc[change, index_column] = new_index[change]
     return df, stats
 
 
@@ -661,6 +690,8 @@ if __name__ == '__main__':
         ontology = pd.read_csv(args.path_to_uberon_cl_po_csv, dtype=str, keep_default_na=False)
         df, plant_stats = plant_body_parts(df, ontology)
         stats.update(plant_stats)
+        df, source_stats = plant_body_parts(df, ontology, isolation_source=True)
+        stats.update(source_stats)
     df, water_stats = water_kind_from_material(df)
     stats.update(water_stats)
     df, placeholder_stats = placeholder_factor_names(df)

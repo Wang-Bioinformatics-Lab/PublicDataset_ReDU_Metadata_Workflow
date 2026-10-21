@@ -18,6 +18,8 @@ from blank_qc_names import apply_filename_blank_qc, blank_qc_type_from_filename
 import reference_materials
 # several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
 from ncbi_database import MULTI_SEP, aligned, is_multi, join_parts, submitted_taxonomy_parts, taxon_ids
+# the organism an isolate was isolated from (a value like NCBITaxonomy's), without the isolate's own organisms
+from ncbi_database import ISOLATION_SOURCE, without_taxa_of_series
 
 def _canonical_term(value):
     """Case-, space- and separator-insensitive form used to match submitted values to
@@ -244,6 +246,15 @@ STRIP_FOR_NOT_SUBJECT = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRe
 STRIP_ORGANISM = ['NCBITaxonomy', 'UBERONBodyPartName']
 # the full list as it was (blanks): both
 strip_for_blank = STRIP_ORGANISM + STRIP_FOR_NOT_SUBJECT
+# where a cultured organism was isolated from: kept only with the organism of a pooled QC (a reference material has
+# the material's organism)
+STRIP_ISOLATION_SOURCE = [ISOLATION_SOURCE, 'IsolationSourceUBERONBodyPartName', 'IsolationSourceENVOEnvironmentMaterial']
+
+
+def columns_with_terms_of(allowedTerm_dict, key):
+    """key and the columns that have its allowed terms (allowed_values_from in the allowed terms json: the
+    IsolationSource columns have those of NCBITaxonomy, UBERONBodyPartName and ENVOEnvironmentMaterial)"""
+    return [key] + [k for k, v in allowedTerm_dict.items() if v.get('allowed_values_from') == key]
 
 
 def _not_subject_rows(df):
@@ -471,6 +482,9 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         df.loc[mask, [c for c in STRIP_FOR_NOT_SUBJECT if c in df.columns]] = ''
         clear_organism = mask & ~keep_organism
         df.loc[clear_organism, [c for c in STRIP_ORGANISM if c in df.columns]] = ''
+        # (the isolation source stays with the organism of a pooled QC only)
+        df.loc[mask & ~(keep_organism & (df['SampleType'] == 'pool_QC')),
+               [c for c in STRIP_ISOLATION_SOURCE if c in df.columns]] = ''
         if '_recorded_LifeStage' in df.columns:
             df.loc[mask, '_recorded_LifeStage'] = ''
 
@@ -494,7 +508,10 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     for key, value in allowedTerm_dict.items():
         if key in df.columns and value['generate'] == 'False':
-            allowed_terms = value['allowed_values']
+            # a column with the allowed terms of another one (allowed_values_from) is checked as that one
+            rule = value.get('allowed_values_from', key)
+            terms_entry = allowedTerm_dict.get(rule, value)
+            allowed_terms = terms_entry['allowed_values']
             missing_value = value['missing']
 
             # Extract unique values from the DataFrame column
@@ -539,7 +556,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                 continue
 
             # Initialize value_map for each condition
-            if key not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) >= 1 \
+            if rule not in ['NCBITaxonomy', 'MassSpectrometer', 'filename'] and len(allowed_terms) >= 1 \
                     and allowed_terms[0] not in ['00', 'datetime', 'numeric', 'numeric|numeric']:
                 # General case for non-specific keys with a list of allowed terms: the first
                 # allowed term that equals the value when spaces are ignored
@@ -561,11 +578,11 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         observed_value: next((allowed for allowed in allowed_terms if allowed.replace(" ", "") == str(observed_value).replace(" ", "")), missing_value)
                         for observed_value in unique_values
                     }
-                if key == 'UBERONBodyPartName' and isinstance(value.get('synonyms'), dict):
+                if rule == 'UBERONBodyPartName' and isinstance(terms_entry.get('synonyms'), dict):
                     # an exact synonym of exactly one class (built from the pinned UBERON/CL/PO by
                     # update_allowed_terms_from_ontologies.py) -> its label, e.g. the former CL
                     # label 'mononuclear cell' -> 'mononuclear leukocyte' (CL:0000842)
-                    synonyms = value['synonyms']
+                    synonyms = terms_entry['synonyms']
                     allowed_labels = _cached('allowed_set', allowed_terms, lambda: set(allowed_terms))
                     for observed_value, mapped in value_map.items():
                         if mapped == missing_value:
@@ -587,8 +604,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                                 value_map[observed_value] = next(iter(hits))
 
 
-            elif key in ['NCBITaxonomy', 'MassSpectrometer']:
-                if key == 'NCBITaxonomy':
+            elif rule in ['NCBITaxonomy', 'MassSpectrometer']:
+                if rule == 'NCBITaxonomy':
                     # Build fast lookups from allowed terms: 'ID|Name'
                     # Names are not unique in NCBI (e.g. Bacillus the bacterium and the stick
                     # insect), so a shared name only resolves when the provided ID disambiguates it
@@ -646,7 +663,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                         term, how = REDU_conversion_functions.ncbi_name_fallback(
                             name, allowed_by_id.get, lambda n: name_hit(n, oid))
                         if term:
-                            print(f"[NCBITaxonomy] organism name {name!r} read as {term} ({how})")
+                            print(f"[{key}] organism name {name!r} read as {term} ({how})")
                         return term
 
                     def name_over_id(oid, oname, a_term):
@@ -928,6 +945,14 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         elif key not in df.columns and value['generate'] == 'False':
             df[key] = value['missing']
 
+    # where an isolate was isolated from is another organism than the isolate: an organism of
+    # IsolationSourceNCBITaxonomy that is also in NCBITaxonomy (the same taxon ID) is left out, per organism
+    if ISOLATION_SOURCE in df.columns and 'NCBITaxonomy' in df.columns:
+        source = without_taxa_of_series(df[ISOLATION_SOURCE], df['NCBITaxonomy'])
+        same = source != df[ISOLATION_SOURCE]
+        if same.any():
+            print(f"{ISOLATION_SOURCE}: the organisms that are also in NCBITaxonomy left out on {int(same.sum())} rows")
+            df[ISOLATION_SOURCE] = source
 
 
     for key, value in allowedTerm_dict.items():
@@ -1059,6 +1084,15 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'ENVOEnvironmentMaterialIndex':
                 df = df.merge(envome_material_ontology_table[['Label', 'ENVOEnvironmentMaterialIndex']].drop_duplicates('Label'), left_on='ENVOEnvironmentMaterial', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
+            if key == 'IsolationSourceUBERONOntologyIndex':
+                # (only the index: SampleTypeSub1 is that of the sample analyzed)
+                df = df.merge(uberon_ontology_table[['Label', 'UBERONOntologyIndex']].drop_duplicates('Label').rename(columns={'UBERONOntologyIndex': key}),
+                              left_on='IsolationSourceUBERONBodyPartName', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
+            if key == 'IsolationSourceENVOEnvironmentMaterialIndex':
+                df = df.merge(envome_material_ontology_table[['Label', 'ENVOEnvironmentMaterialIndex']].drop_duplicates('Label').rename(columns={'ENVOEnvironmentMaterialIndex': key}),
+                              left_on='IsolationSourceENVOEnvironmentMaterial', right_on='Label', how='left')
+                df.drop(columns=['Label'], inplace=True)
             if key == 'ENVOMediumScaleIndex':
                 df = df.merge(envome_medium_scale_ontology_table[['Label', 'ENVOMediumScaleIndex']].drop_duplicates('Label'), left_on='ENVOMediumScale', right_on='Label', how='left')
                 df.drop(columns=['Label'], inplace=True)
@@ -1123,7 +1157,8 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
 
     # ontology indexes of unmatched labels come out of the merges as NaN
     for key, value in allowedTerm_dict.items():
-        if key.endswith('OntologyIndex') or key in ('ExposureIndex', 'OrganismExposureAgent', 'OrganismExposureAgentIndex') \
+        if key.endswith('OntologyIndex') or key in ('ExposureIndex', 'OrganismExposureAgent', 'OrganismExposureAgentIndex',
+                                                    'IsolationSourceENVOEnvironmentMaterialIndex') \
                 or (key.startswith('ENVO') and key.endswith('Index')):
             if key in df.columns:
                 df[key] = df[key].fillna(value['missing']).replace('', value['missing'])
@@ -1144,7 +1179,7 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                            "AgeInYears", "LifeStage", "Country", "HealthStatus", "SampleExtractionMethod", 
                            "SampleCollectionMethod", "ComorbidityListDOIDIndex", "DOIDCommonName", "HPOCommonName", "Exposure", 
                            "DepthorAltitudeMeters", "HumanPopulationDensity", "LatitudeandLongitude",
-                           "ENVOEnvironmentBiome", "ENVOEnvironmentMaterial"]
+                           "ENVOEnvironmentBiome", "ENVOEnvironmentMaterial"] + STRIP_ISOLATION_SOURCE
     
     original_row_count = df.shape[0]
     columns_to_check = [col for col in columns_to_consider if col in df.columns]
@@ -1547,8 +1582,9 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
     if 'YearOfAnalysis' in df.columns:
         df['YearOfAnalysis'] = df['YearOfAnalysis'].astype(str).str.replace(r'^\s*(\d{4})\.0+\s*$', r'\1', regex=True)
 
-    # UBERON: exact synonyms and case variants of labels -> label
-    if uberon_synonym_table is not None and 'UBERONBodyPartName' in df.columns:
+    # UBERON: exact synonyms and case variants of labels -> label (also in the columns with its terms)
+    uberon_columns = [c for c in columns_with_terms_of(allowedTerm_dict, 'UBERONBodyPartName') if c in df.columns]
+    if uberon_synonym_table is not None and uberon_columns:
         labels = _cached('uberon_labels', uberon_synonym_table,
                          lambda: set(allowedTerm_dict['UBERONBodyPartName']['allowed_values']))
 
@@ -1563,10 +1599,11 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
                         to_labels.setdefault(synonym.strip().lower(), set()).add(label)
             return to_labels
         to_labels = _cached('uberon_synonyms', uberon_synonym_table, _build_to_labels)
-        df['UBERONBodyPartName'] = df['UBERONBodyPartName'].map(
-            lambda v: v if v in labels or _is_missing_like(v) else (
-                next(iter(to_labels[str(v).strip().lower()]))
-                if len(to_labels.get(str(v).strip().lower(), ())) == 1 else v))
+        for column in uberon_columns:
+            df[column] = df[column].map(
+                lambda v: v if v in labels or _is_missing_like(v) else (
+                    next(iter(to_labels[str(v).strip().lower()]))
+                    if len(to_labels.get(str(v).strip().lower(), ())) == 1 else v))
 
     # ENVO fields given as ontology IDs (ENVO:00000446) -> label
     envo_by_id = {}
@@ -1574,7 +1611,8 @@ def normalize_gnps_metadata(df, allowedTerm_dict, dataset_accession=None, uberon
         index_column = [c for c in table.columns if c.endswith('Index')][0]
         for index, label in zip(table[index_column].astype(str), table['Label'].astype(str)):
             envo_by_id[index.replace('_', ':')] = label
-    for key in ['ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale']:
+    for key in ['ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale',
+                'IsolationSourceENVOEnvironmentMaterial']:
         if key in df.columns:
             df[key] = df[key].map(lambda v: envo_by_id.get(str(v).strip(), v))
 
@@ -1652,12 +1690,14 @@ def build_ncbi_name_resolver(names_dmp, names, allowed_ncbi_terms, NCBIRankDivis
 
 
 def _ncbi_names_in_files(paths, allowedTerm_dict):
-    """Organism names in the NCBITaxonomy columns (any template name) of metadata files."""
+    """Organism names in the NCBITaxonomy columns (any template name) of metadata files, and in the columns with its
+    terms (IsolationSourceNCBITaxonomy)."""
     names = set()
+    ncbi_columns = set(columns_with_terms_of(allowedTerm_dict, 'NCBITaxonomy'))
     for path in paths:
         try:
             header = pd.read_csv(path, sep='\t', dtype=str, nrows=0).columns
-            columns = [c for c in header if _template_column(c, allowedTerm_dict) == 'NCBITaxonomy']
+            columns = [c for c in header if _template_column(c, allowedTerm_dict) in ncbi_columns]
             if not columns:
                 continue
             table = pd.read_csv(path, sep='\t', dtype=str, usecols=columns)
@@ -1672,10 +1712,11 @@ def _ncbi_names_in_files(paths, allowedTerm_dict):
 
 
 # sheet columns that are no sample-level evidence of a reference material: ReDU's sample type vocabulary
-# (a GNPS 'reference material' is any standard or product) and the file name (its directory may name a
-# material; the base name is read from 'filename' itself)
+# (a GNPS 'reference material' is any standard or product), the file name (its directory may name a
+# material; the base name is read from 'filename' itself) and where an isolate was isolated from (not the
+# sample's matrix)
 _GNPS_NOT_EVIDENCE = re.compile(r'(?i)^(?:attribute_|curated_)*(?:sample_?type(?:_?sub1)?|study_sampletypeasrecorded|'
-                                r'file_?name|filepath|usi)$')
+                                r'file_?name|filepath|usi|isolationsource\w*)$')
 
 
 def gnps_refmat_evidence(df):
