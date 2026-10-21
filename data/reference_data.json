@@ -1,10 +1,10 @@
 {
-    "_comment": "Reference data the workflow needs in data/, each pinned to the exact version the workflow was tested with (url + sha256 of the file). Set up automatically by the first workflow step (bin/fetch_reference_data.py): a file is downloaded only when it is missing or not the pinned version. Newer upstream releases are NOT picked up automatically; to move to a new version, test it, then change url and sha256 here. Exception: entries with \"refresh\": \"every_run\" (the MASST tables, which grow with every MASST-indexed dataset and take seconds to download) are re-downloaded on every run without a checksum; the previous copy is kept if the download fails. 'required': false means the workflow runs without the file (the column it feeds stays empty). Not a file here, by choice: OpenTreeOfLifeTaxonomyID comes from a live Wikidata query in enrich_ncbi_information on every run (Wikidata has no versioned releases); the NCBI lineage columns of that step use the pinned taxonomy below. The ontology URLs are the projects' own release files (GitHub release assets, release tags, or for MS, which has no release of the pinned version, a commit); aber-owl.net's numbered URLs were used until 2026-10-21, when they began to serve newer releases.",
+    "_comment": "Reference data the workflow needs in data/, each pinned to the exact version the workflow was tested with (url + sha256 of the file). Set up automatically by the first workflow step (bin/fetch_reference_data.py): a file is downloaded only when it is missing or not the pinned version. Newer upstream releases are NOT picked up automatically; to move to a new version, test it, then change url and sha256 here. Exception: entries with \"refresh\": \"every_run\" (the MASST tables, which grow with every MASST-indexed dataset and take seconds to download) are re-downloaded on every run without a checksum; the previous copy is kept if the download fails. 'required': false means the workflow runs without the file (the column it feeds stays empty). Not a file here, by choice: OpenTreeOfLifeTaxonomyID comes from a live Wikidata query in enrich_ncbi_information on every run (Wikidata has no versioned releases); the NCBI lineage columns of that step use the pinned taxonomy below. The ontology URLs are the projects' own release files (GitHub release assets, release tags, or for the ENVO subsets the commit of a release tag); aber-owl.net's numbered URLs were used until 2026-10-21, when they began to serve newer releases. The owl:imports of PO and DOID are pinned too, at the release tag of the ontology that imports them, and installed in data/po_imports/ and data/doid_imports/ under the last part of their import IRI, where bin/owl_loading.py reads them (owlready2 would otherwise download them, in their latest version, on every load); a new PO or DOID release needs its imports at the same tag (the owl:imports of the ontology's header, for DOID also those of ext.owl).",
     "files": [
         {
             "name": "uberon.owl",
-            "url": "https://github.com/obophenotype/uberon/releases/download/v2026-04-01/uberon.owl",
-            "sha256": "21bc95e24c815d402438497d044c164da7de4e0dc7782ac22361d3953225d6f1",
+            "url": "https://github.com/obophenotype/uberon/releases/download/v2026-10-01/uberon.owl",
+            "sha256": "8c5dafd10760734320c144ff521b0cb7732b207491db7124166656668a8790fc",
             "check": "owl",
             "required": true
         },
@@ -12,6 +12,20 @@
             "name": "po.owl",
             "url": "https://raw.githubusercontent.com/Planteome/plant-ontology/v2026-01-09/po.owl",
             "sha256": "a066a2091b96dc6c960683a67936ccda4926afd96e4edb22df9e30feec16e9e0",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "po_imports/ncbitaxon_import.owl",
+            "url": "https://raw.githubusercontent.com/Planteome/plant-ontology/v2026-01-09/imports/ncbitaxon_import.owl",
+            "sha256": "8174010212381f9b2ecc9e28d184d2585aac1a95460a39eb845b2724742a9d51",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "po_imports/ro_import.owl",
+            "url": "https://raw.githubusercontent.com/Planteome/plant-ontology/v2026-01-09/imports/ro_import.owl",
+            "sha256": "a027a1911230186fecd6b2d4a06a84b0d2cb8bc76bdad90cc95e15679e806c70",
             "check": "owl",
             "required": true
         },
@@ -24,15 +38,120 @@
         },
         {
             "name": "doid.owl",
-            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-04-30/src/ontology/doid.owl",
-            "sha256": "d23d1a034075abd3d9c23f19ee79d3f7dfce29244b1e38078d35c0a952f35485",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/doid.owl",
+            "sha256": "7b80ccc70f5d84e7bf3dd93fd2a2f3883506076e35f592bd750490708bb5ab1f",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/ext.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/ext.owl",
+            "sha256": "3e439f4c033c3045efeb81bf0be2d3cf0b79f7b1bc7b030dd44696722e3eed53",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/chebi_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/chebi_import.owl",
+            "sha256": "a6c454d87a8aca395ed1c3a9a3b0c22f5c3e5ddb9d3d37ccc3d7bd4c0762d270",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/cl_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/cl_import.owl",
+            "sha256": "edd5d92731b16d058228ad19b39fdcc51bbb624fc499e8b709279fe506ba30eb",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/disdriv_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/disdriv_import.owl",
+            "sha256": "5234a159b68080c417f15a274bca8e987e84084af7e16ba72db237220a987df9",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/eco_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/eco_import.owl",
+            "sha256": "0718cbe651c9b56f6b457e16e736107d9d347c3ba9a9c3f38393ffc470b5f729",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/foodon_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/foodon_import.owl",
+            "sha256": "77f37213068f828874204ba71662f056095dbc3043b542add27038636f791108",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/geno_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/geno_import.owl",
+            "sha256": "144fc75afbd76ba2fa5cd022b449314f659fdb708526e696d3db6bf05663c517",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/hp_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/hp_import.owl",
+            "sha256": "ae5cfc698a02abc7e9a22d333d0c0b363100fc859968c7b583c0803241e8ec31",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/ncbitaxon_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/ncbitaxon_import.owl",
+            "sha256": "a65e8c7dc146e4b58944c8ee80b9ff799db5ca523d579463ee3566faf4e148d1",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/omim_susc_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/omim_susc_import.owl",
+            "sha256": "73dc7dcd1e7dc8ab6e9b216aa98e1b00837b2905a1cf2e0d6860df2a106df00f",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/ro_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/ro_import.owl",
+            "sha256": "8fa5b77e13c888d8954c854308bc985a59b0c6e6fa3408fa250c396b3d12a3f7",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/so_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/so_import.owl",
+            "sha256": "46dc4a3eed491d59f7b8c1c5e4416f04f4bfe7f058b0d9d80542b8cae8fc454b",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/symp_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/symp_import.owl",
+            "sha256": "76948d9490789e08daa625629290bf1cbdad649b3e17fe5fd3d9f9b1f4ffda71",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/trans_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/trans_import.owl",
+            "sha256": "e3144eebc38544c3beda86f46412cfd7c957dab903dcd8099fb33635664891de",
+            "check": "owl",
+            "required": true
+        },
+        {
+            "name": "doid_imports/uberon_import.owl",
+            "url": "https://raw.githubusercontent.com/DiseaseOntology/HumanDiseaseOntology/v2026-09-30/src/ontology/imports/uberon_import.owl",
+            "sha256": "bc7cfd1b45f4fc8be09ffc02f924f200b2aadbac796010659f6c970c3b9f8e06",
             "check": "owl",
             "required": true
         },
         {
             "name": "ms.owl",
-            "url": "https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/27c3e4834b106c4390225f07bd2a20f6f8df0ecf/psi-ms.owl",
-            "sha256": "361041560c3e397da6d3d08f217d47fc1d304a3e71579112efeb6001b7c6090f",
+            "url": "https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/v4.2.6/psi-ms.owl",
+            "sha256": "33f64dcd39aa880192641aaa19c48c27d4aafd26914412a1d86871e5dbc136fe",
             "check": "owl",
             "required": true
         },
@@ -107,21 +226,21 @@
         },
         {
             "name": "hp.obo",
-            "url": "http://purl.obolibrary.org/obo/hp/releases/2026-09-01/hp.obo",
+            "url": "https://github.com/obophenotype/human-phenotype-ontology/releases/download/v2026-09-01/hp.obo",
             "sha256": "93dace952fcb3ec4728818857f6ba76bc2d5312f4d83266519b8694b8e798f22",
             "check": "obo",
             "required": false
         },
         {
             "name": "ecto.obo",
-            "url": "http://purl.obolibrary.org/obo/ecto/releases/2026-07-28/ecto.obo",
+            "url": "https://raw.githubusercontent.com/EnvironmentOntology/environmental-exposure-ontology/v2026-07-28/ecto.obo",
             "sha256": "9f350641cc998fde5d8618fa9f34e896d1271ad1144e3f81da4d95dba3308ab6",
             "check": "obo",
             "required": false
         },
         {
             "name": "peco.obo",
-            "url": "http://purl.obolibrary.org/obo/peco/releases/2025-12-02/peco.obo",
+            "url": "https://raw.githubusercontent.com/Planteome/plant-experimental-conditions-ontology/v2025-12-02/peco.obo",
             "sha256": "ec5d762eeeb5a5ab04a52fb696ef5fb1ab16fbeb791ecee3e6e822777962d20d",
             "check": "obo",
             "required": false

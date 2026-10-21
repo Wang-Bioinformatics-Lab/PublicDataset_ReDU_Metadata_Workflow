@@ -40,8 +40,10 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_ncbi_dump', default = 'none')
     parser.add_argument('--path_to_uberon_owl', default = 'none')
     parser.add_argument('--path_to_po_owl', default = 'none')
+    parser.add_argument('--path_to_po_imports', default = 'none')
     parser.add_argument('--path_to_cl_owl', default = 'none')
     parser.add_argument('--path_to_doid_owl', default = 'none')
+    parser.add_argument('--path_to_doid_imports', default = 'none')
     parser.add_argument('--path_to_ms_owl', default = 'none')
     parser.add_argument('--path_to_biome_envs_owl', default = 'none')
     parser.add_argument('--path_to_material_envs_owl', default = 'none')
@@ -54,6 +56,8 @@ if __name__ == "__main__":
     #the NCBI taxonomy dump (names.dmp) and the ontologies (uberon, po, cl, doid, ms, ENVO biome/material, hp, ecto,
     #peco) are the versions pinned in data/reference_data.json (url + sha256); the workflow's first step,
     #fetchReferenceData, sets them up. To move to a newer release, test it and change url and sha256 there.
+    #The owl:imports of po and doid are pinned too and read from --path_to_po_imports / --path_to_doid_imports
+    #only (owl_loading.py)
 
 
     # Load allowed Terms json
@@ -104,7 +108,7 @@ if __name__ == "__main__":
 
         uberon_df = get_uberon_table(args.path_to_uberon_owl)
         cl_df = get_ontology_table(args.path_to_cl_owl, ont_prefix = 'CL_')
-        po_df = get_ontology_table(args.path_to_po_owl, ont_prefix = 'PO_', rm_synonym_info = True)
+        po_df = get_ontology_table(args.path_to_po_owl, ont_prefix = 'PO_', rm_synonym_info = True, imports_dir = args.path_to_po_imports)
 
 
         combined_df = pd.concat([uberon_df, cl_df, po_df])
@@ -162,7 +166,7 @@ if __name__ == "__main__":
         
         print('Updating diseases!')
 
-        doid_df = get_ontology_table(args.path_to_doid_owl, ont_prefix = 'DOID_')
+        doid_df = get_ontology_table(args.path_to_doid_owl, ont_prefix = 'DOID_', imports_dir = args.path_to_doid_imports)
 
         # Get unique values for 'Label'
         unique_labels = doid_df['Label'].unique().tolist()
@@ -176,7 +180,7 @@ if __name__ == "__main__":
 
 
 
-    #hp_obo, ecto_obo and peco_obo: http://purl.obolibrary.org/obo/{hp,ecto,peco}.obo (fetched by the workflow)
+    #hp_obo, ecto_obo and peco_obo: the releases pinned in data/reference_data.json (fetched by the workflow)
     if args.path_to_hp_obo != 'none':
         print('Updating HPO health conditions!')
         hpo_df = hpo_table(args.path_to_hp_obo)

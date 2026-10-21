@@ -9,6 +9,7 @@ import argparse
 import json
 import re
 from obo_tables import hpo_table, exposure_table
+from owl_loading import load_ontology
 
 # owlready2 raises TypeError when an OWL file (e.g. new cl.owl via STATO import)
 # declares an IRI as both a property and a class/individual. Patch _load_properties
@@ -55,10 +56,7 @@ EXTRA_SYNONYMS = {
 }
 
 def get_uberon_table(owl_path):
-    # Each ontology gets its own owlready2 World: in the shared default world, classes an
-    # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
-    # that earlier ontology and silently disappear from this one's classes()
-    onto = owlready2.World().get_ontology(owl_path).load()
+    onto = load_ontology(owl_path)
 
     multi_cellular = onto.search(iri="http://purl.obolibrary.org/obo/UBERON_0010000")[0]
     organ = onto.search(iri="http://purl.obolibrary.org/obo/UBERON_0000062")[0]
@@ -131,7 +129,7 @@ def get_sex_specific_parts(uberon_owl_path, cl_owl_path):
     UBERONOntologyIndex, Label, BiologicalSex, Is Milk"""
     rows = []
     for owl_path, prefix in ((uberon_owl_path, 'UBERON_'), (cl_owl_path, 'CL_')):
-        onto = owlready2.World().get_ontology(owl_path).load()
+        onto = load_ontology(owl_path)
         children, labels = {}, {}
         for cls in onto.classes():
             labels[cls.name] = cls.label.first() if cls.label else None
@@ -167,11 +165,11 @@ def get_sex_specific_parts(uberon_owl_path, cl_owl_path):
     return df.sort_values('UBERONOntologyIndex', kind='stable').reset_index(drop=True)
 
 
-def get_doid_parents(owl_path):
+def get_doid_parents(owl_path, imports_dir=None):
     """Direct is_a links between DOID classes (used to pick the most specific disease term):
     asserted subclass links plus the genus of equivalent-class definitions (e.g.
     adenocarcinoma = cancer and has_material_basis_in ..., so adenocarcinoma is_a cancer)."""
-    onto = owlready2.World().get_ontology(owl_path).load()
+    onto = load_ontology(owl_path, imports_dir)
     rows = []
     for cls in onto.classes():
         if not cls.name.startswith('DOID_') or True in getattr(cls, 'deprecated', []):
@@ -186,11 +184,8 @@ def get_doid_parents(owl_path):
     return pd.DataFrame(rows, columns=['DOIDOntologyIndex', 'ParentDOIDOntologyIndex']).drop_duplicates()
 
 
-def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex'):
-    # Each ontology gets its own owlready2 World: in the shared default world, classes an
-    # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
-    # that earlier ontology and silently disappear from this one's classes()
-    onto = owlready2.World().get_ontology(owl_path).load()
+def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex', imports_dir=None):
+    onto = load_ontology(owl_path, imports_dir)
     filter_class = None
     descendants = set()
     if descendant_node:
@@ -245,8 +240,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Prepare ontologies')
     parser.add_argument('--path_to_uberon_owl')
     parser.add_argument('--path_to_po_owl')
+    parser.add_argument('--path_to_po_imports', default='none')
     parser.add_argument('--path_to_cl_owl')
     parser.add_argument('--path_to_doid_owl')
+    parser.add_argument('--path_to_doid_imports', default='none')
     parser.add_argument('--path_to_biome_envs_owl')
     parser.add_argument('--path_to_material_envs_owl')
     parser.add_argument('--path_to_ncbi_nodes_dmp')
@@ -268,7 +265,7 @@ if __name__ == '__main__':
     cl_onto = get_ontology_table(args.path_to_cl_owl, ont_prefix = 'CL_')
 
     print('Processing plant ontology,..')
-    po_onto = get_ontology_table(args.path_to_po_owl, ont_prefix = 'PO_', rm_synonym_info = True)
+    po_onto = get_ontology_table(args.path_to_po_owl, ont_prefix = 'PO_', rm_synonym_info = True, imports_dir = args.path_to_po_imports)
 
     uberon_ontology_table = pd.concat([uberon_onto, cl_onto, po_onto], ignore_index=True, sort=False)
     uberon_ontology_table['UBERONOntologyIndex'] = uberon_ontology_table['UBERONOntologyIndex'].str.replace('_', ':')
@@ -289,9 +286,9 @@ if __name__ == '__main__':
 
     #create ontology table to fill DOIDOntologyIndex from bodyparts
     print('Processing disease ontology,..')
-    doid_ontology_table = get_ontology_table(args.path_to_doid_owl, ont_prefix = 'DOID_', index_column_name = 'DOIDOntologyIndex')
+    doid_ontology_table = get_ontology_table(args.path_to_doid_owl, ont_prefix = 'DOID_', index_column_name = 'DOIDOntologyIndex', imports_dir = args.path_to_doid_imports)
     doid_ontology_table['DOIDOntologyIndex'] = doid_ontology_table['DOIDOntologyIndex'].str.replace('_', ':')
-    doid_parents_table = get_doid_parents(args.path_to_doid_owl)
+    doid_parents_table = get_doid_parents(args.path_to_doid_owl, args.path_to_doid_imports)
 
 
 

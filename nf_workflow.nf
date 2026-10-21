@@ -26,7 +26,9 @@ CELLOSAURUS_TABLE = 'cellosaurus_56.0_cell_lines.tsv.gz'
 // versions the workflow was tested with. Files already present in the pinned version are
 // kept; missing, different or unrecorded files (e.g. from an earlier manual get_data.sh
 // run) are replaced by the pinned version. Newer upstream releases are only used after
-// their pin is changed. Outputs are links to the files in data/.
+// their pin is changed. The owl:imports of PO and DOID are pinned too (po_imports/,
+// doid_imports/): owlready2 would download them on every load. Outputs are links to the
+// files in data/.
 process fetchReferenceData {
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -36,8 +38,10 @@ process fetchReferenceData {
     output:
     path 'uberon.owl', emit: uberon
     path 'po.owl', emit: po
+    path 'po_imports', emit: po_imports
     path 'cl.owl', emit: cl
     path 'doid.owl', emit: doid
+    path 'doid_imports', emit: doid_imports
     path 'ms.owl', emit: ms
     path 'biome-hierarchy.owl', emit: biome
     path 'material-hierarchy.owl', emit: material
@@ -120,8 +124,10 @@ process updateAllowedTerms {
     path names_dmp
     path uberon_owl
     path po_owl
+    path po_imports
     path cl_owl
     path doid_owl
+    path doid_imports
     path ms_owl
     path material_owl
     path biome_owl
@@ -139,8 +145,10 @@ process updateAllowedTerms {
     --path_to_ncbi_dump ${names_dmp} \
     --path_to_uberon_owl ${uberon_owl} \
     --path_to_po_owl ${po_owl} \
+    --path_to_po_imports ${po_imports} \
     --path_to_cl_owl ${cl_owl} \
     --path_to_doid_owl ${doid_owl} \
+    --path_to_doid_imports ${doid_imports} \
     --path_to_ms_owl ${ms_owl} \
     --path_to_material_envs_owl ${material_owl} \
     --path_to_biome_envs_owl ${biome_owl} \
@@ -434,7 +442,9 @@ process prepare_ontologies {
     path uberon_owl
     path cl_owl
     path po_owl
+    path po_imports
     path doid_owl
+    path doid_imports
     path biome_owl
     path material_owl
     path nodes_dmp
@@ -459,7 +469,9 @@ process prepare_ontologies {
     --path_to_uberon_owl ${uberon_owl} \
     --path_to_cl_owl ${cl_owl} \
     --path_to_po_owl ${po_owl} \
+    --path_to_po_imports ${po_imports} \
     --path_to_doid_owl ${doid_owl} \
+    --path_to_doid_imports ${doid_imports} \
     --path_to_biome_envs_owl ${biome_owl} \
     --path_to_material_envs_owl ${material_owl} \
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
@@ -816,12 +828,12 @@ workflow {
     //  Reference data, then ontologies
     ref = fetchReferenceData()
     (uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, hpo_onto, exposure_onto, doid_parents, sex_specific_parts) = prepare_ontologies(
-        ref.uberon, ref.cl, ref.po, ref.doid, ref.biome, ref.material,
+        ref.uberon, ref.cl, ref.po, ref.po_imports, ref.doid, ref.doid_imports, ref.biome, ref.material,
         ref.nodes, ref.division, ref.hp, ref.ecto, ref.peco)
     cellosaurus = dataFile(CELLOSAURUS_TABLE)
     allowed_terms = updateAllowedTerms(
-        dataFile('allowed_terms.json'), ref.names, ref.uberon, ref.po, ref.cl, ref.doid, ref.ms,
-        ref.material, ref.biome, ref.hp, ref.ecto, ref.peco, cellosaurus)
+        dataFile('allowed_terms.json'), ref.names, ref.uberon, ref.po, ref.po_imports, ref.cl, ref.doid, ref.doid_imports,
+        ref.ms, ref.material, ref.biome, ref.hp, ref.ecto, ref.peco, cellosaurus)
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
     (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)

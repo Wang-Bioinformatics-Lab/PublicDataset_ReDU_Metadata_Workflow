@@ -19,8 +19,11 @@ pin. What is present is recorded in data/.reference_data_state.json.
   warning); a missing optional file becomes empty (the column it feeds stays empty); a
   missing required file stops the workflow.
 
-With --link_dir, symlinks to all resulting files are created there (the workflow
-passes them on as process outputs).
+- A name with a folder (po_imports/ro_import.owl) is installed in that folder of data/:
+  the owl:imports of an ontology, which bin/owl_loading.py reads from there.
+
+With --link_dir, symlinks to all resulting files (and folders) are created there (the
+workflow passes them on as process outputs).
 
     python fetch_reference_data.py data/reference_data.json data/ [--link_dir .]
 """
@@ -170,10 +173,11 @@ def main():
             state = json.load(handle)
 
     # leftovers of the earlier manual setup or of interrupted downloads
-    for name in os.listdir(data_dir):
-        if name.endswith('.part') or (name in LEFTOVERS and name not in state):
-            log(f"removing leftover {name}")
-            os.remove(os.path.join(data_dir, name))
+    for folder, _, names in os.walk(data_dir):
+        for name in names:
+            if name.endswith('.part') or (folder == data_dir and name in LEFTOVERS and name not in state):
+                log(f"removing leftover {os.path.relpath(os.path.join(folder, name), data_dir)}")
+                os.remove(os.path.join(folder, name))
 
     failed_required = []
     for entry in entries:
@@ -183,6 +187,7 @@ def main():
             log(f"{name}: pinned version present")
             continue
         log(f"{name}: downloading ({reason})")
+        os.makedirs(os.path.dirname(os.path.join(data_dir, name)), exist_ok=True)
         part = download(entry['url'], os.path.join(data_dir, name))
         if part and entry.get('sha256') and sha256_of(part) != entry['sha256']:
             log(f"{name}: download does not match the pinned sha256 (the source changed?), discarded")
@@ -216,12 +221,12 @@ def main():
         sys.exit(1)
 
     if args.link_dir:
-        for entry in entries:
-            for output in outputs_of(entry):
-                link = os.path.join(args.link_dir, output)
-                if os.path.lexists(link):
-                    os.remove(link)
-                os.symlink(os.path.join(data_dir, output), link)
+        # one link per file, or per folder (po_imports/...)
+        for output in dict.fromkeys(output.split('/')[0] for entry in entries for output in outputs_of(entry)):
+            link = os.path.join(args.link_dir, output)
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.join(data_dir, output), link)
 
 
 if __name__ == '__main__':

@@ -13,6 +13,7 @@ import pandas as pd
 import tqdm
 
 from blank_qc_names import blank_qc_type_from_filename
+from owl_loading import load_ontology
 # several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
 from ncbi_database import is_multi, single_taxid
 
@@ -1517,10 +1518,7 @@ def get_taxonomy_id_from_name__allowedTerms(organism_name, **kwargs):
 
 
 def get_uberon_table(owl_path):
-    # Each ontology gets its own owlready2 World: in the shared default world, classes an
-    # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
-    # that earlier ontology and silently disappear from this one's classes()
-    onto = owlready2.World().get_ontology(owl_path).load()
+    onto = load_ontology(owl_path)
 
     multi_cellular = onto.search(iri="http://purl.obolibrary.org/obo/UBERON_0010000")[0]
     organ = onto.search(iri="http://purl.obolibrary.org/obo/UBERON_0000062")[0]
@@ -1563,11 +1561,8 @@ def get_uberon_table(owl_path):
 
 
 
-def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex'):
-    # Each ontology gets its own owlready2 World: in the shared default world, classes an
-    # earlier file already declared (e.g. UBERON declares ENVO's 'marine biome') belong to
-    # that earlier ontology and silently disappear from this one's classes()
-    onto = owlready2.World().get_ontology(owl_path).load()
+def get_ontology_table(owl_path, ont_prefix, rm_synonym_info=False, descendant_node=None, index_column_name = 'UBERONOntologyIndex', imports_dir=None):
+    onto = load_ontology(owl_path, imports_dir)
 
     filter_class = None
     descendants = set()
