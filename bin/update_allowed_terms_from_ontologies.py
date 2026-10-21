@@ -51,29 +51,9 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_cellosaurus_tsv', default = 'none')
     args = parser.parse_args()
 
-    #ncbi_dump can be downloaded from https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip 
-    #after unzipping the file we need is named names.dmp
-
-    #uberon_owl can be downloaded from http://aber-owl.net/ontology/UBERON/#/Download
-    #always take the latest verion!
-
-    #po_owl can be downloaded from http://aber-owl.net/ontology/PO/#/Download
-    #always take the latest verion!
-
-    #cl_owl can be downloaded from http://aber-owl.net/ontology/CL/#/Download
-    #always take the latest verion!
-
-    #doid_owl can be downloaded from http://aber-owl.net/ontology/DOID/#/Download
-    #always take the latest verion!
-
-    #ms_owl can be downloaded from http://aber-owl.net/ontology/MS/#/Download
-    #always take the latest verion!
-
-    #envo_bimoe can be downloaded from https://github.com/EnvironmentOntology/envo/blob/master/subsets/biome-hierarchy.owl
-    #always take the latest verion!
-
-    #envo_material can be downloaded from https://github.com/EnvironmentOntology/envo/blob/master/subsets/material-hierarchy.owl
-    #always take the latest verion!
+    #the NCBI taxonomy dump (names.dmp) and the ontologies (uberon, po, cl, doid, ms, ENVO biome/material, hp, ecto,
+    #peco) are the versions pinned in data/reference_data.json (url + sha256); the workflow's first step,
+    #fetchReferenceData, sets them up. To move to a newer release, test it and change url and sha256 there.
 
 
     # Load allowed Terms json
