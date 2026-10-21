@@ -13,6 +13,10 @@ params.old_redu = './data/empty_redu.tsv'
 // saveOlderData keeps that source's rows from earlier runs, so a problem with one
 // repository or dataset never blocks the update of the others. The limit stays below
 // the 23.5 h celery time limit so the merge steps still run.
+// Each step with a fallback also writes a status file (status_<step>.tsv: step, DataSource of
+// the rows it feeds, ok / failed / degraded, and when the step started, UTC); sourceStatus gives
+// each repository its last update from them (source_summary.tsv) and the run's output names the
+// steps that fell back. The status files are not published to nf_output.
 params.source_timeout = '20h'
 
 // Cellosaurus cell lines (CellLine / CellLineIndex): a pinned table shipped in data/
@@ -83,8 +87,12 @@ process fetchDatasetCache {
 
     output:
     path 'uniquemri.csv', emit: table
+    // without the table the name matching is slower but still delivers this run's rows: degraded
+    path 'status_fetchDatasetCache.tsv', emit: status
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     for attempt in 1 2 3; do
         problem=""
         if curl -sS --fail --speed-limit 50000 --speed-time 300 --max-time 5400 \
@@ -108,7 +116,9 @@ process fetchDatasetCache {
     if [ -n "\$problem" ]; then
         echo "WARNING: dataset cache table not available (\$problem); the name matching queries the dataset cache per dataset" >&2
         : > uniquemri.csv
+        status=degraded
     fi
+    printf 'fetchDatasetCache\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_fetchDatasetCache.tsv
     """
 }
 
@@ -162,7 +172,7 @@ process updateAllowedTerms {
 
 
 process downloadMetadata_massive_and_github {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -172,17 +182,24 @@ process downloadMetadata_massive_and_github {
     output:
     file 'file_paths.tsv'
     file 'metadata_folder'
+    // one line each for the ReDU_metadata sheets from GitHub and the MassIVE metadata
+    path 'status_downloadMetadata_massive_and_github.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
     mkdir metadata_folder
+    github=ok
+    massive=ok
     if wget -q --tries=3 --timeout=120 https://github.com/Wang-Bioinformatics-Lab/ReDU_metadata/archive/refs/heads/main.zip && unzip -q main.zip; then
         mv ReDU_metadata-main/metadata/*.tsv metadata_folder/
     else
         echo "WARNING: could not fetch ReDU_metadata from GitHub; its rows from earlier runs are kept" >&2
+        github=failed
     fi
     timeout ${params.source_timeout} python $TOOL_FOLDER/gnps_downloader.py metadata_folder \
-    || echo "WARNING: MassIVE metadata download failed; MassIVE rows from earlier runs are kept" >&2
+    || { echo "WARNING: MassIVE metadata download failed; MassIVE rows from earlier runs are kept" >&2; massive=failed; }
     [ -f file_paths.tsv ] || printf 'LocalName\tServerName\n' > file_paths.tsv
+    printf 'ReDU_metadata from GitHub\\tGNPS\\t%s\\t%s\\nMassIVE metadata download\\tGNPS\\t%s\\t%s\\n' \$github \$started \$massive \$started > status_downloadMetadata_massive_and_github.tsv
     """
 }
 
@@ -190,7 +207,7 @@ process downloadMetadata_massive_and_github {
 process mwbRun {
     conda "$TOOL_FOLDER/conda_env.yml"
 
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     input:
     path uberon_po_cl_csv_path
@@ -212,8 +229,11 @@ process mwbRun {
     path 'REDU_from_MWB_all.tsv', emit: metadata
     // files whose sample the name matching withheld (no row on purpose): saveOlderData --withheld_files
     path 'withheld_files_workbench.tsv', emit: withheld
+    path 'status_mwbRun.tsv', emit: status
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/MWB_to_REDU.py \
     --study_id ALL \
     --withheld_output withheld_files_workbench.tsv \
@@ -233,13 +253,14 @@ process mwbRun {
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
     --path_to_ncbi_names_dmp ${names_dmp} \
     --path_to_ncbi_merged_dmp ${merged_dmp} \
-    || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; : > REDU_from_MWB_all.tsv; printf 'USI\tdataset\treason\n' > withheld_files_workbench.tsv; }
+    || { echo "WARNING: mwbRun failed or timed out; Workbench rows from earlier runs are kept" >&2; status=failed; : > REDU_from_MWB_all.tsv; printf 'USI\tdataset\treason\n' > withheld_files_workbench.tsv; }
+    printf 'mwbRun\\tWorkbench\\t%s\\t%s\\n' \$status \$started > status_mwbRun.tsv
     """
 }
 
 
 process mwbFiles {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -248,18 +269,22 @@ process mwbFiles {
 
     output:
     file 'mwb_files_all.tsv'
+    path 'status_mwbFiles.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/getAllWorkbench_file_paths.py \
     --study_id ALL \
     --output_path mwb_files_all.tsv \
     --filter_extensions True \
-    || { echo "WARNING: mwbFiles failed or timed out; Workbench rows from earlier runs are kept" >&2; : > mwb_files_all.tsv; }
+    || { echo "WARNING: mwbFiles failed or timed out; Workbench rows from earlier runs are kept" >&2; status=failed; : > mwb_files_all.tsv; }
+    printf 'mwbFiles\\tWorkbench\\t%s\\t%s\\n' \$status \$started > status_mwbFiles.tsv
     """
 }
 
 process formatmwb {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -269,13 +294,17 @@ process formatmwb {
 
     output:
     file 'mwb_redu.tsv'
+    path 'status_formatmwb.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/MWB_merge.py  \
     $mwb_metadata \
     $mwb_files \
     mwb_redu.tsv \
-    || { echo "WARNING: formatmwb failed or timed out; Workbench rows from earlier runs are kept" >&2; : > mwb_redu.tsv; }
+    || { echo "WARNING: formatmwb failed or timed out; Workbench rows from earlier runs are kept" >&2; status=failed; : > mwb_redu.tsv; }
+    printf 'formatmwb\\tWorkbench\\t%s\\t%s\\n' \$status \$started > status_formatmwb.tsv
     """
 }
 
@@ -284,7 +313,7 @@ process mlRun {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     input:
     path uberon_po_cl_csv_path
@@ -309,9 +338,12 @@ process mlRun {
     path 'Metabolights2REDU_ALL.tsv', emit: metadata
     // files the converter gives no row on purpose (sample pairing withheld): saveOlderData --withheld_files
     path 'withheld_files_metabolights.tsv', emit: withheld
+    path 'status_mlRun.tsv', emit: status
 
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/Metabolights2REDU.py \
     --study_id ALL  \
     --withheld_output withheld_files_metabolights.tsv \
@@ -328,12 +360,13 @@ process mlRun {
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
     --path_to_ncbi_names_dmp ${names_dmp} \
     --path_to_ncbi_merged_dmp ${merged_dmp} \
-    || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > Metabolights2REDU_ALL.tsv; printf 'USI\tdataset\treason\n' > withheld_files_metabolights.tsv; }
+    || { echo "WARNING: mlRun failed or timed out; MetaboLights rows from earlier runs are kept" >&2; status=failed; : > Metabolights2REDU_ALL.tsv; printf 'USI\tdataset\treason\n' > withheld_files_metabolights.tsv; }
+    printf 'mlRun\\tMetaboLights\\t%s\\t%s\\n' \$status \$started > status_mlRun.tsv
     """
 }
 
 process mlFiles {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -342,17 +375,21 @@ process mlFiles {
 
     output:
     file 'MetabolightsFilePaths_ALL.tsv'
+    path 'status_mlFiles.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/getAllMetabolights_file_paths.py \
     --output_filename MetabolightsFilePaths_ALL.tsv \
     --include_compressed \
-    || { echo "WARNING: mlFiles failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > MetabolightsFilePaths_ALL.tsv; }
+    || { echo "WARNING: mlFiles failed or timed out; MetaboLights rows from earlier runs are kept" >&2; status=failed; : > MetabolightsFilePaths_ALL.tsv; }
+    printf 'mlFiles\\tMetaboLights\\t%s\\t%s\\n' \$status \$started > status_mlFiles.tsv
     """
 }
 
 process formatml {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -363,13 +400,17 @@ process formatml {
 
     output:
     file 'ml_redu.tsv'
+    path 'status_formatml.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/ML_merge.py \
     $ml_metadata \
     $ml_files \
     ml_redu.tsv \
-    || { echo "WARNING: formatml failed or timed out; MetaboLights rows from earlier runs are kept" >&2; : > ml_redu.tsv; }
+    || { echo "WARNING: formatml failed or timed out; MetaboLights rows from earlier runs are kept" >&2; status=failed; : > ml_redu.tsv; }
+    printf 'formatml\\tMetaboLights\\t%s\\t%s\\n' \$status \$started > status_formatml.tsv
     """
 }
 
@@ -377,7 +418,7 @@ process normanRun {
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     input:
     path uberon_po_cl_csv_path
@@ -388,9 +429,12 @@ process normanRun {
 
     output:
     file 'NORMAN2REDU_ALL.tsv'
+    path 'status_normanRun.tsv'
 
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/NORMAN_to_REDU.py \
     --study_id ALL  \
     --path_to_allowed_term_json ${allowed_terms} \
@@ -399,7 +443,8 @@ process normanRun {
     --path_to_envo_material_csv ${ENVO_material_csv} \
     --path_ncbi_rank_division ${ncbi_rank_division} \
     --output NORMAN2REDU_ALL.tsv \
-    || { echo "WARNING: normanRun failed or timed out; NORMAN rows from earlier runs are kept" >&2; : > NORMAN2REDU_ALL.tsv; }
+    || { echo "WARNING: normanRun failed or timed out; NORMAN rows from earlier runs are kept" >&2; status=failed; : > NORMAN2REDU_ALL.tsv; }
+    printf 'normanRun\\tNORMAN\\t%s\\t%s\\n' \$status \$started > status_normanRun.tsv
     """
 }
 
@@ -485,7 +530,7 @@ process prepare_ontologies {
 
 // This cleans up the metadata from MassIVE into the appropriate CV terms
 process gnpsHarmonize {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -506,9 +551,12 @@ process gnpsHarmonize {
 
     output:
     file 'adjusted_metadata_folder'
+    path 'status_gnpsHarmonize.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
     mkdir adjusted_metadata_folder
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/read_and_validate_redu_from_github.py \
     ${metadata_ch} \
     adjusted_metadata_folder \
@@ -524,13 +572,14 @@ process gnpsHarmonize {
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
     --path_to_ncbi_merged_dmp ${merged_dmp} \
     --path_to_cellosaurus_tsv ${cellosaurus_tsv} \
-    || { echo "WARNING: gnpsHarmonize failed or timed out; GNPS rows from earlier runs are kept" >&2; true; }
+    || { echo "WARNING: gnpsHarmonize failed or timed out; GNPS rows from earlier runs are kept" >&2; status=failed; }
+    printf 'gnpsHarmonize\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_gnpsHarmonize.tsv
     """
 }
 
 
 process gnpsmatchName {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -542,15 +591,19 @@ process gnpsmatchName {
 
     output:
     file 'gnps_metadata_all.tsv'
+    path 'status_gnpsmatchName.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/gnps_name_matcher.py \
     all \
     adjusted_metadata_folder \
     gnps_metadata_all.tsv \
     ${allowed_terms} \
     --files_table ${files_table} \
-    || { echo "WARNING: gnpsmatchName failed or timed out; GNPS rows from earlier runs are kept" >&2; : > gnps_metadata_all.tsv; }
+    || { echo "WARNING: gnpsmatchName failed or timed out; GNPS rows from earlier runs are kept" >&2; status=failed; : > gnps_metadata_all.tsv; }
+    printf 'gnpsmatchName\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_gnpsmatchName.tsv
     """
 }
 
@@ -559,7 +612,7 @@ process gnpsmatchName {
 // it lists exactly one instrument that maps unambiguously). Optional enrichment: on any
 // failure the rows are passed through unchanged.
 process gnpsInstruments {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -569,13 +622,18 @@ process gnpsInstruments {
 
     output:
     file 'gnps_metadata_instruments.tsv'
+    // rows passed through: degraded, they are still this run's
+    path 'status_gnpsInstruments.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout 2h python $TOOL_FOLDER/massive_dataset_instruments.py \
     ${gnps_metadata} \
     gnps_metadata_instruments.tsv \
     --path_to_allowed_term_json ${allowed_terms} \
-    || { echo "WARNING: gnpsInstruments failed or timed out; passing rows through" >&2; cp ${gnps_metadata} gnps_metadata_instruments.tsv; }
+    || { echo "WARNING: gnpsInstruments failed or timed out; passing rows through" >&2; status=degraded; cp ${gnps_metadata} gnps_metadata_instruments.tsv; }
+    printf 'gnpsInstruments\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_gnpsInstruments.tsv
     """
 }
 
@@ -583,7 +641,7 @@ process gnpsInstruments {
 // MASST tables (microbe, plant, food, personal care products, microbiome) in ReDU format, for
 // files no GNPS metadata file describes; a missing or empty table is skipped with a warning
 process MASST_to_REDU {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -611,11 +669,14 @@ process MASST_to_REDU {
     path 'masst_supplement.tsv', emit: supplement
     // reference materials MASST names for GNPS-described files (USI, evidence), for finalTableRules
     path 'masst_refmat_evidence.tsv', emit: refmat_evidence
+    path 'status_MASST_to_REDU.tsv', emit: status
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
     mkdir adjusted_metadata_folder
     : > masst_supplement.tsv
     printf 'USI\\tevidence\\n' > masst_refmat_evidence.tsv
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/MASST_to_REDU.py \
     ${redu_table} \
     adjusted_metadata_folder \
@@ -636,13 +697,14 @@ process MASST_to_REDU {
     --files_table ${files_table} \
     --supplement_output masst_supplement.tsv \
     --refmat_evidence_output masst_refmat_evidence.tsv \
-    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_supplement.tsv; printf 'USI\\tevidence\\n' > masst_refmat_evidence.tsv; }
+    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; status=failed; : > masst_supplement.tsv; printf 'USI\\tevidence\\n' > masst_refmat_evidence.tsv; }
+    printf 'MASST_to_REDU\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_MASST_to_REDU.tsv
     """
 }
 
 // This is taking metadata from microbeMASST and PlatnMASST and modifying it
 process gnpsmatchName_masst {
-    publishDir "./nf_output", mode: 'copy'
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name.startsWith('status_') ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -654,15 +716,19 @@ process gnpsmatchName_masst {
 
     output:
     file 'masst_metadata_all.tsv'
+    path 'status_gnpsmatchName_masst.tsv'
 
     """
+    started=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    status=ok
     timeout ${params.source_timeout} python $TOOL_FOLDER/gnps_name_matcher.py \
     all \
     adjusted_metadata_folder \
     masst_metadata_all.tsv \
     ${allowed_terms} \
     --files_table ${files_table} \
-    || { echo "WARNING: gnpsmatchName_masst failed or timed out; MASST rows from earlier runs are kept" >&2; : > masst_metadata_all.tsv; }
+    || { echo "WARNING: gnpsmatchName_masst failed or timed out; MASST rows from earlier runs are kept" >&2; status=failed; : > masst_metadata_all.tsv; }
+    printf 'gnpsmatchName_masst\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_gnpsmatchName_masst.tsv
     """
 }
 
@@ -697,7 +763,8 @@ process add_cache_columns {
 
 
 process saveOlderData {
-    publishDir "./nf_output", mode: 'copy'
+    // (the rows per source go to sourceStatus, which publishes them with each repository's last update)
+    publishDir "./nf_output", mode: 'copy', saveAs: { name -> name == 'source_counts.tsv' ? null : name }
 
     conda "$TOOL_FOLDER/conda_env.yml"
 
@@ -711,7 +778,7 @@ process saveOlderData {
 
     output:
     path 'merged_with_old.tsv', emit: merged
-    path 'source_summary.tsv'
+    path 'source_counts.tsv', emit: counts
     path 'saveolder_dropped.tsv'
 
     """
@@ -722,8 +789,39 @@ process saveOlderData {
     --metabolights_files ${ml_files} \
     --files_table ${files_table} \
     --withheld_files ${withheld_files} \
-    --summary_output source_summary.tsv \
+    --summary_output source_counts.tsv \
     --dropped_output saveolder_dropped.tsv
+    """
+}
+
+
+// source_summary.tsv: saveOlderData's rows per source and each repository's last_update (the start of this run,
+// UTC, if none of its steps fell back and it delivered rows of its own; with -resume the start of the earliest of
+// its steps whose result is from an earlier session; otherwise the date of the summary next to --old_redu, empty
+// without one) and last_run_status (source_status.py). After add_cache_columns: published only
+// with the table it describes, so a run that fails later does not record updates the table does not have.
+process sourceStatus {
+    publishDir "./nf_output", mode: 'copy'
+
+    conda "$TOOL_FOLDER/conda_env.yml"
+
+    input:
+    path source_counts
+    path previous_summary, stageAs: 'previous_source_summary.tsv'
+    path step_status
+    val run_start
+    val after_table
+
+    output:
+    path 'source_summary.tsv'
+
+    """
+    python $TOOL_FOLDER/source_status.py \
+    ${source_counts} \
+    ${previous_summary} \
+    source_summary.tsv \
+    --step_status ${step_status} \
+    --run_start ${run_start}
     """
 }
 
@@ -836,45 +934,56 @@ workflow {
         ref.ms, ref.material, ref.biome, ref.hp, ref.ecto, ref.peco, cellosaurus)
 
     // Massive REDU data, called before GitHub because taking it from MassIVE as the place to keep metadata and not github
-    (file_paths_ch, metadata_ch) = downloadMetadata_massive_and_github(1)
+    (file_paths_ch, metadata_ch, download_status) = downloadMetadata_massive_and_github(1)
     // the dataset cache's file table for the name matching steps, after the MassIVE listing
     dataset_cache = fetchDatasetCache(file_paths_ch)
-    msv_metadata_ch = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names, cellosaurus, ref.nodes, ref.merged)
-    gnps_metadata_ch = gnpsmatchName(msv_metadata_ch, allowed_terms, dataset_cache.table)
-    gnps_metadata_instruments_ch = gnpsInstruments(gnps_metadata_ch, allowed_terms)
+    (msv_metadata_ch, harmonize_status) = gnpsHarmonize(metadata_ch, uberon_cl_co_onto, doid_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, hpo_onto, exposure_onto, ref.names, cellosaurus, ref.nodes, ref.merged)
+    (gnps_metadata_ch, matchname_status) = gnpsmatchName(msv_metadata_ch, allowed_terms, dataset_cache.table)
+    (gnps_metadata_instruments_ch, instruments_status) = gnpsInstruments(gnps_metadata_ch, allowed_terms)
 
     // MASST tables: microbeMASST, plantMASST, foodMASST, personalCareProductMASST, microbiomeMASST
     masst_metadata_ch = MASST_to_REDU(gnps_metadata_ch, ncbi_rank_division, allowed_terms,
         ref.microbe_masst, ref.plant_masst, ref.food_masst, ref.food_masst_full, ref.personal_care_masst,
         ref.microbiome_masst, ref.nodes, ref.names, ref.merged, uberon_cl_co_onto, doid_onto, exposure_onto, dataset_cache.table)
-    masst_metadata_wFiles_ch = gnpsmatchName_masst(masst_metadata_ch.folder, allowed_terms, dataset_cache.table)
+    (masst_metadata_wFiles_ch, matchname_masst_status) = gnpsmatchName_masst(masst_metadata_ch.folder, allowed_terms, dataset_cache.table)
 
     // Metabolomics Workbench
     // one request stream per repository: the file listing first, then the converter
-    mwb_files_ch = mwbFiles(1)
+    (mwb_files_ch, mwb_files_status) = mwbFiles(1)
     mwb_run = mwbRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
         ref.nodes, ref.names, ref.merged, mwb_files_ch)
-    mwb_redu_ch = formatmwb(mwb_run.metadata, mwb_files_ch)
+    (mwb_redu_ch, formatmwb_status) = formatmwb(mwb_run.metadata, mwb_files_ch)
 
     // Metabolights
     // one request stream per repository: the file listing first, then the converter
-    ml_files_ch = mlFiles(1)
+    (ml_files_ch, ml_files_status) = mlFiles(1)
     ml_run = mlRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms, doid_onto, doid_parents, hpo_onto, exposure_onto, cellosaurus,
         ref.nodes, ref.names, ref.merged, ml_files_ch)
-    ml_redu_ch = formatml(ml_run.metadata, ml_files_ch)
+    (ml_redu_ch, formatml_status) = formatml(ml_run.metadata, ml_files_ch)
 
     // NORMAN
-    norman_metadata_ch = normanRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
+    (norman_metadata_ch, norman_status) = normanRun(uberon_cl_co_onto, envo_bio, envo_material, ncbi_rank_division, allowed_terms)
 
     // Combine everything
     merged_ch = mergeAllMetadata(allowed_terms, gnps_metadata_instruments_ch, mwb_redu_ch, ml_redu_ch, norman_metadata_ch, masst_metadata_wFiles_ch, masst_metadata_ch.supplement)
+
+    // whether each step with a fallback succeeded (status_<step>.tsv); a step that fell back shows in the run's output
+    step_status = download_status.mix(dataset_cache.status, harmonize_status, matchname_status, instruments_status,
+        masst_metadata_ch.status, matchname_masst_status, mwb_files_status, mwb_run.status, formatmwb_status,
+        ml_files_status, ml_run.status, formatml_status, norman_status)
+    step_status.splitCsv(sep: '\t').subscribe { row ->
+        def (step, source, status) = row
+        if (status == 'degraded') log.warn("${source}: ${step} fell back to a slower or less complete mode; its rows are still this run's")
+        else if (status != 'ok') log.warn("${source}: ${step} fell back; its rows from earlier runs are kept")
+    }
 
 
     // Make sure we dont loose older data
     old_redu_path_ch = Channel.fromPath(params.old_redu)
     // files the converters withheld on purpose this run (their earlier rows are not kept); further sources: .mix(...)
     withheld_ch = ml_run.withheld.mix(mwb_run.withheld).collect()
-    merged_with_old_ch = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch, dataset_cache.table, withheld_ch).merged
+    save_older = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch, dataset_cache.table, withheld_ch)
+    merged_with_old_ch = save_older.merged
 
     // Enrich NCBI information
     merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch, ref.nodes, ref.names, ref.merged)
@@ -886,6 +995,19 @@ workflow {
     merged_with_text_ch = finalizeTextColumns(merged_with_rules_ch, allowed_terms, exposure_onto)
 
     // Add Cache columns
-    cache_enriched_metadata = add_cache_columns(merged_with_text_ch, dataset_cache.table)
+    (cache_enriched_metadata, cache_enriched_parquet) = add_cache_columns(merged_with_text_ch, dataset_cache.table)
+
+    // Each repository's last update (source_summary.tsv), from the summary written with the --old_redu table (none,
+    // e.g. without --old_redu: data/empty_redu.tsv stands in, it has no last_update); one line per repository at the end
+    previous_summary = file(params.old_redu).resolveSibling('source_summary.tsv')
+    run_start = workflow.start.toInstant().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()
+    // (after_table: the table's name, not the file, which add_cache_columns moves to nf_output)
+    source_summary = sourceStatus(save_older.counts, previous_summary.exists() ? previous_summary : dataFile('empty_redu.tsv'),
+        step_status.collect(), run_start, cache_enriched_metadata.map { it.name })
+    source_summary.splitCsv(header: true, sep: '\t').subscribe { row ->
+        if (!row.last_run_status) return
+        def line = "${row.DataSource}: ${row.last_run_status}; last update ${row.last_update ?: 'unknown'}"
+        if (row.last_run_status.startsWith('updated')) log.info(line) else log.warn(line)
+    }
 
 }

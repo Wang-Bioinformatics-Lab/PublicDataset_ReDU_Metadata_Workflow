@@ -514,7 +514,8 @@ if __name__ == "__main__":
                              'reorganised its folder layout (e.g. FILES/FILES/x -> FILES/DERIVED_FILES/x).')
     parser.add_argument('--summary_output', default=None,
                         help='Writes per-source counts of rows from this run vs. carried from earlier runs, '
-                             'so a source that failed (0 rows this run) is visible.')
+                             'so a source that failed (0 rows this run) is visible, and own_this_run: the rows of this '
+                             'run not only MASST describes (source_status.py).')
     parser.add_argument('--files_table', default=None,
                         help='dataset cache file table (uniquemri.csv): copies of a MassIVE file in another folder layout '
                              'count as the same file (merge_metadata.NameCopies)')
@@ -551,6 +552,10 @@ if __name__ == "__main__":
                                                                         withheld=withheld)
     if args.dropped_output:
         dropped.to_csv(args.dropped_output, sep='\t', index=False)
+
+    # rows of this run per source that not only MASST describes; none: the source delivered nothing this run and
+    # keeps its earlier rows (replace_per_dataset, 'silent'). The summary's own_this_run, for source_status.py
+    own_this_run = _source_of(df_current['USI'].fillna('').astype(str))[~masst_only.to_numpy()].value_counts()
 
     df_merged = pd.concat([df_current.assign(_origin='this_run'), df_older.assign(_origin='earlier_runs')],
                           ignore_index=True)
@@ -614,6 +619,7 @@ if __name__ == "__main__":
         summary = (df_merged.groupby(['DataSource', '_origin'], dropna=False).size()
                    .unstack(fill_value=0).reindex(columns=['this_run', 'earlier_runs'], fill_value=0))
         summary['total'] = summary.sum(axis=1)
+        summary['own_this_run'] = own_this_run.reindex(summary.index, fill_value=0)
         summary.to_csv(args.summary_output, sep='\t')
         print(summary.to_string())
     df_merged = df_merged.drop(columns=['_origin'])
