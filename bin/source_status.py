@@ -31,6 +31,11 @@ def read_step_status(paths):
     return pd.concat(tables, ignore_index=True).fillna('')
 
 
+def failed_steps(step_status):
+    """The steps of step_status (read_step_status) that fell back: any status other than ok / degraded; sorted"""
+    return sorted(set(step_status.loc[~step_status['status'].isin(['ok', 'degraded']), 'step']))
+
+
 def last_update(run_start, started):
     """run_start, or the earliest start of the steps (started) before it, as it is given: with -resume, a step whose
     result is from an earlier session started then. run_start when it is no date"""

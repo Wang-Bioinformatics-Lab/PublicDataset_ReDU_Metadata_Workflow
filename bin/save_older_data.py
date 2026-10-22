@@ -5,6 +5,7 @@ import pandas as pd
 import re
 
 from merge_metadata import usi_noext, link_same_files, NameCopies, name_copy_datasets
+from source_status import failed_steps, read_step_status
 
 
 def _usi_noext(usi):
@@ -322,7 +323,7 @@ def _withheld_links(old_usi, withheld, silent):
     return w_usi, reason
 
 
-def replace_per_dataset(df_current, masst_only, df_older, files_table=None, withheld=None):
+def replace_per_dataset(df_current, masst_only, df_older, files_table=None, withheld=None, masst_fell_back=False):
     """Rows of this run and of earlier runs, per file (same_file_keys in merge_metadata.py:
     the same path without extension or a copy in another top folder), by precedence
       this run's non-MASST row > earlier non-MASST row > this run's MASST row > earlier MASST row.
@@ -345,6 +346,8 @@ def replace_per_dataset(df_current, masst_only, df_older, files_table=None, with
     file, and the files count as files of their dataset this run (shrink guard, rebuilt datasets);
     pairing-changed files (CHANGED_REASONS) only drop earlier rows in datasets with non-MASST rows of
     their own this run, and do not count as files.
+    masst_fell_back: a MASST step fell back this run (its status file, not its number of rows): the earlier
+    MASST-like rows of rebuilt datasets that no file of this run replaces are kept, of every source.
     Returns (df_current, df_older) with the replaced rows removed, and a table of the dropped rows."""
     dropped = []
     cur_usi = df_current['USI'].fillna('').astype(str)
@@ -424,14 +427,15 @@ def replace_per_dataset(df_current, masst_only, df_older, files_table=None, with
     drop_old[has_fresh & ~in_guarded] = 'other_copy_of_a_file_of_this_run'
     drop_old[has_masst & ~old_silent & old_masst_like & ~in_guarded] = 'masst_row_of_this_run_for_the_file'
     not_produced = ~has_fresh & ~has_masst & in_rebuilt
-    # this run without any MASST rows (MASST_to_REDU or gnpsmatchName_masst failed): earlier MASST rows are
-    # kept, as for a source that delivered no rows (nf_workflow.nf: "MASST rows from earlier runs are kept")
-    if not masst_only.any():
-        old_masst_rows = old_masst_like & old_source.isin(['GNPS', 'MetaboLights'])
-        n_keep = int((not_produced & old_masst_rows).sum())
-        if n_keep:
-            print(f"No MASST rows this run: keeping {n_keep} earlier MASST rows of rebuilt datasets")
-        not_produced &= ~old_masst_rows
+    # a MASST step fell back this run (MASST_to_REDU or gnpsmatchName_masst; a MASST run without rows is not
+    # a failure): earlier MASST rows are kept, as for a source that delivered no rows (nf_workflow.nf: "MASST
+    # rows and fields from earlier runs are kept"), of every source MASST describes files of; the fields MASST
+    # filled into other sources' rows: masst_fallback.py
+    if masst_fell_back:
+        n_keep = int((not_produced & old_masst_like).sum())
+        print(f"MASST fell back this run: keeping {n_keep} earlier MASST rows of rebuilt datasets "
+              f"{old_source[not_produced & old_masst_like].value_counts().sort_index().to_dict()}")
+        not_produced &= ~old_masst_like
     # an earlier file that is another acquisition (polarity / chromatography / extract) of a file of this
     # run with the same name was missed by this run (converter / matcher), it is not a stale row
     if not_produced.any():
@@ -525,7 +529,13 @@ if __name__ == "__main__":
     parser.add_argument('--withheld_files', nargs='*', default=None,
                         help='Side tables of files the converters withheld this run (USI, dataset, reason): their earlier '
                              'rows are dropped and they count as files of their dataset (replace_per_dataset)')
+    parser.add_argument('--masst_status', nargs='*', default=None,
+                        help='status files of MASST_to_REDU and gnpsmatchName_masst (status_<step>.tsv): if one fell back, '
+                             'the earlier MASST rows of rebuilt datasets are kept (replace_per_dataset); none given: ok')
     args = parser.parse_args()
+    masst_failed = failed_steps(read_step_status(args.masst_status))
+    if masst_failed:
+        print(f"MASST steps that fell back this run: {masst_failed}")
 
     df_current = pd.read_csv(args.input_new_data, dtype=str, sep = '\t')
     # Only a missing/empty older file means "no history"; any other read error must fail
@@ -550,7 +560,7 @@ if __name__ == "__main__":
               f"{withheld['reason'].value_counts().to_dict()}")
     if len(df_older) and 'USI' in df_older.columns:
         df_current, masst_only, df_older, dropped = replace_per_dataset(df_current, masst_only, df_older, args.files_table,
-                                                                        withheld=withheld)
+                                                                        withheld=withheld, masst_fell_back=bool(masst_failed))
     if args.dropped_output:
         dropped.to_csv(args.dropped_output, sep='\t', index=False)
 

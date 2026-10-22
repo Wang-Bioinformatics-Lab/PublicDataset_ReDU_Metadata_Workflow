@@ -24,6 +24,11 @@ params.source_timeout = '20h'
 // Release, sha256 and the CC BY 4.0 attribution are in data/cellosaurus_<version>.json.
 CELLOSAURUS_TABLE = 'cellosaurus_56.0_cell_lines.tsv.gz'
 
+// Wikidata's NCBI -> Open Tree of Life mapping (OpenTreeOfLifeTaxonomyID): a pinned copy shipped in data/
+// (bin/fetch_wikidata_ott_table.py, not run by the workflow; Wikidata is edited every day). Query, endpoint,
+// fetch date, sha256 and the CC0 license are in data/wikidata_ncbi_ott_<date>.json.
+WIKIDATA_OTT_TABLE = 'wikidata_ncbi_ott_2026-10-21.tsv.gz'
+
 
 // First step: sets up all reference data in data/ (ontologies, NCBI taxonomy, MASST
 // tables) in the versions pinned in data/reference_data.json (url + sha256), i.e. the
@@ -697,7 +702,7 @@ process MASST_to_REDU {
     --files_table ${files_table} \
     --supplement_output masst_supplement.tsv \
     --refmat_evidence_output masst_refmat_evidence.tsv \
-    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows from earlier runs are kept" >&2; status=failed; : > masst_supplement.tsv; printf 'USI\\tevidence\\n' > masst_refmat_evidence.tsv; }
+    || { echo "WARNING: MASST_to_REDU failed or timed out; MASST rows and fields from earlier runs are kept" >&2; status=failed; : > masst_supplement.tsv; printf 'USI\\tevidence\\n' > masst_refmat_evidence.tsv; }
     printf 'MASST_to_REDU\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_MASST_to_REDU.tsv
     """
 }
@@ -727,7 +732,7 @@ process gnpsmatchName_masst {
     masst_metadata_all.tsv \
     ${allowed_terms} \
     --files_table ${files_table} \
-    || { echo "WARNING: gnpsmatchName_masst failed or timed out; MASST rows from earlier runs are kept" >&2; status=failed; : > masst_metadata_all.tsv; }
+    || { echo "WARNING: gnpsmatchName_masst failed or timed out; MASST rows and fields from earlier runs are kept" >&2; status=failed; : > masst_metadata_all.tsv; }
     printf 'gnpsmatchName_masst\\tGNPS\\t%s\\t%s\\n' \$status \$started > status_gnpsmatchName_masst.tsv
     """
 }
@@ -775,6 +780,8 @@ process saveOlderData {
     path files_table
     // side tables of the files the converters withheld this run (one per source, header only when none)
     path withheld_files, stageAs: 'withheld_files_*.tsv'
+    // status files of MASST_to_REDU and gnpsmatchName_masst: if one fell back, the earlier MASST rows are kept
+    path masst_status
 
     output:
     path 'merged_with_old.tsv', emit: merged
@@ -790,7 +797,8 @@ process saveOlderData {
     --files_table ${files_table} \
     --withheld_files ${withheld_files} \
     --summary_output source_counts.tsv \
-    --dropped_output saveolder_dropped.tsv
+    --dropped_output saveolder_dropped.tsv \
+    --masst_status ${masst_status}
     """
 }
 
@@ -829,7 +837,8 @@ process sourceStatus {
 
 // Lineage columns (NCBISuperkingdom ... NCBISpecies; IsolationSourceNCBIKingdom / IsolationSourceNCBIPhylum of the
 // organism an isolate was isolated from) from the pinned NCBI taxonomy (nodes/names/merged.dmp of
-// reference_data.json), the release all other steps use
+// reference_data.json), the release all other steps use; OpenTreeOfLifeTaxonomyID from the pinned Wikidata
+// table (WIKIDATA_OTT_TABLE). No network access.
 process enrich_ncbi_information {
     publishDir "./nf_output", mode: 'copy'
 
@@ -840,24 +849,19 @@ process enrich_ncbi_information {
     path nodes_dmp
     path names_dmp
     path merged_dmp
+    path ncbi_ott_table
 
     output:
     path 'merged_with_ncbi.tsv'
 
-    //https://qlever.dev/wikidata/adgYjs
     """
-    curl -sS --fail --max-time 600 https://qlever.dev/api/wikidata \
-    -H "Accept: text/tab-separated-values" \
-    -H "Content-type: application/sparql-query" \
-    --data "PREFIX wd: <http://www.wikidata.org/entity/> PREFIX wdt: <http://www.wikidata.org/prop/direct/> PREFIX bd: <http://www.bigdata.com/rdf#> PREFIX wikibase: <http://wikiba.se/ontology#> SELECT ?ncbi_id ?ott_id WHERE { ?item wdt:P685 ?ncbi_id . OPTIONAL { ?item wdt:P9157 ?ott_id } ?item wdt:P31 wd:Q16521 }" \
-    -o sparql_oto_ncbi.tsv || rm -f sparql_oto_ncbi.tsv
-
     python $TOOL_FOLDER/ncbi_database.py \
     ${merged_ch}  \
     merged_with_ncbi.tsv \
     --path_to_ncbi_nodes_dmp ${nodes_dmp} \
     --path_to_ncbi_names_dmp ${names_dmp} \
-    --path_to_ncbi_merged_dmp ${merged_dmp}
+    --path_to_ncbi_merged_dmp ${merged_dmp} \
+    --path_to_ncbi_ott_table ${ncbi_ott_table}
     """
 }
 
@@ -893,7 +897,9 @@ process finalTableRules {
 
 // Last edits of SampleGroupFreeText and of the columns its factors are moved into, on every row (also the
 // rows saveOlderData keeps from earlier runs), after finalTableRules: Diet / FastingStatus /
-// InternalStandardsUsed from the texts, removal of the factors these columns hold, the group-consistency rule
+// InternalStandardsUsed from the texts, removal of the factors these columns hold, the group-consistency rule.
+// If a MASST step fell back, the fields MASST filled into other sources' rows are taken from the --old_redu table
+// for the datasets whose rows differ from it only by cells left missing (masst_fallback.py; otherwise a no-op)
 process finalizeTextColumns {
     publishDir "./nf_output", mode: 'copy'
 
@@ -903,6 +909,8 @@ process finalizeTextColumns {
     path merged_ch
     path allowed_terms
     path exposure_csv
+    path old_redu, stageAs: 'old_redu/*'
+    path masst_status
 
     output:
     path 'merged_with_text_columns.tsv'
@@ -913,11 +921,18 @@ process finalizeTextColumns {
     merged_with_text_columns.tsv \
     --path_to_allowed_term_json ${allowed_terms} \
     --path_to_exposure_csv ${exposure_csv}
+
+    # (the table is only replaced once complete: if this fails, it stays as final_text_columns.py wrote it)
+    python $TOOL_FOLDER/masst_fallback.py \
+    merged_with_text_columns.tsv \
+    ${old_redu} \
+    --masst_status ${masst_status} \
+    || echo "WARNING: masst_fallback.py failed; the fields MASST filled in earlier runs are not kept" >&2
     """
 }
 
 
-// Files tracked in data/ (allowed terms seed, Cellosaurus table); fail early with a clear message if one is missing
+// Files tracked in data/ (allowed terms seed, Cellosaurus table, Wikidata OTT table); fail early with a clear message if one is missing
 def dataFile(name) {
     file("$DATA_FOLDER/$name", checkIfExists: true)
 }
@@ -983,17 +998,20 @@ workflow {
     old_redu_path_ch = Channel.fromPath(params.old_redu)
     // files the converters withheld on purpose this run (their earlier rows are not kept); further sources: .mix(...)
     withheld_ch = ml_run.withheld.mix(mwb_run.withheld).collect()
-    save_older = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch, dataset_cache.table, withheld_ch)
+    // whether the MASST steps fell back (their status files, not their number of rows); saveOlderData and
+    // finalizeTextColumns then keep MASST's contributions of earlier runs
+    masst_status = masst_metadata_ch.status.mix(matchname_masst_status).collect()
+    save_older = saveOlderData(merged_ch, old_redu_path_ch, ml_files_ch, dataset_cache.table, withheld_ch, masst_status)
     merged_with_old_ch = save_older.merged
 
     // Enrich NCBI information
-    merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch, ref.nodes, ref.names, ref.merged)
+    merged_with_ncbi_ch = enrich_ncbi_information(merged_with_old_ch, ref.nodes, ref.names, ref.merged, dataFile(WIKIDATA_OTT_TABLE))
 
     // Rules for every row (needs the lineage)
     merged_with_rules_ch = finalTableRules(merged_with_ncbi_ch, sex_specific_parts, masst_metadata_ch.refmat_evidence, uberon_cl_co_onto)
 
     // Diet / FastingStatus / InternalStandardsUsed from the sample group texts; SampleGroupFreeText rules
-    merged_with_text_ch = finalizeTextColumns(merged_with_rules_ch, allowed_terms, exposure_onto)
+    merged_with_text_ch = finalizeTextColumns(merged_with_rules_ch, allowed_terms, exposure_onto, old_redu_path_ch, masst_status)
 
     // Add Cache columns
     (cache_enriched_metadata, cache_enriched_parquet) = add_cache_columns(merged_with_text_ch, dataset_cache.table)

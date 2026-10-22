@@ -1,0 +1,19 @@
+{
+    "resource": "Wikidata: NCBI taxonomy ID (P685) -> Open Tree of Life ID (P9157) of taxa (P31 Q16521)",
+    "endpoint": "https://qlever.dev/api/wikidata",
+    "query": "PREFIX wd: <http://www.wikidata.org/entity/> PREFIX wdt: <http://www.wikidata.org/prop/direct/> PREFIX bd: <http://www.bigdata.com/rdf#> PREFIX wikibase: <http://wikiba.se/ontology#> SELECT ?ncbi_id ?ott_id WHERE { ?item wdt:P685 ?ncbi_id . OPTIONAL { ?item wdt:P9157 ?ott_id } ?item wdt:P31 wd:Q16521 }",
+    "fetch_date": "2026-10-21",
+    "answer_sha256": "c4292cad2eadc8e1715c3a8017ab36a11e921de768f744f9c054d59c9384e948",
+    "answer_bytes": 10877649,
+    "table": "wikidata_ncbi_ott_2026-10-21.tsv.gz",
+    "table_sha256": "23313382e5bc91941a85e7980fcdf41bf0428158866683fc4c70da8ebdbc1bdb",
+    "rows": 620992,
+    "columns": [
+        "?ncbi_id",
+        "?ott_id"
+    ],
+    "license": "CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/); Wikidata, https://www.wikidata.org/",
+    "used_by": "bin/ncbi_database.py (OpenTreeOfLifeTaxonomyID); WIKIDATA_OTT_TABLE in nf_workflow.nf",
+    "build": "bin/fetch_wikidata_ott_table.py (the .gz holds the answer as it is: gzip -9, no name or time stamp)",
+    "bump": "python bin/fetch_wikidata_ott_table.py data/; test the workflow with the new table; change WIKIDATA_OTT_TABLE in nf_workflow.nf; remove the old table and its json"
+}

@@ -1,6 +1,7 @@
 """Adds the NCBI lineage of each row's NCBITaxonomy (NCBISuperkingdom, NCBIKingdom, NCBIPhylum, NCBIClass,
 NCBIOrder, NCBIFamily, NCBIGenus, NCBISpecies), fills SampleType from NCBIKingdom where it is 'missing value',
-and adds OpenTreeOfLifeTaxonomyID (Wikidata NCBI -> OTT table sparql_oto_ncbi.tsv in the working directory).
+and adds OpenTreeOfLifeTaxonomyID from the pinned Wikidata NCBI -> OTT table (data/wikidata_ncbi_ott_<date>.tsv.gz,
+built by bin/fetch_wikidata_ott_table.py; no query at run time: Wikidata is edited every day).
 
 The lineage comes from the NCBI taxonomy pinned in data/reference_data.json (nodes.dmp, names.dmp and
 merged.dmp of the taxdmp archive, set up by bin/fetch_reference_data.py), the release every other step uses.
@@ -31,7 +32,8 @@ Only two small arrays over all ~3M taxa are held (parent and rank per taxon ID);
 taxa that are needed only.
 
     python ncbi_database.py input.tsv output.tsv --path_to_ncbi_nodes_dmp nodes.dmp \\
-        --path_to_ncbi_names_dmp names.dmp --path_to_ncbi_merged_dmp merged.dmp
+        --path_to_ncbi_names_dmp names.dmp --path_to_ncbi_merged_dmp merged.dmp \\
+        --path_to_ncbi_ott_table wikidata_ncbi_ott_2026-10-21.tsv.gz
 """
 import argparse
 import csv
@@ -511,11 +513,27 @@ def multi_ott(df, dt_oto_ncbi):
     return df
 
 
-def _keep_previous_ott(df, previous_ott):
-    """Without a Wikidata table this run, keeps the OTT ids the rows had (row order is unchanged)."""
-    if previous_ott is not None and len(previous_ott) == len(df):
-        df['OpenTreeOfLifeTaxonomyID'] = previous_ott.fillna('missing value').to_numpy()
-    return df
+def read_ott_table(path):
+    """The pinned Wikidata NCBI -> OTT table (fetch_wikidata_ott_table.py: the endpoint's TSV answer, gzipped) as
+    (NCBI, OpenTreeOfLifeTaxonomyID), one row per NCBI id. The table is part of the workflow (data/): one that is
+    missing or cannot be read stops the step instead of giving other OTT ids."""
+    try:
+        dt_oto_ncbi = pd.read_csv(path, sep='\t', dtype=str)
+        dt_oto_ncbi = dt_oto_ncbi.rename(columns={'?ncbi_id': 'NCBI', '?ott_id': 'uid'})
+        dt_oto_ncbi = dt_oto_ncbi[(dt_oto_ncbi['NCBI'].notna()) & (dt_oto_ncbi['NCBI'] != '') & (dt_oto_ncbi['uid'].notna()) & (dt_oto_ncbi['uid'] != '')]
+    except (OSError, EOFError, KeyError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
+        raise SystemExit(f"ERROR: {path} is not a valid NCBI/OTT table ({type(e).__name__}: {e})")
+    # OTT ids are numbers; Wikidata also holds free-text values such as 'mmm nji'
+    dt_oto_ncbi = dt_oto_ncbi[dt_oto_ncbi['uid'].str.fullmatch(r'\d+') & dt_oto_ncbi['NCBI'].str.fullmatch(r'\d+')]
+    if not len(dt_oto_ncbi):
+        raise SystemExit(f"ERROR: {path} has no NCBI/OTT pairs")
+
+    dt_oto_ncbi['OpenTreeOfLifeTaxonomyID'] = 'ott' + dt_oto_ncbi['uid']
+    dt_oto_ncbi = dt_oto_ncbi[['NCBI', 'OpenTreeOfLifeTaxonomyID']].drop_duplicates()
+    # some NCBI ids have several OTT ids in Wikidata: one row per NCBI id (ids joined with ';'),
+    # otherwise the merge below duplicates the samples of those taxa
+    return (dt_oto_ncbi.groupby('NCBI', sort=False)['OpenTreeOfLifeTaxonomyID']
+            .agg(lambda ids: ';'.join(sorted(set(ids)))).reset_index())
 
 
 if __name__ == "__main__":
@@ -525,52 +543,29 @@ if __name__ == "__main__":
     parser.add_argument("--path_to_ncbi_nodes_dmp", required=True, help="nodes.dmp of the pinned NCBI taxdump")
     parser.add_argument("--path_to_ncbi_names_dmp", required=True, help="names.dmp of the pinned NCBI taxdump")
     parser.add_argument("--path_to_ncbi_merged_dmp", required=True, help="merged.dmp of the pinned NCBI taxdump")
+    parser.add_argument("--path_to_ncbi_ott_table", required=True,
+                        help="the pinned Wikidata NCBI -> OTT table (data/wikidata_ncbi_ott_<date>.tsv.gz)")
     args = parser.parse_args()
+    # (read first: a table that cannot be read stops the step before the lineage is computed)
+    dt_oto_ncbi = read_ott_table(args.path_to_ncbi_ott_table)
 
     # all columns as text: numeric parsing turns e.g. 66 into 66.0 for columns with gaps
     df = pd.read_csv(args.input_tsv, sep='\t', dtype=str, low_memory=False)
     # earlier runs' tables already carry the OTT column (saveOlderData keeps all old columns);
     # merging over it would create _x/_y columns and later fail, so it is rebuilt every run
     df = df.drop(columns=[c for c in df.columns if c.startswith('OpenTreeOfLifeTaxonomyID_')])
-    previous_ott = df.pop('OpenTreeOfLifeTaxonomyID') if 'OpenTreeOfLifeTaxonomyID' in df.columns else None
+    df = df.drop(columns=['OpenTreeOfLifeTaxonomyID'], errors='ignore')
     annotated_df = annotate_taxonomy(df, args.path_to_ncbi_nodes_dmp, args.path_to_ncbi_names_dmp,
                                      args.path_to_ncbi_merged_dmp)
     annotated_df = update_sampletype(annotated_df)
 
-    try:
-        # read the sparql_oto_ncbi tsv file
-        dt_oto_ncbi = pd.read_csv('sparql_oto_ncbi.tsv', sep='\t', dtype=str)
-        dt_oto_ncbi = dt_oto_ncbi.rename(columns={'?ncbi_id': 'NCBI', '?ott_id': 'uid'})
-        dt_oto_ncbi = dt_oto_ncbi[(dt_oto_ncbi['NCBI'].notna()) & (dt_oto_ncbi['NCBI'] != '') & (dt_oto_ncbi['uid'].notna()) & (dt_oto_ncbi['uid'] != '')]
-        # OTT ids are numbers; Wikidata also holds free-text values such as 'mmm nji'
-        dt_oto_ncbi = dt_oto_ncbi[dt_oto_ncbi['uid'].str.fullmatch(r'\d+') & dt_oto_ncbi['NCBI'].str.fullmatch(r'\d+')]
+    annotated_df['NCBI'] = annotated_df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if pd.notna(x) and '|' in x and not is_multi(x) else None)
 
-        dt_oto_ncbi['OpenTreeOfLifeTaxonomyID'] = 'ott' + dt_oto_ncbi['uid']
-        dt_oto_ncbi = dt_oto_ncbi[['NCBI', 'OpenTreeOfLifeTaxonomyID']].drop_duplicates()
-        # some NCBI ids have several OTT ids in Wikidata: one row per NCBI id (ids joined with ';'),
-        # otherwise the merge below duplicates the samples of those taxa
-        dt_oto_ncbi = (dt_oto_ncbi.groupby('NCBI', sort=False)['OpenTreeOfLifeTaxonomyID']
-                       .agg(lambda ids: ';'.join(sorted(set(ids)))).reset_index())
+    annotated_df = annotated_df.merge(dt_oto_ncbi, on='NCBI', how='left')
+    annotated_df.drop(columns=['NCBI'], inplace=True)
 
-        annotated_df['NCBI'] = annotated_df['NCBITaxonomy'].apply(lambda x: x.split('|')[0] if pd.notna(x) and '|' in x and not is_multi(x) else None)
-
-        annotated_df = annotated_df.merge(dt_oto_ncbi, on='NCBI', how='left')
-        annotated_df.drop(columns=['NCBI'], inplace=True)
-
-        annotated_df['OpenTreeOfLifeTaxonomyID'] = annotated_df['OpenTreeOfLifeTaxonomyID'].fillna('missing value')
-        # several organisms: the OTT id(s) of each part, aligned with the parts
-        annotated_df = multi_ott(annotated_df, dt_oto_ncbi)
-
-    except FileNotFoundError:
-        print("sparql_oto_ncbi.tsv not found, skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)
-        annotated_df = _keep_previous_ott(annotated_df, previous_ott)
-    except (KeyError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
-        # e.g. the SPARQL endpoint returned an error page instead of the TSV
-        print(f"WARNING: sparql_oto_ncbi.tsv is not a valid NCBI/OTT table ({type(e).__name__}: {e}), "
-              "skipping OpenTreeOfLifeTaxonomyID annotation.", flush=True)
-        annotated_df = annotated_df.drop(columns=['NCBI'], errors='ignore')
-        annotated_df = _keep_previous_ott(annotated_df, previous_ott)
-
-
+    annotated_df['OpenTreeOfLifeTaxonomyID'] = annotated_df['OpenTreeOfLifeTaxonomyID'].fillna('missing value')
+    # several organisms: the OTT id(s) of each part, aligned with the parts
+    annotated_df = multi_ott(annotated_df, dt_oto_ncbi)
 
     write_tsv_atomic(annotated_df, args.output_tsv)
