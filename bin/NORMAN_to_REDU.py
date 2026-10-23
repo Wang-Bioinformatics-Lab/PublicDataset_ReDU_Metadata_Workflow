@@ -124,7 +124,7 @@ NON_SAMPLE_TYPES = r'blank|^pool_QC$|^reference material$|^personal care product
 BLANK_STRIPPED_COLUMNS = ('NCBITaxonomy', 'UBERONBodyPartName', 'AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded',
                           'DOIDCommonName', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus',
                           'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus',
-                          'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex',
+                          'LatitudeandLongitude', 'SmokingStatus', 'SmokingPackYears', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex',
                           'ColonizationStatus')
 
 

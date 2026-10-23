@@ -22,7 +22,7 @@ from REDU_conversion_functions import merge_repeated_fileobservations
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import find_column_after_target_column
 from REDU_conversion_functions import map_instrument_to_allowed
-from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, food_ontology_term
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, food_ontology_term, packyears_to_numeric
 from REDU_conversion_functions import normalize_redu_datetime
 from REDU_conversion_functions import multi_sample_type, ORGANISM_LIST
 from REDU_conversion_functions import sp_name_term, bare_sp_id_term
@@ -4339,6 +4339,17 @@ def Metabolights2REDU(study_id, **kwargs):
                     _m = df_study[_c].apply(convert_smoking, key=_c)
                     _need = df_study['SmokingStatus'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
                     df_study.loc[_need, 'SmokingStatus'] = _m[_need]
+
+            #add SmokingPackYears
+            #######
+            _pack_cols = [c for c in df_study.columns if str(c).startswith('Samples_') and re.search(r'pack.?years?', str(c).lower())]
+            if _pack_cols:
+                if 'SmokingPackYears' not in df_study.columns:
+                    df_study['SmokingPackYears'] = 'missing value'
+                for _c in _pack_cols:
+                    _m = df_study[_c].apply(packyears_to_numeric).astype(str)
+                    _need = df_study['SmokingPackYears'].astype(str).str.strip().str.lower().isin(['', 'nan', 'none', 'missing value']) & (_m != 'missing value')
+                    df_study.loc[_need, 'SmokingPackYears'] = _m[_need]
 
             #add BodyMassIndex
             #######

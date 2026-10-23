@@ -430,7 +430,7 @@ SUPPLEMENT_NEVER = {'USI', 'filename', 'ATTRIBUTE_DatasetAccession', 'MassiveID'
 SUPPLEMENT_SUBJECT = {'NCBITaxonomy', 'UBERONBodyPartName', 'DOIDCommonName', 'HPOCommonName', 'Exposure',
                       'CellLine', 'LatitudeandLongitude', 'AgeInYears', 'SubjectIdentifierAsRecorded',
                       'ENVOEnvironmentBiome', 'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus',
-                      'SmokingStatus', 'BodyMassIndex', 'Diet', 'TimePointHoursRelativeToEvent', 'FastingStatus',
+                      'SmokingStatus', 'SmokingPackYears', 'BodyMassIndex', 'Diet', 'TimePointHoursRelativeToEvent', 'FastingStatus',
                       'ColonizationStatus', 'ComorbidityListDOIDIndex', 'SampleGroupFreeText', 'TermsofPosition',
                       'IsolationSourceNCBITaxonomy', 'IsolationSourceUBERONBodyPartName', 'IsolationSourceENVOEnvironmentMaterial'}
 # fields that do not depend on what the sample is: filled even when the sample types disagree

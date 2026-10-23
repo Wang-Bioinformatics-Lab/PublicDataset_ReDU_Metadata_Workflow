@@ -1181,6 +1181,19 @@ def convert_diet(x):
         return 'vegetarian'
     if re.search(r'\bomnivor', x):
         return 'omnivore'
+    # infant feeding (breast milk / formula / solids; diet_columns.infant_feeding_term), before the
+    # composition diets so that 'formula' is not read as one
+    from diet_columns import infant_feeding_term
+    infant = infant_feeding_term(x)
+    if infant:
+        return infant
+    # choline-deficient diets (also with high fat: CDAHFD), before the high-fat diets
+    if re.search(r'choline (deficien|deplet|free)|\bmcdd?\b|\bcdaa\b|\bcdahfd\b', x):
+        return 'choline-deficient diet'
+    if re.search(r'low fib(er|re)', x):
+        return 'low-fibre diet'
+    if re.search(r'high fib(er|re)|fib(er|re) (supplement|enrich|rich)', x):
+        return 'fibre-supplemented diet'
     # experimental / composition diets (specific first)
     if re.search(r'\bhfhs\b|\bhchf\b|high fat high (sugar|sucrose|carb)', x):
         return 'high-fat high-sugar diet'
@@ -1202,16 +1215,39 @@ def convert_diet(x):
         return 'prebiotic diet'
     if re.search(r'calorie restrict|caloric restrict|calorie restricted|\brestricted\b', x):
         return 'calorie-restricted diet'
-    # control / standard chow
-    if re.search(r'\bchow\b|\bnormal\b|\bcontrol\b|\bstandard\b|\bncd\b|\bcd\b|\bcon\b|\bctrl\b|ain ?76|regular chow|standard chow|\bsc\b|normal diet', x):
+    # control diets: purified (AIN-76 / AIN-93), chow, or not said
+    if re.search(r'purified|\bain ?(76|93)', x):
+        return 'purified diet'
+    if re.search(r'\bchow\b|\bncd\b', x):
+        return 'chow diet'
+    if re.search(r'\bnormal\b|\bcontrol\b|\bstandard\b|\bcd\b|\bcon\b|\bctrl\b|\bsc\b|normal diet', x):
         return 'control diet'
     return 'missing value'
 
 
+def packyears_to_numeric(x):
+    """Cumulative smoking exposure in pack-years (packs per day x years smoked). Binned or
+    threshold entries ('<70', '>=70') are rejected: they are not point values, and taking the
+    bound would make up a number. Plausible range 0-200 (4 packs a day for 50 years); the same
+    range is enforced centrally in complete_and_fill_REDU_table."""
+    s = str(x)
+    if re.search(r'[<>\u2264\u2265]|less than|greater than|more than|at least', s, re.I):
+        return 'missing value'
+    nums = re.findall(r'-?\d+\.?\d*', s)
+    if not nums:
+        return 'missing value'
+    try:
+        v = float(nums[0])
+    except ValueError:
+        return 'missing value'
+    return v if 0 <= v <= 200 else 'missing value'
+
+
 def bmi_to_numeric(x):
     """Extract a plausible BMI number (kg/m^2). Rejects z-scores, codes and other
-    non-BMI values by requiring a human-plausible range (10-60); the same range is
-    enforced centrally in complete_and_fill_REDU_table for all sources."""
+    non-BMI values by requiring a human-plausible range (10-120: clinically routine BMIs above
+    60 and documented extremes near 100 are kept); the same range is enforced centrally in
+    complete_and_fill_REDU_table for all sources."""
     nums = re.findall(r'-?\d+\.?\d*', str(x))
     if not nums:
         return 'missing value'
@@ -1219,7 +1255,7 @@ def bmi_to_numeric(x):
         v = float(nums[0])
     except ValueError:
         return 'missing value'
-    return v if 10 <= v <= 60 else 'missing value'
+    return v if 10 <= v <= 120 else 'missing value'
 
 
 # Food and beverage products -> GFOP food ontology label (FoodOntologyTerm, labels of

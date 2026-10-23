@@ -1322,24 +1322,37 @@
             "non-smoker"
         ]
     },
+    "SmokingPackYears": {
+        "generate": "False",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "The cumulative tobacco smoking exposure of the subject in pack-years (packs of 20 cigarettes smoked per day multiplied by the number of years smoked). Only point values; ranges and thresholds such as '<70' are left missing. Values outside 0-200 are rejected as missing.",
+        "example": "30",
+        "source": "-",
+        "allowed_values": [
+            "numeric"
+        ],
+        "min": 0,
+        "max": 200
+    },
     "BodyMassIndex": {
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The body mass index (BMI) of the subject in kg/m^2. Values outside 10-60 (implausible extremes, e.g. auto-miscalculated BMIs) are rejected as missing.",
+        "description": "The body mass index (BMI) of the subject in kg/m^2. Values outside 10-120 (implausible extremes, e.g. auto-miscalculated BMIs) are rejected as missing; the upper bound keeps clinically routine BMIs above 60 and documented extremes near 100.",
         "example": "24.1",
         "source": "-",
         "allowed_values": [
             "numeric"
         ],
         "min": 10,
-        "max": 60
+        "max": 120
     },
     "Diet": {
         "generate": "False",
         "type": "biology/medicine",
         "missing": "missing value",
-        "description": "What the subject ate: its dietary regimen (an experimental or composition diet, or a human dietary pattern; terms aligned with the Ontology for Nutritional Studies (ONS), e.g. high-fat diet) or, when the dietary treatment is a food the subject ate or was fed (e.g. in the feed or drinking water), that food as a GFOP term. The food terms are those of FoodOntologyTerm (without its general classes such as plant or animal, and water), added to these allowed values when the workflow runs; FoodOntologyTerm itself describes samples that are foods. One value per sample: a regimen other than the control diet wins over a food given with it (the food then stays in SampleGroupFreeText). Only for samples of animals (NCBITaxonomy in Metazoa, humans included) that are not themselves foods, blanks, QCs, standards, cultures or cell lines.",
+        "description": "What the subject ate: its dietary regimen (an experimental or composition diet, or a human dietary pattern; terms aligned with the Ontology for Nutritional Studies (ONS), e.g. high-fat diet) or, when the dietary treatment is a food the subject ate or was fed (e.g. in the feed or drinking water), that food as a GFOP term. The food terms are those of FoodOntologyTerm (without its general classes such as plant or animal, and water), added to these allowed values when the workflow runs; FoodOntologyTerm itself describes samples that are foods. Control diets: 'chow diet' (standard laboratory chow), 'purified diet' (a purified control diet such as AIN-93G or AIN-76A) and 'control diet' where the source does not say which. Infant feeding: 'exclusively breastmilk', 'not exclusively breastfed', 'mixed breastmilk and formula', 'exclusively formula', 'breastmilk with solids', 'breastmilk and formula with solids', and 'breastfed (NOS)' where the source does not say more. One value per sample: a regimen other than a control diet wins over a food given with it (the food then stays in SampleGroupFreeText). Only for samples of animals (NCBITaxonomy in Metazoa, humans included) that are not themselves foods, blanks, QCs, standards, cultures or cell lines.",
         "example": "high-fat diet",
         "source": "ONS (regimen terms); GFOP (Global FoodOmics food ontology) as used by foodMASST for foods, the same terms as FoodOntologyTerm (bin/translation_sheets/GFOP_food_ontology.csv)",
         "allowed_values": [
@@ -1362,7 +1375,18 @@
             "iron-deficient diet",
             "intermittent fasting",
             "time-restricted feeding",
-            "fibre-supplemented diet"
+            "fibre-supplemented diet",
+            "low-fibre diet",
+            "chow diet",
+            "purified diet",
+            "choline-deficient diet",
+            "breastfed (NOS)",
+            "exclusively breastmilk",
+            "not exclusively breastfed",
+            "mixed breastmilk and formula",
+            "exclusively formula",
+            "breastmilk with solids",
+            "breastmilk and formula with solids"
         ]
     },
     "DOIDCommonName": {

@@ -213,7 +213,7 @@ NOT_SUBJECT_COLUMNS = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsReco
                        'OrganismExposureAgentIndex', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome',
                        'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterial', 'ENVOEnvironmentMaterialIndex', 'ENVOBroadScale',
                        'ENVOBroadScaleIndex', 'ENVOLocalScale', 'ENVOLocalScaleIndex', 'ENVOMediumScale', 'ENVOMediumScaleIndex',
-                       'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet',
+                       'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'SmokingPackYears', 'BodyMassIndex', 'Diet',
                        'CellLine', 'CellLineIndex', 'ColonizationStatus', 'LifeStage']
 # where a cultured organism was isolated from (and the columns made from it): a pooled QC keeps it with its organism,
 # a reference material has the material's organism and none (complete_and_fill_REDU_table's STRIP_ISOLATION_SOURCE)

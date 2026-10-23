@@ -242,7 +242,7 @@ def normalize_doid_list(value, doid_ids, missing_value='missing value'):
 STRIP_FOR_NOT_SUBJECT = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'HPOCommonName',
                          'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'ENVOEnvironmentBiome',
                          'ENVOEnvironmentMaterial', 'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus',
-                         'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex', 'ColonizationStatus']
+                         'SmokingPackYears', 'BodyMassIndex', 'Diet', 'CellLine', 'CellLineIndex', 'ColonizationStatus']
 STRIP_ORGANISM = ['NCBITaxonomy', 'UBERONBodyPartName']
 # the full list as it was (blanks): both
 strip_for_blank = STRIP_ORGANISM + STRIP_FOR_NOT_SUBJECT

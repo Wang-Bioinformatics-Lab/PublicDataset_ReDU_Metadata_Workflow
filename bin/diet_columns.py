@@ -54,6 +54,58 @@ from ncbi_database import all_parts_series, single_taxid_series
 
 HUMAN_PATTERNS = {'omnivore', 'vegetarian', 'vegan', 'pescatarian'}
 CONTROL = 'control diet'
+# the control diets: chow, purified (AIN-76 / AIN-93) and a control diet the source does not describe further;
+# each loses to another regimen and to a food given with it, as the control diet does
+CONTROLS = (CONTROL, 'chow diet', 'purified diet')
+
+
+def _control_of(terms):
+    """The one control diet of these terms (the specific one where a value also says 'control'), None for none,
+    False for two different specific ones"""
+    controls = set(terms) & set(CONTROLS)
+    specific = controls - {CONTROL}
+    if len(specific) > 1:
+        return False
+    return next(iter(specific)) if specific else (CONTROL if controls else None)
+
+
+# infant feeding (Diet terms of a breastfeeding / formula regimen), from a value of a diet or feeding field
+_BREAST = re.compile(r'breast ?milk|breast ?fed|breast ?feed(?:ing)?|human milk')
+_FORMULA = re.compile(r'(?<![a-z0-9])formula(?:e|s)?(?![a-z0-9])')
+
+
+def infant_feeding_term(text):
+    """The infant-feeding Diet term of a diet value (lower case words), or None: breast milk and / or formula,
+    with solids, exclusively or not"""
+    x = re.sub(r'[^a-z0-9]+', ' ', str(text).lower()).strip()
+    breast, formula = _BREAST.search(x), _FORMULA.search(x)
+    mixed = re.search(r'(?<![a-z0-9])mixed (?:fed|feed|feeding|milk)(?![a-z0-9])', x)
+    if not breast and not formula and not mixed:
+        return None
+    if re.search(r'(?<![a-z0-9])(?:no|never|without) breast', x):
+        return 'exclusively formula' if formula else None
+    solids = re.search(r'(?<![a-z0-9])solids?(?![a-z0-9])|complementary food', x)
+    if solids and breast and formula:
+        return 'breastmilk and formula with solids'
+    if solids and breast:
+        return 'breastmilk with solids'
+    if (breast and formula) or mixed:
+        return 'mixed breastmilk and formula'
+    if breast and re.search(r'(?:not|non|partial(?:ly)?) exclusive|partial(?:ly)? breast', x):
+        return 'not exclusively breastfed'
+    if breast and re.search(r'exclusive', x):
+        return 'exclusively breastmilk'
+    if breast:
+        return 'breastfed (NOS)'
+    return 'exclusively formula'
+
+
+INFANT_FEEDING = ('exclusively breastmilk', 'not exclusively breastfed', 'mixed breastmilk and formula',
+                  'exclusively formula', 'breastmilk with solids', 'breastmilk and formula with solids', 'breastfed (NOS)')
+# the words of an infant-feeding value besides the regimen (a value with other words keeps its factor)
+_INFANT_WORDS = {'breast', 'breastmilk', 'breastfed', 'breastfeeding', 'feeding', 'feed', 'fed', 'milk', 'human', 'formula',
+                 'formulae', 'infant', 'exclusive', 'exclusively', 'not', 'non', 'partial', 'partially', 'mixed', 'solids',
+                 'solid', 'complementary', 'food', 'foods', 'no', 'never', 'without', 'or', 'plus', 'only'}
 
 # ---------------------------------------------------------------- text helpers
 
@@ -67,6 +119,10 @@ def _rx(pattern):
 _FIBRES = (r'inulin|arabinoxylans?|oligofructose|fructo ?oligosaccharides?|galacto ?oligosaccharides?|fos|gos|'
            r'pectins?|resistant starch|beta glucans?|psyllium|guar gum')
 _REGIMENS = [
+    # (choline-deficient high-fat diet, CDAHFD: one diet)
+    ('choline-deficient diet', r'(?:methionine (?:and )?)?choline (?:deficien(?:t|cy)|deplet(?:ed|ion)|free)'
+                               r'(?: l amino acid defined)?(?: high fat)?(?: diet)?', False),
+    ('choline-deficient diet', r'mcdd?|cdaa|cdahfd', True),
     ('high-fat high-sugar diet', r'high fat high (?:sugar|sucrose|carbohydrate|carb)s?|high (?:sugar|sucrose) high fat|'
                                  r'high fat (?:and|&) (?:high )?(?:sugar|sucrose)|hfhsd?|hchf|hfhc', False),
     ('high-fat high-sugar diet', r'hf hs', True),
@@ -85,6 +141,7 @@ _REGIMENS = [
     ('lithogenic diet', r'lithogenic', True),
     ('iron-deficient diet', r'(?:iron|fe) (?:deficien(?:t|cy)|deplet(?:ed|ion)) diet|low iron diet', False),
     ('iron-deficient diet', r'(?:iron|fe) (?:deficien(?:t|cy)|deplet(?:ed|ion))|low iron', True),
+    ('low-fibre diet', r'low fib(?:er|re)s?(?: diet)?', False),
     ('fibre-supplemented diet', r'(?<!low )(?<!no )(?<!non )(?:high )?fib(?:er|re)s?(?: supplemented| enriched| rich)? ?diet|'
                                 r'fib(?:er|re) supplement(?:ed|ation)?|(?<!low )high fib(?:er|re)|'
                                 r'(?:' + _FIBRES + r')(?: supplemented| enriched)? diet', False),
@@ -103,10 +160,11 @@ _REGIMENS = [
     ('vegetarian', r'(?:lacto )?(?:ovo )?vegetarian', False),
     ('vegan', r'vegan', False),
     ('pescatarian', r'pesc[ae]tarian', False),
-    (CONTROL, r'(?:normal|norm|regular|standard|std|control|ctrl|vivarium|viv|rodent|laboratory) chow(?: diet)?|chow(?: diet)?|'
-              r'(?:normal|standard|std|regular|control|ctrl|basal|purified control|control purified|'
-              r'standard rodent|standard laboratory) diet|ctrldiet|controldiet|ncd|nc diet|'
-              r'ain 93(?:g|m)?(?: control)?(?: diet)?|ain 76a?', False),
+    ('purified diet', r'(?:purified control|control purified) diet|ain 93(?:g|m)?(?: control)?(?: diet)?|ain 76a?', False),
+    ('chow diet', r'(?:normal|norm|regular|standard|std|control|ctrl|vivarium|viv|rodent|laboratory) chow(?: diet)?|chow(?: diet)?|'
+                  r'ncd|nc diet', False),
+    (CONTROL, r'(?:normal|standard|std|regular|control|ctrl|basal|standard rodent|standard laboratory) diet|'
+              r'ctrldiet|controldiet', False),
     (CONTROL, r'control|ctrl|con|normal|standard|std|regular|basal|cd|nd|nc|sc', True),
 ]
 _REGIMENS = [(t, _rx(p), short) for t, p, short in _REGIMENS]
@@ -147,6 +205,8 @@ _FEEDING_KEY = _rx(r'diet|diets|dietary|feed|feeding|meal|meals|supplement|suppl
                    r'intake|fed')
 _FASTING_KEY = _rx(r'fast|fasting|fasted|nutritional status|nutritional state|feeding state|feeding status|'
                    r'prandial state|prandial status|fed state')
+# factor names about how a subject is fed (not supplements: 'Supplement: protein formula')
+_INFANT_KEY = _rx(r'feed|feeding|fed|formula|breast ?\w*|milk|infant|infants|nutrition')
 # factor names that are never about what the subject ate
 _NEVER_KEY = _rx(r'food type|food source|food spoiler|medium|media|culture|additive|additives|substrate|'
                  r'carbon source|isotope|isotopomer|tracer|label|labelled|internal standard|standard|solvent|'
@@ -286,7 +346,7 @@ def map_value(key, value, gfop, masst_type=None):
         fasting_key = bool(_FASTING_KEY.search(k))
     # a yes / no factor named after a diet ('HFD: 1', 'High fat diet: yes'); 'no' / '0' is not
     # necessarily the control diet, so it gives nothing and keeps the factor
-    named = [s for s in _regimen_spans(k, False) if s[0] != CONTROL]
+    named = [s for s in _regimen_spans(k, False) if s[0] not in CONTROLS]
     if masst_type is None and named and not [w for w in _without(k, named).split() if w not in _FILLER]:
         if v in ('1', 'yes', 'y', 'true'):
             out.regimens, out.complete = [named[0][0]], True
@@ -299,6 +359,17 @@ def map_value(key, value, gfop, masst_type=None):
     if _TIME.search(_without(undosed, _regimen_spans(undosed, diet_key, feeding_key=feeding_key))):
         out.why = 'time point / diet change'
         return out
+    if (diet_key or _INFANT_KEY.search(k)) and not _PARENTS.search(k):
+        # infant feeding ('Breast milk', 'Formula fed', 'Breastmilk and formula'): one regimen, also where the
+        # value joins breast milk and formula (which the components below would read as two); before the negation
+        # check ('not exclusively breastfed', 'no breast milk')
+        infant = infant_feeding_term(raw)
+        if infant:
+            out.regimens = [infant]
+            left = [w for w in v.split() if w not in _FILLER and w not in _INFANT_WORDS]
+            out.complete = not left
+            out.why = 'extra: ' + ' '.join(left) if left else ''
+            return out
     if _NEGATION.search(v) and not out.none_value:
         out.why = 'negation'
         return out
@@ -361,16 +432,22 @@ def map_value(key, value, gfop, masst_type=None):
             if food:
                 out.foods.append(food)
                 words = ['(dose)'] if _DOSE.search(comp.lower()) else []
-        others = [t for t in terms if t != CONTROL]
-        if CONTROL in terms and not others:
-            comp_control.append(True)
+        others = [t for t in terms if t not in CONTROLS]
+        control = _control_of(terms)
+        if control is False:
+            others += [t for t in terms if t in CONTROLS]
+        elif control and not others:
+            comp_control.append(control)
         comp_terms.append(others)
         rest += words
     others = list(dict.fromkeys(t for ts in comp_terms for t in ts))
+    control = _control_of(comp_control)
+    if control is False:
+        others += list(dict.fromkeys(comp_control))
     if len(others) > 1 or (others and comp_control) or ((others or comp_control) and other_diets):
         # several diets in one value ('Mediterranean, western, bisphenol', 'NC, choline deficient high fat diet',
         # 'anti-inflammatory, western': also where one of them has no Diet term)
-        out.why = 'several diets: ' + ' | '.join(others + ([CONTROL] if comp_control else []) +
+        out.why = 'several diets: ' + ' | '.join(others + ([control] if control else []) +
                                                  [f'{d} (no Diet term)' for d in dict.fromkeys(other_diets)])
         out.fasting = None
         out.foods = []
@@ -387,7 +464,7 @@ def map_value(key, value, gfop, masst_type=None):
                 out.why = 'control diet changed itself: ' + ' '.join(rest)
                 rest.append('(changed control diet)')
         else:
-            out.regimens = [CONTROL]
+            out.regimens = [control]
     out.foods = list(dict.fromkeys(out.foods))
     if len(out.foods) > 1:
         out.why = 'several foods: ' + ' | '.join(out.foods)
@@ -410,8 +487,9 @@ def row_diet(mapped, human=False):
     regs = [t for m in mapped for t in m.regimens]
     regs = [t for t in regs if t not in HUMAN_PATTERNS or human]
     foods = list(dict.fromkeys(f for m in mapped for f in m.foods))
-    other = list(dict.fromkeys(t for t in regs if t != CONTROL))
-    if len(other) > 1 or (other and CONTROL in regs):
+    other = list(dict.fromkeys(t for t in regs if t not in CONTROLS))
+    control = _control_of(regs)
+    if len(other) > 1 or (other and control is not None) or control is False:
         return None, 'conflict: ' + ' | '.join(dict.fromkeys(regs))
     if other:
         return other[0], ''
@@ -419,8 +497,8 @@ def row_diet(mapped, human=False):
         return None, 'conflict: ' + ' | '.join(foods)
     if foods:
         return foods[0], ''
-    if CONTROL in regs:
-        return CONTROL, ''
+    if control:
+        return control, ''
     return None, ''
 
 

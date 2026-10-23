@@ -15,7 +15,7 @@ import traceback
 import time
 from REDU_conversion_functions import get_taxonomy_id_from_name__allowedTerms
 from REDU_conversion_functions import map_instrument_to_allowed
-from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet
+from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, packyears_to_numeric
 from REDU_conversion_functions import food_ontology_term, food_sample_marker, food_term_of_organism
 from read_and_validate_redu_from_github import complete_and_fill_REDU_table
 from REDU_conversion_functions import age_category
@@ -4111,14 +4111,19 @@ def mwb_organism_fallback(text, allowedTerm_dict, where=''):
     return term
 
 
-def get_key_info_into_outer(df, key_vars, new_col):
+def get_key_info_into_outer(df, key_vars, new_col, key_regex=None):
     # Match keys case-insensitively: MWB depositors use 'Sex'/'Gender'/'Age' etc.
     # with varied capitalization, and the fixed key_vars lists are lowercase, so a
     # case-sensitive match silently drops capitalized keys. Lower-casing both sides
     # only ever matches MORE of the same semantic keys (never fewer), so it cannot
     # remove a value we already capture.
     key_set = {str(k).lower() for k in key_vars}
-    df[new_col] = df.loc[df['Key'].astype(str).str.lower().isin(key_set), 'Value']
+    keys_lower = df['Key'].astype(str).str.lower()
+    mask = keys_lower.isin(key_set)
+    # key_regex: for keys with study-specific prefixes or suffixes (ats_packyears, smoking_pack_years_v1)
+    if key_regex:
+        mask = mask | keys_lower.str.contains(key_regex, regex=True, na=False)
+    df[new_col] = df.loc[mask, 'Value']
     df[new_col] = df.groupby('filename')[new_col].transform('first')
     if new_col == 'Latitude' or new_col == 'Longitude':
         df[new_col] = pd.to_numeric(df[new_col], errors='coerce')
@@ -6304,6 +6309,8 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         _vals = [convert_smoking_coded(v, k) or convert_smoking(v, key=k)
                  for k, v in zip(df.loc[_smoke_fb, 'Key'], df.loc[_smoke_fb, 'Value'])]
         df = _fill_from_rows(df, pd.Series(_vals, index=df.index[_smoke_fb]).replace('missing value', None), 'MWB_smoking')
+    df = get_key_info_into_outer(df, key_vars=["pack years", "packyears", "pack_years"],
+                                 new_col="MWB_packyears", key_regex=r'pack.?years?')
     df = get_key_info_into_outer(df, key_vars=["bmi", "body mass index", "body_mass_index",
                                                "bmi (kg/m2)", "bmi_kg_m2"], new_col="MWB_bmi")
     df = get_key_info_into_outer(df, key_vars=["diet", "diet_type", "diet type", "diet group",
@@ -7309,6 +7316,8 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
         MWB_table['BiologicalSex'] = MWB_table['MWB_sex'].map(convert_sex)
     if 'MWB_smoking' in MWB_table.columns:
         MWB_table['SmokingStatus'] = MWB_table['MWB_smoking'].map(convert_smoking)
+    if 'MWB_packyears' in MWB_table.columns:
+        MWB_table['SmokingPackYears'] = MWB_table['MWB_packyears'].apply(packyears_to_numeric)
     if 'MWB_bmi' in MWB_table.columns:
         MWB_table['BodyMassIndex'] = MWB_table['MWB_bmi'].apply(bmi_to_numeric)
     if 'MWB_diet' in MWB_table.columns:
@@ -7500,7 +7509,7 @@ def translate_MWB_to_REDU_by_logic(MWB_table, path_to_csvs='translation_sheets')
                         'InternalStandardsUsed', 'SubjectIdentifierAsRecorded', 'AgeInYears',
                         'BiologicalSex', 'UBERONBodyPartName', 'HealthStatus', 'DOIDCommonName',
                         'ComorbidityListDOIDIndex', 'Country', 'HumanPopulationDensity',
-                        'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet', 'HPOCommonName', 'Exposure',
+                        'LatitudeandLongitude', 'SmokingStatus', 'SmokingPackYears', 'BodyMassIndex', 'Diet', 'HPOCommonName', 'Exposure',
                         'TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus', 'CellLine']
 
     # Iterate through each column in the list
@@ -7586,7 +7595,7 @@ def apply_sex_distribution_guard(redu_df_final, rest_response, study_id=''):
 # body part (a pool of the study's samples), reference materials get those of the material
 # (reference_materials.py, in complete_and_fill_REDU_table)
 _MWB_SUBJECT_COLUMNS = ['AgeInYears', 'UniqueSubjectID', 'SubjectIdentifierAsRecorded', 'DOIDCommonName', 'DOIDOntologyIndex',
-                        'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'BodyMassIndex', 'Diet',
+                        'BiologicalSex', 'HealthStatus', 'LatitudeandLongitude', 'SmokingStatus', 'SmokingPackYears', 'BodyMassIndex', 'Diet',
                         'LifeStage', 'HPOCommonName', 'Exposure', 'TimePointHoursRelativeToEvent', 'FastingStatus', 'CellLine']
 _MWB_ORGANISM_COLUMNS = ['NCBITaxonomy', 'UBERONBodyPartName', 'UBERONOntologyIndex']
 
@@ -7940,6 +7949,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                             "DepthorAltitudeMeters",
                             "qiita_sample_name",
                             "SmokingStatus",
+                            "SmokingPackYears",
                             "BodyMassIndex",
                             "Diet",
                             "HPOCommonName",
@@ -7989,6 +7999,7 @@ def MWB_to_REDU_wrapper(mwTab_json=None, rest_response=None, MWB_analysis_ID=Non
                            "DepthorAltitudeMeters",
                            "qiita_sample_name",
                            "SmokingStatus",
+                           "SmokingPackYears",
                            "BodyMassIndex",
                            "Diet",
                            "HPOCommonName",

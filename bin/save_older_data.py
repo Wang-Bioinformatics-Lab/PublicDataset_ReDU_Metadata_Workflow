@@ -608,7 +608,7 @@ if __name__ == "__main__":
     for col in [c for c in df_merged.columns if c.endswith('OntologyIndex') or (c.startswith('ENVO') and c.endswith('Index'))
                 or c in ('HPOCommonName', 'Exposure', 'ExposureIndex', 'OrganismExposureAgent', 'OrganismExposureAgentIndex',
                          'TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus',
-                         'CellLine', 'CellLineIndex', 'ProductCategory', 'FoodOntologyTerm', 'ColonizationStatus',
+                         'CellLine', 'CellLineIndex', 'ProductCategory', 'FoodOntologyTerm', 'ColonizationStatus', 'SmokingPackYears',
                          'IsolationSourceNCBITaxonomy', 'IsolationSourceUBERONBodyPartName',
                          'IsolationSourceENVOEnvironmentMaterial', 'IsolationSourceENVOEnvironmentMaterialIndex')]:
         df_merged[col] = df_merged[col].fillna('missing value').replace('', 'missing value')
