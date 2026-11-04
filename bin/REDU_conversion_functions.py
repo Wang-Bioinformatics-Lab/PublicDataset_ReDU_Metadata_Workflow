@@ -1243,6 +1243,41 @@ def packyears_to_numeric(x):
     return v if 0 <= v <= 200 else 'missing value'
 
 
+# isotope spellings -> the IsotopeLabeling term ('C13', '13-C', '[13C]', 'D', 'deuterium' ...)
+_ISOTOPE_SPELLINGS = {'13c': '13C', 'c13': '13C', '15n': '15N', 'n15': '15N', '2h': '2H', 'h2': '2H', 'd': '2H',
+                      'deuterium': '2H', '18o': '18O', 'o18': '18O', '33s': '33S', 's33': '33S', '34s': '34S',
+                      's34': '34S'}
+_UNLABELED = {'unlabeled', 'unlabelled', 'natural abundance', 'natural isotopic abundance', '12c'}
+
+
+def isotope_labeling(value, allowed_terms, missing_value='missing value'):
+    """IsotopeLabeling value: 'unlabeled', or the isotopes (allowed terms, ';'-joined in the order of the
+    allowed terms) optionally followed by the tracer in parentheses as written, e.g. '13C;15N ([U-13C,U-15N]glutamine)'.
+    Isotopes may be separated by ';', ',', '+', '/' or spaces; a value with an unknown isotope is missing."""
+    text = str(value).strip()
+    if text.lower() in ('', 'nan', 'none', missing_value):
+        return missing_value
+    if text.lower() in _UNLABELED:
+        return 'unlabeled'
+    m = re.fullmatch(r'([^()]+?)\s*(?:\((.*)\))?', text, re.S)
+    if not m:
+        return missing_value
+    isotopes = set()
+    for token in re.split(r'[;,+/\s]+', m.group(1).strip()):
+        token = re.sub(r'[\[\]\-]', '', token).lower()
+        if token in ('', 'and'):
+            continue
+        term = _ISOTOPE_SPELLINGS.get(token)
+        if term is None or term not in allowed_terms:
+            return missing_value
+        isotopes.add(term)
+    if not isotopes:
+        return missing_value
+    joined = ';'.join(t for t in allowed_terms if t in isotopes)
+    tracer = (m.group(2) or '').strip()
+    return f'{joined} ({tracer})' if tracer else joined
+
+
 def bmi_to_numeric(x):
     """Extract a plausible BMI number (kg/m^2). Rejects z-scores, codes and other
     non-BMI values by requiring a human-plausible range (10-120: clinically routine BMIs above

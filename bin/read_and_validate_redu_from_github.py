@@ -11,7 +11,7 @@ import sys
 import traceback
 import weakref
 from io import StringIO
-from REDU_conversion_functions import age_category, normalize_redu_datetime
+from REDU_conversion_functions import age_category, normalize_redu_datetime, isotope_labeling
 from REDU_conversion_functions import pinned_genus_term, sp_generic_label, sp_other_strain
 from REDU_conversion_functions import bare_sp_id_term, _GENUS_LEVEL_SP, NCBI_COLLECTING_TAXON
 from blank_qc_names import apply_filename_blank_qc, blank_qc_type_from_filename
@@ -547,6 +547,18 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                     allowed_set = _cached('cellline_names', allowed_terms, lambda: set(allowed_terms))
                     return v if v in allowed_set else missing_value
                 value_map = {v: _cell_line(v) for v in unique_values}
+                df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
+                filtered_map = {k: v for k, v in value_map.items() if k != v and k != ''}
+                if filtered_map:
+                    print(f"{key}:")
+                    for k, v in filtered_map.items():
+                        print(f"  {k}: {v}")
+                continue
+
+            if key == 'IsotopeLabeling':
+                # 'unlabeled', or the isotopes (allowed terms, ';'-joined in their order) with the tracer in
+                # parentheses as written; anything else is missing
+                value_map = {v: isotope_labeling(v, allowed_terms, missing_value) for v in unique_values}
                 df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
                 filtered_map = {k: v for k, v in value_map.items() if k != v and k != ''}
                 if filtered_map:

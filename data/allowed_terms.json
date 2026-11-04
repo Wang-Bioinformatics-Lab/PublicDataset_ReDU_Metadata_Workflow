@@ -1187,6 +1187,23 @@
             "amitryptiline;caffeine"
         ]
     },
+    "IsotopeLabeling": {
+        "generate": "False",
+        "type": "analysis",
+        "missing": "missing value",
+        "description": "The stable isotope labelling of the sample: the isotopes it was enriched with, optionally followed by the labelled tracer and its enrichment in parentheses, e.g. '13C ([U-13C]glucose)' or '13C;15N ([U-13C,U-15N]glutamine)'. Isotopes are 13C, 15N, 2H, 18O, 33S and 34S; several are joined by ';' in this order. 'unlabeled' marks samples of natural isotopic abundance (e.g. the unlabelled controls of a tracer study). Labelled internal standards spiked into a sample belong to InternalStandardsUsed, not here. Leave missing when the sample is not part of a labelling experiment.",
+        "example": "13C (methanol, 49.755% 13C)",
+        "source": "-",
+        "allowed_values": [
+            "unlabeled",
+            "13C",
+            "15N",
+            "2H",
+            "18O",
+            "33S",
+            "34S"
+        ]
+    },
     "MassSpectrometer": {
         "generate": "False",
         "type": "analysis",
@@ -1234,7 +1251,8 @@
             "reverse phase (C18)",
             "reverse phase (C30)",
             "gas chromatography (NOS)",
-            "mixed mode (Scherzo SS-C18)"
+            "mixed mode (Scherzo SS-C18)",
+            "ion chromatography (anion exchange)"
         ]
     },
     "SubjectIdentifierAsRecorded": {
