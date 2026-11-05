@@ -1187,22 +1187,14 @@
             "amitryptiline;caffeine"
         ]
     },
-    "IsotopeLabeling": {
+    "MetabolicLabelingTracer": {
         "generate": "False",
-        "type": "analysis",
+        "type": "biology/medicine",
         "missing": "missing value",
-        "description": "The stable isotope labelling of the sample: the isotopes it was enriched with, optionally followed by the labelled tracer and its enrichment in parentheses, e.g. '13C ([U-13C]glucose)' or '13C;15N ([U-13C,U-15N]glutamine)'. Isotopes are 13C, 15N, 2H, 18O, 33S and 34S; several are joined by ';' in this order. 'unlabeled' marks samples of natural isotopic abundance (e.g. the unlabelled controls of a tracer study). Labelled internal standards spiked into a sample belong to InternalStandardsUsed, not here. Leave missing when the sample is not part of a labelling experiment.",
-        "example": "13C (methanol, 49.755% 13C)",
+        "description": "The isotope-labelled substrate (tracer) the organism, cells or tissue took up and metabolised before sampling (stable isotope labelling / tracer experiments), written as a SMILES with the labelled atoms as isotopes, e.g. '[13CH3]O' for 13C-methanol or '[2H]O[2H]' for heavy water. When the labelled atoms are not fully enriched, add the isotope ratio of each labelled element after a space in ChemCalc notation: the % of each isotope, lightest first, adding up to 100, e.g. '[13CH3]O C{50.245,49.755}' for methanol with 49.755% 13C (no ratio means fully labelled). Several tracers are joined by ';'. 'unlabeled' marks samples grown on natural-abundance substrates (e.g. the unlabelled controls of a tracer study). Labelled internal standards spiked into a sample after collection belong to InternalStandardsUsed, not here. Leave missing when the sample is not part of a labelling experiment.",
+        "example": "[13CH3]O C{50.245,49.755}",
         "source": "-",
-        "allowed_values": [
-            "unlabeled",
-            "13C",
-            "15N",
-            "2H",
-            "18O",
-            "33S",
-            "34S"
-        ]
+        "allowed_values": []
     },
     "MassSpectrometer": {
         "generate": "False",

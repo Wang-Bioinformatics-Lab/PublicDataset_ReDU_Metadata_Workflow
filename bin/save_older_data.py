@@ -20,7 +20,7 @@ SUBMITTER_ONLY_FIELDS = ['YearOfAnalysis', 'SampleCollectionMethod', 'SampleExtr
                          'MassSpectrometer', 'IonizationSourceAndPolarity', 'ChromatographyAndPhase',
                          'SubjectIdentifierAsRecorded', 'UniqueSubjectID', 'TermsofPosition', 'ComorbidityListDOIDIndex',
                          'HumanPopulationDensity', 'qiita_sample_name', 'IsolationSourceNCBITaxonomy',
-                         'IsolationSourceUBERONBodyPartName', 'IsolationSourceENVOEnvironmentMaterial', 'IsotopeLabeling']
+                         'IsolationSourceUBERONBodyPartName', 'IsolationSourceENVOEnvironmentMaterial', 'MetabolicLabelingTracer']
 # a rebuilt dataset whose rows of its own shrink below this share of its earlier rows keeps its
 # earlier rows (as before per-dataset replacement): e.g. a sheet that was only partly read
 SHRINK_GUARD = 0.5
@@ -610,7 +610,7 @@ if __name__ == "__main__":
                          'TimePointHoursRelativeToEvent', 'SampleGroupFreeText', 'FastingStatus',
                          'CellLine', 'CellLineIndex', 'ProductCategory', 'FoodOntologyTerm', 'ColonizationStatus', 'SmokingPackYears',
                          'IsolationSourceNCBITaxonomy', 'IsolationSourceUBERONBodyPartName',
-                         'IsolationSourceENVOEnvironmentMaterial', 'IsolationSourceENVOEnvironmentMaterialIndex', 'IsotopeLabeling')]:
+                         'IsolationSourceENVOEnvironmentMaterial', 'IsolationSourceENVOEnvironmentMaterialIndex', 'MetabolicLabelingTracer')]:
         df_merged[col] = df_merged[col].fillna('missing value').replace('', 'missing value')
 
     #unique by USI column, ignoring the file extension (e.g. x.raw vs x.mzML). Only known
