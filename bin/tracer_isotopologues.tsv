@@ -1,0 +1,564 @@
+compound	labels	smiles
+D-glucose	13C	O[13CH2][13C@H]1O[13CH](O)[13C@H](O)[13C@@H](O)[13C@@H]1O
+D-glucose	18O	[18OH]C[C@H]1[18O]C([18OH])[C@H]([18OH])[C@@H]([18OH])[C@@H]1[18OH]
+D-glucose	2H	[2H]C1(O)O[C@]([2H])(C([2H])([2H])O)[C@@]([2H])(O)[C@]([2H])(O)[C@@]1([2H])O
+D-glucose	13C;18O	[18OH][13CH2][13C@H]1[18O][13CH]([18OH])[13C@H]([18OH])[13C@@H]([18OH])[13C@@H]1[18OH]
+D-glucose	13C;2H	[2H][13C]1(O)O[13C@]([2H])([13C]([2H])([2H])O)[13C@@]([2H])(O)[13C@]([2H])(O)[13C@@]1([2H])O
+D-glucose	18O;2H	[2H]C1([18OH])[18O][C@]([2H])(C([2H])([2H])[18OH])[C@@]([2H])([18OH])[C@]([2H])([18OH])[C@@]1([2H])[18OH]
+D-glucose	13C;18O;2H	[2H][13C]1([18OH])[18O][13C@]([2H])([13C]([2H])([2H])[18OH])[13C@@]([2H])([18OH])[13C@]([2H])([18OH])[13C@@]1([2H])[18OH]
+D-fructose	13C	O[13CH2][13C]1(O)O[13CH2][13C@@H](O)[13C@@H](O)[13C@@H]1O
+D-fructose	18O	[18OH]CC1([18OH])[18O]C[C@@H]([18OH])[C@@H]([18OH])[C@@H]1[18OH]
+D-fructose	2H	[2H]C([2H])(O)C1(O)OC([2H])([2H])[C@@]([2H])(O)[C@@]([2H])(O)[C@]1([2H])O
+D-fructose	13C;18O	[18OH][13CH2][13C]1([18OH])[18O][13CH2][13C@@H]([18OH])[13C@@H]([18OH])[13C@@H]1[18OH]
+D-fructose	13C;2H	[2H][13C]([2H])(O)[13C]1(O)O[13C]([2H])([2H])[13C@@]([2H])(O)[13C@@]([2H])(O)[13C@]1([2H])O
+D-fructose	18O;2H	[2H]C([2H])([18OH])C1([18OH])[18O]C([2H])([2H])[C@@]([2H])([18OH])[C@@]([2H])([18OH])[C@]1([2H])[18OH]
+D-fructose	13C;18O;2H	[2H][13C]([2H])([18OH])[13C]1([18OH])[18O][13C]([2H])([2H])[13C@@]([2H])([18OH])[13C@@]([2H])([18OH])[13C@]1([2H])[18OH]
+D-galactose	13C	O[13CH2][13C@H]1O[13CH](O)[13C@H](O)[13C@@H](O)[13C@H]1O
+D-galactose	18O	[18OH]C[C@H]1[18O]C([18OH])[C@H]([18OH])[C@@H]([18OH])[C@H]1[18OH]
+D-galactose	2H	[2H]C1(O)O[C@]([2H])(C([2H])([2H])O)[C@]([2H])(O)[C@]([2H])(O)[C@@]1([2H])O
+D-galactose	13C;18O	[18OH][13CH2][13C@H]1[18O][13CH]([18OH])[13C@H]([18OH])[13C@@H]([18OH])[13C@H]1[18OH]
+D-galactose	13C;2H	[2H][13C]1(O)O[13C@]([2H])([13C]([2H])([2H])O)[13C@]([2H])(O)[13C@]([2H])(O)[13C@@]1([2H])O
+D-galactose	18O;2H	[2H]C1([18OH])[18O][C@]([2H])(C([2H])([2H])[18OH])[C@]([2H])([18OH])[C@]([2H])([18OH])[C@@]1([2H])[18OH]
+D-galactose	13C;18O;2H	[2H][13C]1([18OH])[18O][13C@]([2H])([13C]([2H])([2H])[18OH])[13C@]([2H])([18OH])[13C@]([2H])([18OH])[13C@@]1([2H])[18OH]
+glycerol	13C	O[13CH2][13CH](O)[13CH2]O
+glycerol	18O	[18OH]CC([18OH])C[18OH]
+glycerol	2H	[2H]C([2H])(O)C([2H])(O)C([2H])([2H])O
+glycerol	13C;18O	[18OH][13CH2][13CH]([18OH])[13CH2][18OH]
+glycerol	13C;2H	[2H][13C]([2H])(O)[13C]([2H])(O)[13C]([2H])([2H])O
+glycerol	18O;2H	[2H]C([2H])([18OH])C([2H])([18OH])C([2H])([2H])[18OH]
+glycerol	13C;18O;2H	[2H][13C]([2H])([18OH])[13C]([2H])([18OH])[13C]([2H])([2H])[18OH]
+L-glutamine	13C	N[13C](=O)[13CH2][13CH2][13C@H](N)[13C](=O)O
+L-glutamine	15N	[15NH2]C(=O)CC[C@H]([15NH2])C(=O)O
+L-glutamine	18O	NC(=[18O])CC[C@H](N)C(=[18O])[18OH]
+L-glutamine	2H	[2H]C([2H])(C(N)=O)C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-glutamine	13C;15N	[15NH2][13C](=O)[13CH2][13CH2][13C@H]([15NH2])[13C](=O)O
+L-glutamine	13C;18O	N[13C](=[18O])[13CH2][13CH2][13C@H](N)[13C](=[18O])[18OH]
+L-glutamine	13C;2H	[2H][13C]([2H])([13C](N)=O)[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-glutamine	15N;18O	[15NH2]C(=[18O])CC[C@H]([15NH2])C(=[18O])[18OH]
+L-glutamine	15N;2H	[2H]C([2H])(C([15NH2])=O)C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-glutamine	18O;2H	[2H]C([2H])(C(N)=[18O])C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-glutamine	13C;15N;18O	[15NH2][13C](=[18O])[13CH2][13CH2][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-glutamine	13C;15N;2H	[2H][13C]([2H])([13C]([15NH2])=O)[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-glutamine	13C;18O;2H	[2H][13C]([2H])([13C](N)=[18O])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-glutamine	15N;18O;2H	[2H]C([2H])(C([15NH2])=[18O])C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-glutamine	13C;15N;18O;2H	[2H][13C]([2H])([13C]([15NH2])=[18O])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-glutamic acid	13C	N[13C@@H]([13CH2][13CH2][13C](=O)O)[13C](=O)O
+L-glutamic acid	15N	[15NH2][C@@H](CCC(=O)O)C(=O)O
+L-glutamic acid	18O	N[C@@H](CCC(=[18O])[18OH])C(=[18O])[18OH]
+L-glutamic acid	2H	[2H]C([2H])(C(=O)O)C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-glutamic acid	13C;15N	[15NH2][13C@@H]([13CH2][13CH2][13C](=O)O)[13C](=O)O
+L-glutamic acid	13C;18O	N[13C@@H]([13CH2][13CH2][13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-glutamic acid	13C;2H	[2H][13C]([2H])([13C](=O)O)[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-glutamic acid	15N;18O	[15NH2][C@@H](CCC(=[18O])[18OH])C(=[18O])[18OH]
+L-glutamic acid	15N;2H	[2H]C([2H])(C(=O)O)C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-glutamic acid	18O;2H	[2H]C([2H])(C(=[18O])[18OH])C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-glutamic acid	13C;15N;18O	[15NH2][13C@@H]([13CH2][13CH2][13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-glutamic acid	13C;15N;2H	[2H][13C]([2H])([13C](=O)O)[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-glutamic acid	13C;18O;2H	[2H][13C]([2H])([13C](=[18O])[18OH])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-glutamic acid	15N;18O;2H	[2H]C([2H])(C(=[18O])[18OH])C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-glutamic acid	13C;15N;18O;2H	[2H][13C]([2H])([13C](=[18O])[18OH])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-serine	13C	N[13C@@H]([13CH2]O)[13C](=O)O
+L-serine	15N	[15NH2][C@@H](CO)C(=O)O
+L-serine	18O	N[C@@H](C[18OH])C(=[18O])[18OH]
+L-serine	2H	[2H]C([2H])(O)[C@]([2H])(N)C(=O)O
+L-serine	13C;15N	[15NH2][13C@@H]([13CH2]O)[13C](=O)O
+L-serine	13C;18O	N[13C@@H]([13CH2][18OH])[13C](=[18O])[18OH]
+L-serine	13C;2H	[2H][13C]([2H])(O)[13C@]([2H])(N)[13C](=O)O
+L-serine	15N;18O	[15NH2][C@@H](C[18OH])C(=[18O])[18OH]
+L-serine	15N;2H	[2H]C([2H])(O)[C@]([2H])([15NH2])C(=O)O
+L-serine	18O;2H	[2H]C([2H])([18OH])[C@]([2H])(N)C(=[18O])[18OH]
+L-serine	13C;15N;18O	[15NH2][13C@@H]([13CH2][18OH])[13C](=[18O])[18OH]
+L-serine	13C;15N;2H	[2H][13C]([2H])(O)[13C@]([2H])([15NH2])[13C](=O)O
+L-serine	13C;18O;2H	[2H][13C]([2H])([18OH])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-serine	15N;18O;2H	[2H]C([2H])([18OH])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-serine	13C;15N;18O;2H	[2H][13C]([2H])([18OH])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+glycine	13C	N[13CH2][13C](=O)O
+glycine	15N	[15NH2]CC(=O)O
+glycine	18O	NCC(=[18O])[18OH]
+glycine	2H	[2H]C([2H])(N)C(=O)O
+glycine	13C;15N	[15NH2][13CH2][13C](=O)O
+glycine	13C;18O	N[13CH2][13C](=[18O])[18OH]
+glycine	13C;2H	[2H][13C]([2H])(N)[13C](=O)O
+glycine	15N;18O	[15NH2]CC(=[18O])[18OH]
+glycine	15N;2H	[2H]C([2H])([15NH2])C(=O)O
+glycine	18O;2H	[2H]C([2H])(N)C(=[18O])[18OH]
+glycine	13C;15N;18O	[15NH2][13CH2][13C](=[18O])[18OH]
+glycine	13C;15N;2H	[2H][13C]([2H])([15NH2])[13C](=O)O
+glycine	13C;18O;2H	[2H][13C]([2H])(N)[13C](=[18O])[18OH]
+glycine	15N;18O;2H	[2H]C([2H])([15NH2])C(=[18O])[18OH]
+glycine	13C;15N;18O;2H	[2H][13C]([2H])([15NH2])[13C](=[18O])[18OH]
+L-alanine	13C	[13CH3][13C@H](N)[13C](=O)O
+L-alanine	15N	C[C@H]([15NH2])C(=O)O
+L-alanine	18O	C[C@H](N)C(=[18O])[18OH]
+L-alanine	2H	[2H]C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-alanine	13C;15N	[13CH3][13C@H]([15NH2])[13C](=O)O
+L-alanine	13C;18O	[13CH3][13C@H](N)[13C](=[18O])[18OH]
+L-alanine	13C;2H	[2H][13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-alanine	15N;18O	C[C@H]([15NH2])C(=[18O])[18OH]
+L-alanine	15N;2H	[2H]C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-alanine	18O;2H	[2H]C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-alanine	13C;15N;18O	[13CH3][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-alanine	13C;15N;2H	[2H][13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-alanine	13C;18O;2H	[2H][13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-alanine	15N;18O;2H	[2H]C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-alanine	13C;15N;18O;2H	[2H][13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-leucine	13C	[13CH3][13CH]([13CH3])[13CH2][13C@H](N)[13C](=O)O
+L-leucine	15N	CC(C)C[C@H]([15NH2])C(=O)O
+L-leucine	18O	CC(C)C[C@H](N)C(=[18O])[18OH]
+L-leucine	2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-leucine	13C;15N	[13CH3][13CH]([13CH3])[13CH2][13C@H]([15NH2])[13C](=O)O
+L-leucine	13C;18O	[13CH3][13CH]([13CH3])[13CH2][13C@H](N)[13C](=[18O])[18OH]
+L-leucine	13C;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-leucine	15N;18O	CC(C)C[C@H]([15NH2])C(=[18O])[18OH]
+L-leucine	15N;2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-leucine	18O;2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-leucine	13C;15N;18O	[13CH3][13CH]([13CH3])[13CH2][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-leucine	13C;15N;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-leucine	13C;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-leucine	15N;18O;2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-leucine	13C;15N;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-isoleucine	13C	[13CH3][13CH2][13C@H]([13CH3])[13C@H](N)[13C](=O)O
+L-isoleucine	15N	CC[C@H](C)[C@H]([15NH2])C(=O)O
+L-isoleucine	18O	CC[C@H](C)[C@H](N)C(=[18O])[18OH]
+L-isoleucine	2H	[2H]C([2H])([2H])C([2H])([2H])[C@]([2H])(C([2H])([2H])[2H])[C@]([2H])(N)C(=O)O
+L-isoleucine	13C;15N	[13CH3][13CH2][13C@H]([13CH3])[13C@H]([15NH2])[13C](=O)O
+L-isoleucine	13C;18O	[13CH3][13CH2][13C@H]([13CH3])[13C@H](N)[13C](=[18O])[18OH]
+L-isoleucine	13C;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])(N)[13C](=O)O
+L-isoleucine	15N;18O	CC[C@H](C)[C@H]([15NH2])C(=[18O])[18OH]
+L-isoleucine	15N;2H	[2H]C([2H])([2H])C([2H])([2H])[C@]([2H])(C([2H])([2H])[2H])[C@]([2H])([15NH2])C(=O)O
+L-isoleucine	18O;2H	[2H]C([2H])([2H])C([2H])([2H])[C@]([2H])(C([2H])([2H])[2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-isoleucine	13C;15N;18O	[13CH3][13CH2][13C@H]([13CH3])[13C@H]([15NH2])[13C](=[18O])[18OH]
+L-isoleucine	13C;15N;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-isoleucine	13C;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-isoleucine	15N;18O;2H	[2H]C([2H])([2H])C([2H])([2H])[C@]([2H])(C([2H])([2H])[2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-isoleucine	13C;15N;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-valine	13C	[13CH3][13CH]([13CH3])[13C@H](N)[13C](=O)O
+L-valine	15N	CC(C)[C@H]([15NH2])C(=O)O
+L-valine	18O	CC(C)[C@H](N)C(=[18O])[18OH]
+L-valine	2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])[C@]([2H])(N)C(=O)O
+L-valine	13C;15N	[13CH3][13CH]([13CH3])[13C@H]([15NH2])[13C](=O)O
+L-valine	13C;18O	[13CH3][13CH]([13CH3])[13C@H](N)[13C](=[18O])[18OH]
+L-valine	13C;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])(N)[13C](=O)O
+L-valine	15N;18O	CC(C)[C@H]([15NH2])C(=[18O])[18OH]
+L-valine	15N;2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])[C@]([2H])([15NH2])C(=O)O
+L-valine	18O;2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-valine	13C;15N;18O	[13CH3][13CH]([13CH3])[13C@H]([15NH2])[13C](=[18O])[18OH]
+L-valine	13C;15N;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-valine	13C;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-valine	15N;18O;2H	[2H]C([2H])([2H])C([2H])(C([2H])([2H])[2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-valine	13C;15N;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([13C]([2H])([2H])[2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-threonine	13C	[13CH3][13C@@H](O)[13C@H](N)[13C](=O)O
+L-threonine	15N	C[C@@H](O)[C@H]([15NH2])C(=O)O
+L-threonine	18O	C[C@@H]([18OH])[C@H](N)C(=[18O])[18OH]
+L-threonine	2H	[2H]C([2H])([2H])[C@@]([2H])(O)[C@]([2H])(N)C(=O)O
+L-threonine	13C;15N	[13CH3][13C@@H](O)[13C@H]([15NH2])[13C](=O)O
+L-threonine	13C;18O	[13CH3][13C@@H]([18OH])[13C@H](N)[13C](=[18O])[18OH]
+L-threonine	13C;2H	[2H][13C]([2H])([2H])[13C@@]([2H])(O)[13C@]([2H])(N)[13C](=O)O
+L-threonine	15N;18O	C[C@@H]([18OH])[C@H]([15NH2])C(=[18O])[18OH]
+L-threonine	15N;2H	[2H]C([2H])([2H])[C@@]([2H])(O)[C@]([2H])([15NH2])C(=O)O
+L-threonine	18O;2H	[2H]C([2H])([2H])[C@@]([2H])([18OH])[C@]([2H])(N)C(=[18O])[18OH]
+L-threonine	13C;15N;18O	[13CH3][13C@@H]([18OH])[13C@H]([15NH2])[13C](=[18O])[18OH]
+L-threonine	13C;15N;2H	[2H][13C]([2H])([2H])[13C@@]([2H])(O)[13C@]([2H])([15NH2])[13C](=O)O
+L-threonine	13C;18O;2H	[2H][13C]([2H])([2H])[13C@@]([2H])([18OH])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-threonine	15N;18O;2H	[2H]C([2H])([2H])[C@@]([2H])([18OH])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-threonine	13C;15N;18O;2H	[2H][13C]([2H])([2H])[13C@@]([2H])([18OH])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-proline	13C	O=[13C](O)[13C@@H]1[13CH2][13CH2][13CH2]N1
+L-proline	15N	O=C(O)[C@@H]1CCC[15NH]1
+L-proline	18O	[18O]=C([18OH])[C@@H]1CCCN1
+L-proline	2H	[2H]C1([2H])N[C@]([2H])(C(=O)O)C([2H])([2H])C1([2H])[2H]
+L-proline	13C;15N	O=[13C](O)[13C@@H]1[13CH2][13CH2][13CH2][15NH]1
+L-proline	13C;18O	[18O]=[13C]([18OH])[13C@@H]1[13CH2][13CH2][13CH2]N1
+L-proline	13C;2H	[2H][13C]1([2H])N[13C@]([2H])([13C](=O)O)[13C]([2H])([2H])[13C]1([2H])[2H]
+L-proline	15N;18O	[18O]=C([18OH])[C@@H]1CCC[15NH]1
+L-proline	15N;2H	[2H]C1([2H])[15NH][C@]([2H])(C(=O)O)C([2H])([2H])C1([2H])[2H]
+L-proline	18O;2H	[2H]C1([2H])N[C@]([2H])(C(=[18O])[18OH])C([2H])([2H])C1([2H])[2H]
+L-proline	13C;15N;18O	[18O]=[13C]([18OH])[13C@@H]1[13CH2][13CH2][13CH2][15NH]1
+L-proline	13C;15N;2H	[2H][13C]1([2H])[15NH][13C@]([2H])([13C](=O)O)[13C]([2H])([2H])[13C]1([2H])[2H]
+L-proline	13C;18O;2H	[2H][13C]1([2H])N[13C@]([2H])([13C](=[18O])[18OH])[13C]([2H])([2H])[13C]1([2H])[2H]
+L-proline	15N;18O;2H	[2H]C1([2H])[15NH][C@]([2H])(C(=[18O])[18OH])C([2H])([2H])C1([2H])[2H]
+L-proline	13C;15N;18O;2H	[2H][13C]1([2H])[15NH][13C@]([2H])([13C](=[18O])[18OH])[13C]([2H])([2H])[13C]1([2H])[2H]
+L-lysine	13C	N[13CH2][13CH2][13CH2][13CH2][13C@H](N)[13C](=O)O
+L-lysine	15N	[15NH2]CCCC[C@H]([15NH2])C(=O)O
+L-lysine	18O	NCCCC[C@H](N)C(=[18O])[18OH]
+L-lysine	2H	[2H]C([2H])(N)C([2H])([2H])C([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-lysine	13C;15N	[15NH2][13CH2][13CH2][13CH2][13CH2][13C@H]([15NH2])[13C](=O)O
+L-lysine	13C;18O	N[13CH2][13CH2][13CH2][13CH2][13C@H](N)[13C](=[18O])[18OH]
+L-lysine	13C;2H	[2H][13C]([2H])(N)[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-lysine	15N;18O	[15NH2]CCCC[C@H]([15NH2])C(=[18O])[18OH]
+L-lysine	15N;2H	[2H]C([2H])([15NH2])C([2H])([2H])C([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-lysine	18O;2H	[2H]C([2H])(N)C([2H])([2H])C([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-lysine	13C;15N;18O	[15NH2][13CH2][13CH2][13CH2][13CH2][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-lysine	13C;15N;2H	[2H][13C]([2H])([15NH2])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-lysine	13C;18O;2H	[2H][13C]([2H])(N)[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-lysine	15N;18O;2H	[2H]C([2H])([15NH2])C([2H])([2H])C([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-lysine	13C;15N;18O;2H	[2H][13C]([2H])([15NH2])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-arginine	13C	N[13C](N)=N[13CH2][13CH2][13CH2][13C@H](N)[13C](=O)O
+L-arginine	15N	[15NH2]C([15NH2])=[15N]CCC[C@H]([15NH2])C(=O)O
+L-arginine	18O	NC(N)=NCCC[C@H](N)C(=[18O])[18OH]
+L-arginine	2H	[2H]C([2H])(N=C(N)N)C([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-arginine	13C;15N	[15NH2][13C]([15NH2])=[15N][13CH2][13CH2][13CH2][13C@H]([15NH2])[13C](=O)O
+L-arginine	13C;18O	N[13C](N)=N[13CH2][13CH2][13CH2][13C@H](N)[13C](=[18O])[18OH]
+L-arginine	13C;2H	[2H][13C]([2H])(N=[13C](N)N)[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-arginine	15N;18O	[15NH2]C([15NH2])=[15N]CCC[C@H]([15NH2])C(=[18O])[18OH]
+L-arginine	15N;2H	[2H]C([2H])([15N]=C([15NH2])[15NH2])C([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-arginine	18O;2H	[2H]C([2H])(N=C(N)N)C([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-arginine	13C;15N;18O	[15NH2][13C]([15NH2])=[15N][13CH2][13CH2][13CH2][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-arginine	13C;15N;2H	[2H][13C]([2H])([15N]=[13C]([15NH2])[15NH2])[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-arginine	13C;18O;2H	[2H][13C]([2H])(N=[13C](N)N)[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-arginine	15N;18O;2H	[2H]C([2H])([15N]=C([15NH2])[15NH2])C([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-arginine	13C;15N;18O;2H	[2H][13C]([2H])([15N]=[13C]([15NH2])[15NH2])[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-methionine	13C	[13CH3]S[13CH2][13CH2][13C@H](N)[13C](=O)O
+L-methionine	15N	CSCC[C@H]([15NH2])C(=O)O
+L-methionine	18O	CSCC[C@H](N)C(=[18O])[18OH]
+L-methionine	34S	C[34S]CC[C@H](N)C(=O)O
+L-methionine	2H	[2H]C([2H])([2H])SC([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-methionine	13C;15N	[13CH3]S[13CH2][13CH2][13C@H]([15NH2])[13C](=O)O
+L-methionine	13C;18O	[13CH3]S[13CH2][13CH2][13C@H](N)[13C](=[18O])[18OH]
+L-methionine	13C;34S	[13CH3][34S][13CH2][13CH2][13C@H](N)[13C](=O)O
+L-methionine	13C;2H	[2H][13C]([2H])([2H])S[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-methionine	15N;18O	CSCC[C@H]([15NH2])C(=[18O])[18OH]
+L-methionine	15N;34S	C[34S]CC[C@H]([15NH2])C(=O)O
+L-methionine	15N;2H	[2H]C([2H])([2H])SC([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-methionine	18O;34S	C[34S]CC[C@H](N)C(=[18O])[18OH]
+L-methionine	18O;2H	[2H]C([2H])([2H])SC([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-methionine	34S;2H	[2H]C([2H])([2H])[34S]C([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-methionine	13C;15N;18O	[13CH3]S[13CH2][13CH2][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-methionine	13C;15N;34S	[13CH3][34S][13CH2][13CH2][13C@H]([15NH2])[13C](=O)O
+L-methionine	13C;15N;2H	[2H][13C]([2H])([2H])S[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-methionine	13C;18O;34S	[13CH3][34S][13CH2][13CH2][13C@H](N)[13C](=[18O])[18OH]
+L-methionine	13C;18O;2H	[2H][13C]([2H])([2H])S[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-methionine	13C;34S;2H	[2H][13C]([2H])([2H])[34S][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-methionine	15N;18O;34S	C[34S]CC[C@H]([15NH2])C(=[18O])[18OH]
+L-methionine	15N;18O;2H	[2H]C([2H])([2H])SC([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-methionine	15N;34S;2H	[2H]C([2H])([2H])[34S]C([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-methionine	18O;34S;2H	[2H]C([2H])([2H])[34S]C([2H])([2H])C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-methionine	13C;15N;18O;34S	[13CH3][34S][13CH2][13CH2][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-methionine	13C;15N;18O;2H	[2H][13C]([2H])([2H])S[13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-methionine	13C;15N;34S;2H	[2H][13C]([2H])([2H])[34S][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-methionine	13C;18O;34S;2H	[2H][13C]([2H])([2H])[34S][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-methionine	15N;18O;34S;2H	[2H]C([2H])([2H])[34S]C([2H])([2H])C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-methionine	13C;15N;18O;34S;2H	[2H][13C]([2H])([2H])[34S][13C]([2H])([2H])[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-cysteine	13C	N[13C@@H]([13CH2]S)[13C](=O)O
+L-cysteine	15N	[15NH2][C@@H](CS)C(=O)O
+L-cysteine	18O	N[C@@H](CS)C(=[18O])[18OH]
+L-cysteine	34S	N[C@@H](C[34SH])C(=O)O
+L-cysteine	2H	[2H]C([2H])(S)[C@]([2H])(N)C(=O)O
+L-cysteine	13C;15N	[15NH2][13C@@H]([13CH2]S)[13C](=O)O
+L-cysteine	13C;18O	N[13C@@H]([13CH2]S)[13C](=[18O])[18OH]
+L-cysteine	13C;34S	N[13C@@H]([13CH2][34SH])[13C](=O)O
+L-cysteine	13C;2H	[2H][13C]([2H])(S)[13C@]([2H])(N)[13C](=O)O
+L-cysteine	15N;18O	[15NH2][C@@H](CS)C(=[18O])[18OH]
+L-cysteine	15N;34S	[15NH2][C@@H](C[34SH])C(=O)O
+L-cysteine	15N;2H	[2H]C([2H])(S)[C@]([2H])([15NH2])C(=O)O
+L-cysteine	18O;34S	N[C@@H](C[34SH])C(=[18O])[18OH]
+L-cysteine	18O;2H	[2H]C([2H])(S)[C@]([2H])(N)C(=[18O])[18OH]
+L-cysteine	34S;2H	[2H]C([2H])([34SH])[C@]([2H])(N)C(=O)O
+L-cysteine	13C;15N;18O	[15NH2][13C@@H]([13CH2]S)[13C](=[18O])[18OH]
+L-cysteine	13C;15N;34S	[15NH2][13C@@H]([13CH2][34SH])[13C](=O)O
+L-cysteine	13C;15N;2H	[2H][13C]([2H])(S)[13C@]([2H])([15NH2])[13C](=O)O
+L-cysteine	13C;18O;34S	N[13C@@H]([13CH2][34SH])[13C](=[18O])[18OH]
+L-cysteine	13C;18O;2H	[2H][13C]([2H])(S)[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-cysteine	13C;34S;2H	[2H][13C]([2H])([34SH])[13C@]([2H])(N)[13C](=O)O
+L-cysteine	15N;18O;34S	[15NH2][C@@H](C[34SH])C(=[18O])[18OH]
+L-cysteine	15N;18O;2H	[2H]C([2H])(S)[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-cysteine	15N;34S;2H	[2H]C([2H])([34SH])[C@]([2H])([15NH2])C(=O)O
+L-cysteine	18O;34S;2H	[2H]C([2H])([34SH])[C@]([2H])(N)C(=[18O])[18OH]
+L-cysteine	13C;15N;18O;34S	[15NH2][13C@@H]([13CH2][34SH])[13C](=[18O])[18OH]
+L-cysteine	13C;15N;18O;2H	[2H][13C]([2H])(S)[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-cysteine	13C;15N;34S;2H	[2H][13C]([2H])([34SH])[13C@]([2H])([15NH2])[13C](=O)O
+L-cysteine	13C;18O;34S;2H	[2H][13C]([2H])([34SH])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-cysteine	15N;18O;34S;2H	[2H]C([2H])([34SH])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-cysteine	13C;15N;18O;34S;2H	[2H][13C]([2H])([34SH])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-cystine	13C	N[13C@@H]([13CH2]SS[13CH2][13C@H](N)[13C](=O)O)[13C](=O)O
+L-cystine	15N	[15NH2][C@@H](CSSC[C@H]([15NH2])C(=O)O)C(=O)O
+L-cystine	18O	N[C@@H](CSSC[C@H](N)C(=[18O])[18OH])C(=[18O])[18OH]
+L-cystine	34S	N[C@@H](C[34S][34S]C[C@H](N)C(=O)O)C(=O)O
+L-cystine	2H	[2H]C([2H])(SSC([2H])([2H])[C@]([2H])(N)C(=O)O)[C@]([2H])(N)C(=O)O
+L-cystine	13C;15N	[15NH2][13C@@H]([13CH2]SS[13CH2][13C@H]([15NH2])[13C](=O)O)[13C](=O)O
+L-cystine	13C;18O	N[13C@@H]([13CH2]SS[13CH2][13C@H](N)[13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-cystine	13C;34S	N[13C@@H]([13CH2][34S][34S][13CH2][13C@H](N)[13C](=O)O)[13C](=O)O
+L-cystine	13C;2H	[2H][13C]([2H])(SS[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O)[13C@]([2H])(N)[13C](=O)O
+L-cystine	15N;18O	[15NH2][C@@H](CSSC[C@H]([15NH2])C(=[18O])[18OH])C(=[18O])[18OH]
+L-cystine	15N;34S	[15NH2][C@@H](C[34S][34S]C[C@H]([15NH2])C(=O)O)C(=O)O
+L-cystine	15N;2H	[2H]C([2H])(SSC([2H])([2H])[C@]([2H])([15NH2])C(=O)O)[C@]([2H])([15NH2])C(=O)O
+L-cystine	18O;34S	N[C@@H](C[34S][34S]C[C@H](N)C(=[18O])[18OH])C(=[18O])[18OH]
+L-cystine	18O;2H	[2H]C([2H])(SSC([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH])[C@]([2H])(N)C(=[18O])[18OH]
+L-cystine	34S;2H	[2H]C([2H])([34S][34S]C([2H])([2H])[C@]([2H])(N)C(=O)O)[C@]([2H])(N)C(=O)O
+L-cystine	13C;15N;18O	[15NH2][13C@@H]([13CH2]SS[13CH2][13C@H]([15NH2])[13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-cystine	13C;15N;34S	[15NH2][13C@@H]([13CH2][34S][34S][13CH2][13C@H]([15NH2])[13C](=O)O)[13C](=O)O
+L-cystine	13C;15N;2H	[2H][13C]([2H])(SS[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O)[13C@]([2H])([15NH2])[13C](=O)O
+L-cystine	13C;18O;34S	N[13C@@H]([13CH2][34S][34S][13CH2][13C@H](N)[13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-cystine	13C;18O;2H	[2H][13C]([2H])(SS[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-cystine	13C;34S;2H	[2H][13C]([2H])([34S][34S][13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O)[13C@]([2H])(N)[13C](=O)O
+L-cystine	15N;18O;34S	[15NH2][C@@H](C[34S][34S]C[C@H]([15NH2])C(=[18O])[18OH])C(=[18O])[18OH]
+L-cystine	15N;18O;2H	[2H]C([2H])(SSC([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-cystine	15N;34S;2H	[2H]C([2H])([34S][34S]C([2H])([2H])[C@]([2H])([15NH2])C(=O)O)[C@]([2H])([15NH2])C(=O)O
+L-cystine	18O;34S;2H	[2H]C([2H])([34S][34S]C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH])[C@]([2H])(N)C(=[18O])[18OH]
+L-cystine	13C;15N;18O;34S	[15NH2][13C@@H]([13CH2][34S][34S][13CH2][13C@H]([15NH2])[13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-cystine	13C;15N;18O;2H	[2H][13C]([2H])(SS[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-cystine	13C;15N;34S;2H	[2H][13C]([2H])([34S][34S][13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O)[13C@]([2H])([15NH2])[13C](=O)O
+L-cystine	13C;18O;34S;2H	[2H][13C]([2H])([34S][34S][13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-cystine	15N;18O;34S;2H	[2H]C([2H])([34S][34S]C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-cystine	13C;15N;18O;34S;2H	[2H][13C]([2H])([34S][34S][13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-asparagine	13C	N[13C](=O)[13CH2][13C@H](N)[13C](=O)O
+L-asparagine	15N	[15NH2]C(=O)C[C@H]([15NH2])C(=O)O
+L-asparagine	18O	NC(=[18O])C[C@H](N)C(=[18O])[18OH]
+L-asparagine	2H	[2H]C([2H])(C(N)=O)[C@]([2H])(N)C(=O)O
+L-asparagine	13C;15N	[15NH2][13C](=O)[13CH2][13C@H]([15NH2])[13C](=O)O
+L-asparagine	13C;18O	N[13C](=[18O])[13CH2][13C@H](N)[13C](=[18O])[18OH]
+L-asparagine	13C;2H	[2H][13C]([2H])([13C](N)=O)[13C@]([2H])(N)[13C](=O)O
+L-asparagine	15N;18O	[15NH2]C(=[18O])C[C@H]([15NH2])C(=[18O])[18OH]
+L-asparagine	15N;2H	[2H]C([2H])(C([15NH2])=O)[C@]([2H])([15NH2])C(=O)O
+L-asparagine	18O;2H	[2H]C([2H])(C(N)=[18O])[C@]([2H])(N)C(=[18O])[18OH]
+L-asparagine	13C;15N;18O	[15NH2][13C](=[18O])[13CH2][13C@H]([15NH2])[13C](=[18O])[18OH]
+L-asparagine	13C;15N;2H	[2H][13C]([2H])([13C]([15NH2])=O)[13C@]([2H])([15NH2])[13C](=O)O
+L-asparagine	13C;18O;2H	[2H][13C]([2H])([13C](N)=[18O])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-asparagine	15N;18O;2H	[2H]C([2H])(C([15NH2])=[18O])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-asparagine	13C;15N;18O;2H	[2H][13C]([2H])([13C]([15NH2])=[18O])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-aspartic acid	13C	N[13C@@H]([13CH2][13C](=O)O)[13C](=O)O
+L-aspartic acid	15N	[15NH2][C@@H](CC(=O)O)C(=O)O
+L-aspartic acid	18O	N[C@@H](CC(=[18O])[18OH])C(=[18O])[18OH]
+L-aspartic acid	2H	[2H]C([2H])(C(=O)O)[C@]([2H])(N)C(=O)O
+L-aspartic acid	13C;15N	[15NH2][13C@@H]([13CH2][13C](=O)O)[13C](=O)O
+L-aspartic acid	13C;18O	N[13C@@H]([13CH2][13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-aspartic acid	13C;2H	[2H][13C]([2H])([13C](=O)O)[13C@]([2H])(N)[13C](=O)O
+L-aspartic acid	15N;18O	[15NH2][C@@H](CC(=[18O])[18OH])C(=[18O])[18OH]
+L-aspartic acid	15N;2H	[2H]C([2H])(C(=O)O)[C@]([2H])([15NH2])C(=O)O
+L-aspartic acid	18O;2H	[2H]C([2H])(C(=[18O])[18OH])[C@]([2H])(N)C(=[18O])[18OH]
+L-aspartic acid	13C;15N;18O	[15NH2][13C@@H]([13CH2][13C](=[18O])[18OH])[13C](=[18O])[18OH]
+L-aspartic acid	13C;15N;2H	[2H][13C]([2H])([13C](=O)O)[13C@]([2H])([15NH2])[13C](=O)O
+L-aspartic acid	13C;18O;2H	[2H][13C]([2H])([13C](=[18O])[18OH])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-aspartic acid	15N;18O;2H	[2H]C([2H])(C(=[18O])[18OH])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-aspartic acid	13C;15N;18O;2H	[2H][13C]([2H])([13C](=[18O])[18OH])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-phenylalanine	13C	N[13C@@H]([13CH2][13c]1[13cH][13cH][13cH][13cH][13cH]1)[13C](=O)O
+L-phenylalanine	15N	[15NH2][C@@H](Cc1ccccc1)C(=O)O
+L-phenylalanine	18O	N[C@@H](Cc1ccccc1)C(=[18O])[18OH]
+L-phenylalanine	2H	[2H]c1c([2H])c([2H])c(C([2H])([2H])[C@]([2H])(N)C(=O)O)c([2H])c1[2H]
+L-phenylalanine	13C;15N	[15NH2][13C@@H]([13CH2][13c]1[13cH][13cH][13cH][13cH][13cH]1)[13C](=O)O
+L-phenylalanine	13C;18O	N[13C@@H]([13CH2][13c]1[13cH][13cH][13cH][13cH][13cH]1)[13C](=[18O])[18OH]
+L-phenylalanine	13C;2H	[2H][13c]1[13c]([2H])[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O)[13c]([2H])[13c]1[2H]
+L-phenylalanine	15N;18O	[15NH2][C@@H](Cc1ccccc1)C(=[18O])[18OH]
+L-phenylalanine	15N;2H	[2H]c1c([2H])c([2H])c(C([2H])([2H])[C@]([2H])([15NH2])C(=O)O)c([2H])c1[2H]
+L-phenylalanine	18O;2H	[2H]c1c([2H])c([2H])c(C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH])c([2H])c1[2H]
+L-phenylalanine	13C;15N;18O	[15NH2][13C@@H]([13CH2][13c]1[13cH][13cH][13cH][13cH][13cH]1)[13C](=[18O])[18OH]
+L-phenylalanine	13C;15N;2H	[2H][13c]1[13c]([2H])[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O)[13c]([2H])[13c]1[2H]
+L-phenylalanine	13C;18O;2H	[2H][13c]1[13c]([2H])[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH])[13c]([2H])[13c]1[2H]
+L-phenylalanine	15N;18O;2H	[2H]c1c([2H])c([2H])c(C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH])c([2H])c1[2H]
+L-phenylalanine	13C;15N;18O;2H	[2H][13c]1[13c]([2H])[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH])[13c]([2H])[13c]1[2H]
+L-tyrosine	13C	N[13C@@H]([13CH2][13c]1[13cH][13cH][13c](O)[13cH][13cH]1)[13C](=O)O
+L-tyrosine	15N	[15NH2][C@@H](Cc1ccc(O)cc1)C(=O)O
+L-tyrosine	18O	N[C@@H](Cc1ccc([18OH])cc1)C(=[18O])[18OH]
+L-tyrosine	2H	[2H]c1c([2H])c(C([2H])([2H])[C@]([2H])(N)C(=O)O)c([2H])c([2H])c1O
+L-tyrosine	13C;15N	[15NH2][13C@@H]([13CH2][13c]1[13cH][13cH][13c](O)[13cH][13cH]1)[13C](=O)O
+L-tyrosine	13C;18O	N[13C@@H]([13CH2][13c]1[13cH][13cH][13c]([18OH])[13cH][13cH]1)[13C](=[18O])[18OH]
+L-tyrosine	13C;2H	[2H][13c]1[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O)[13c]([2H])[13c]([2H])[13c]1O
+L-tyrosine	15N;18O	[15NH2][C@@H](Cc1ccc([18OH])cc1)C(=[18O])[18OH]
+L-tyrosine	15N;2H	[2H]c1c([2H])c(C([2H])([2H])[C@]([2H])([15NH2])C(=O)O)c([2H])c([2H])c1O
+L-tyrosine	18O;2H	[2H]c1c([2H])c(C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH])c([2H])c([2H])c1[18OH]
+L-tyrosine	13C;15N;18O	[15NH2][13C@@H]([13CH2][13c]1[13cH][13cH][13c]([18OH])[13cH][13cH]1)[13C](=[18O])[18OH]
+L-tyrosine	13C;15N;2H	[2H][13c]1[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O)[13c]([2H])[13c]([2H])[13c]1O
+L-tyrosine	13C;18O;2H	[2H][13c]1[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH])[13c]([2H])[13c]([2H])[13c]1[18OH]
+L-tyrosine	15N;18O;2H	[2H]c1c([2H])c(C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH])c([2H])c([2H])c1[18OH]
+L-tyrosine	13C;15N;18O;2H	[2H][13c]1[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH])[13c]([2H])[13c]([2H])[13c]1[18OH]
+L-tryptophan	13C	N[13C@@H]([13CH2][13c]1[13cH][nH][13c]2[13cH][13cH][13cH][13cH][13c]12)[13C](=O)O
+L-tryptophan	15N	[15NH2][C@@H](Cc1c[15nH]c2ccccc12)C(=O)O
+L-tryptophan	18O	N[C@@H](Cc1c[nH]c2ccccc12)C(=[18O])[18OH]
+L-tryptophan	2H	[2H]c1[nH]c2c([2H])c([2H])c([2H])c([2H])c2c1C([2H])([2H])[C@]([2H])(N)C(=O)O
+L-tryptophan	13C;15N	[15NH2][13C@@H]([13CH2][13c]1[13cH][15nH][13c]2[13cH][13cH][13cH][13cH][13c]12)[13C](=O)O
+L-tryptophan	13C;18O	N[13C@@H]([13CH2][13c]1[13cH][nH][13c]2[13cH][13cH][13cH][13cH][13c]12)[13C](=[18O])[18OH]
+L-tryptophan	13C;2H	[2H][13c]1[nH][13c]2[13c]([2H])[13c]([2H])[13c]([2H])[13c]([2H])[13c]2[13c]1[13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O
+L-tryptophan	15N;18O	[15NH2][C@@H](Cc1c[15nH]c2ccccc12)C(=[18O])[18OH]
+L-tryptophan	15N;2H	[2H]c1[15nH]c2c([2H])c([2H])c([2H])c([2H])c2c1C([2H])([2H])[C@]([2H])([15NH2])C(=O)O
+L-tryptophan	18O;2H	[2H]c1[nH]c2c([2H])c([2H])c([2H])c([2H])c2c1C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH]
+L-tryptophan	13C;15N;18O	[15NH2][13C@@H]([13CH2][13c]1[13cH][15nH][13c]2[13cH][13cH][13cH][13cH][13c]12)[13C](=[18O])[18OH]
+L-tryptophan	13C;15N;2H	[2H][13c]1[15nH][13c]2[13c]([2H])[13c]([2H])[13c]([2H])[13c]([2H])[13c]2[13c]1[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O
+L-tryptophan	13C;18O;2H	[2H][13c]1[nH][13c]2[13c]([2H])[13c]([2H])[13c]([2H])[13c]([2H])[13c]2[13c]1[13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH]
+L-tryptophan	15N;18O;2H	[2H]c1[15nH]c2c([2H])c([2H])c([2H])c([2H])c2c1C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH]
+L-tryptophan	13C;15N;18O;2H	[2H][13c]1[15nH][13c]2[13c]([2H])[13c]([2H])[13c]([2H])[13c]([2H])[13c]2[13c]1[13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH]
+L-histidine	13C	N[13C@@H]([13CH2][13c]1[13cH]n[13cH][nH]1)[13C](=O)O
+L-histidine	15N	[15NH2][C@@H](Cc1c[15n]c[15nH]1)C(=O)O
+L-histidine	18O	N[C@@H](Cc1cnc[nH]1)C(=[18O])[18OH]
+L-histidine	2H	[2H]c1nc([2H])c(C([2H])([2H])[C@]([2H])(N)C(=O)O)[nH]1
+L-histidine	13C;15N	[15NH2][13C@@H]([13CH2][13c]1[13cH][15n][13cH][15nH]1)[13C](=O)O
+L-histidine	13C;18O	N[13C@@H]([13CH2][13c]1[13cH]n[13cH][nH]1)[13C](=[18O])[18OH]
+L-histidine	13C;2H	[2H][13c]1n[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])(N)[13C](=O)O)[nH]1
+L-histidine	15N;18O	[15NH2][C@@H](Cc1c[15n]c[15nH]1)C(=[18O])[18OH]
+L-histidine	15N;2H	[2H]c1[15n]c([2H])c(C([2H])([2H])[C@]([2H])([15NH2])C(=O)O)[15nH]1
+L-histidine	18O;2H	[2H]c1nc([2H])c(C([2H])([2H])[C@]([2H])(N)C(=[18O])[18OH])[nH]1
+L-histidine	13C;15N;18O	[15NH2][13C@@H]([13CH2][13c]1[13cH][15n][13cH][15nH]1)[13C](=[18O])[18OH]
+L-histidine	13C;15N;2H	[2H][13c]1[15n][13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=O)O)[15nH]1
+L-histidine	13C;18O;2H	[2H][13c]1n[13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])(N)[13C](=[18O])[18OH])[nH]1
+L-histidine	15N;18O;2H	[2H]c1[15n]c([2H])c(C([2H])([2H])[C@]([2H])([15NH2])C(=[18O])[18OH])[15nH]1
+L-histidine	13C;15N;18O;2H	[2H][13c]1[15n][13c]([2H])[13c]([13C]([2H])([2H])[13C@]([2H])([15NH2])[13C](=[18O])[18OH])[15nH]1
+pyruvic acid	13C	[13CH3][13C](=O)[13C](=O)O
+pyruvic acid	18O	CC(=[18O])C(=[18O])[18OH]
+pyruvic acid	2H	[2H]C([2H])([2H])C(=O)C(=O)O
+pyruvic acid	13C;18O	[13CH3][13C](=[18O])[13C](=[18O])[18OH]
+pyruvic acid	13C;2H	[2H][13C]([2H])([2H])[13C](=O)[13C](=O)O
+pyruvic acid	18O;2H	[2H]C([2H])([2H])C(=[18O])C(=[18O])[18OH]
+pyruvic acid	13C;18O;2H	[2H][13C]([2H])([2H])[13C](=[18O])[13C](=[18O])[18OH]
+L-lactic acid	13C	[13CH3][13C@H](O)[13C](=O)O
+L-lactic acid	18O	C[C@H]([18OH])C(=[18O])[18OH]
+L-lactic acid	2H	[2H]C([2H])([2H])[C@]([2H])(O)C(=O)O
+L-lactic acid	13C;18O	[13CH3][13C@H]([18OH])[13C](=[18O])[18OH]
+L-lactic acid	13C;2H	[2H][13C]([2H])([2H])[13C@]([2H])(O)[13C](=O)O
+L-lactic acid	18O;2H	[2H]C([2H])([2H])[C@]([2H])([18OH])C(=[18O])[18OH]
+L-lactic acid	13C;18O;2H	[2H][13C]([2H])([2H])[13C@]([2H])([18OH])[13C](=[18O])[18OH]
+acetic acid	13C	[13CH3][13C](=O)O
+acetic acid	18O	CC(=[18O])[18OH]
+acetic acid	2H	[2H]C([2H])([2H])C(=O)O
+acetic acid	13C;18O	[13CH3][13C](=[18O])[18OH]
+acetic acid	13C;2H	[2H][13C]([2H])([2H])[13C](=O)O
+acetic acid	18O;2H	[2H]C([2H])([2H])C(=[18O])[18OH]
+acetic acid	13C;18O;2H	[2H][13C]([2H])([2H])[13C](=[18O])[18OH]
+butyric acid	13C	[13CH3][13CH2][13CH2][13C](=O)O
+butyric acid	18O	CCCC(=[18O])[18OH]
+butyric acid	2H	[2H]C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=O)O
+butyric acid	13C;18O	[13CH3][13CH2][13CH2][13C](=[18O])[18OH]
+butyric acid	13C;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=O)O
+butyric acid	18O;2H	[2H]C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=[18O])[18OH]
+butyric acid	13C;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=[18O])[18OH]
+propionic acid	13C	[13CH3][13CH2][13C](=O)O
+propionic acid	18O	CCC(=[18O])[18OH]
+propionic acid	2H	[2H]C([2H])([2H])C([2H])([2H])C(=O)O
+propionic acid	13C;18O	[13CH3][13CH2][13C](=[18O])[18OH]
+propionic acid	13C;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C](=O)O
+propionic acid	18O;2H	[2H]C([2H])([2H])C([2H])([2H])C(=[18O])[18OH]
+propionic acid	13C;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C](=[18O])[18OH]
+acetoacetic acid	13C	[13CH3][13C](=O)[13CH2][13C](=O)O
+acetoacetic acid	18O	CC(=[18O])CC(=[18O])[18OH]
+acetoacetic acid	2H	[2H]C([2H])([2H])C(=O)C([2H])([2H])C(=O)O
+acetoacetic acid	13C;18O	[13CH3][13C](=[18O])[13CH2][13C](=[18O])[18OH]
+acetoacetic acid	13C;2H	[2H][13C]([2H])([2H])[13C](=O)[13C]([2H])([2H])[13C](=O)O
+acetoacetic acid	18O;2H	[2H]C([2H])([2H])C(=[18O])C([2H])([2H])C(=[18O])[18OH]
+acetoacetic acid	13C;18O;2H	[2H][13C]([2H])([2H])[13C](=[18O])[13C]([2H])([2H])[13C](=[18O])[18OH]
+succinic acid	13C	O=[13C](O)[13CH2][13CH2][13C](=O)O
+succinic acid	18O	[18O]=C([18OH])CCC(=[18O])[18OH]
+succinic acid	2H	[2H]C([2H])(C(=O)O)C([2H])([2H])C(=O)O
+succinic acid	13C;18O	[18O]=[13C]([18OH])[13CH2][13CH2][13C](=[18O])[18OH]
+succinic acid	13C;2H	[2H][13C]([2H])([13C](=O)O)[13C]([2H])([2H])[13C](=O)O
+succinic acid	18O;2H	[2H]C([2H])(C(=[18O])[18OH])C([2H])([2H])C(=[18O])[18OH]
+succinic acid	13C;18O;2H	[2H][13C]([2H])([13C](=[18O])[18OH])[13C]([2H])([2H])[13C](=[18O])[18OH]
+citric acid	13C	O=[13C](O)[13CH2][13C](O)([13CH2][13C](=O)O)[13C](=O)O
+citric acid	18O	[18O]=C([18OH])CC([18OH])(CC(=[18O])[18OH])C(=[18O])[18OH]
+citric acid	2H	[2H]C([2H])(C(=O)O)C(O)(C(=O)O)C([2H])([2H])C(=O)O
+citric acid	13C;18O	[18O]=[13C]([18OH])[13CH2][13C]([18OH])([13CH2][13C](=[18O])[18OH])[13C](=[18O])[18OH]
+citric acid	13C;2H	[2H][13C]([2H])([13C](=O)O)[13C](O)([13C](=O)O)[13C]([2H])([2H])[13C](=O)O
+citric acid	18O;2H	[2H]C([2H])(C(=[18O])[18OH])C([18OH])(C(=[18O])[18OH])C([2H])([2H])C(=[18O])[18OH]
+citric acid	13C;18O;2H	[2H][13C]([2H])([13C](=[18O])[18OH])[13C]([18OH])([13C](=[18O])[18OH])[13C]([2H])([2H])[13C](=[18O])[18OH]
+palmitic acid	13C	[13CH3][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13C](=O)O
+palmitic acid	18O	CCCCCCCCCCCCCCCC(=[18O])[18OH]
+palmitic acid	2H	[2H]C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=O)O
+palmitic acid	13C;18O	[13CH3][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13C](=[18O])[18OH]
+palmitic acid	13C;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=O)O
+palmitic acid	18O;2H	[2H]C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=[18O])[18OH]
+palmitic acid	13C;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=[18O])[18OH]
+oleic acid	13C	[13CH3][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2]/[13CH]=[13CH]\[13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13C](=O)O
+oleic acid	18O	CCCCCCCC/C=C\CCCCCCCC(=[18O])[18OH]
+oleic acid	2H	[2H]/C(=C(\[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=O)O
+oleic acid	13C;18O	[13CH3][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2]/[13CH]=[13CH]\[13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13C](=[18O])[18OH]
+oleic acid	13C;2H	[2H]/[13C](=[13C](\[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=O)O
+oleic acid	18O;2H	[2H]/C(=C(\[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=[18O])[18OH]
+oleic acid	13C;18O;2H	[2H]/[13C](=[13C](\[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=[18O])[18OH]
+elaidic acid	13C	[13CH3][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2]/[13CH]=[13CH]/[13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13C](=O)O
+elaidic acid	18O	CCCCCCCC/C=C/CCCCCCCC(=[18O])[18OH]
+elaidic acid	2H	[2H]/C(=C(/[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=O)O
+elaidic acid	13C;18O	[13CH3][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2]/[13CH]=[13CH]/[13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13CH2][13C](=[18O])[18OH]
+elaidic acid	13C;2H	[2H]/[13C](=[13C](/[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=O)O
+elaidic acid	18O;2H	[2H]/C(=C(/[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])[2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C([2H])([2H])C(=[18O])[18OH]
+elaidic acid	13C;18O;2H	[2H]/[13C](=[13C](/[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C]([2H])([2H])[13C](=[18O])[18OH]
+choline	13C	[13CH3][N+]([13CH3])([13CH3])[13CH2][13CH2]O
+choline	15N	C[15N+](C)(C)CCO
+choline	18O	C[N+](C)(C)CC[18OH]
+choline	2H	[2H]C([2H])(O)C([2H])([2H])[N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+choline	13C;15N	[13CH3][15N+]([13CH3])([13CH3])[13CH2][13CH2]O
+choline	13C;18O	[13CH3][N+]([13CH3])([13CH3])[13CH2][13CH2][18OH]
+choline	13C;2H	[2H][13C]([2H])(O)[13C]([2H])([2H])[N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+choline	15N;18O	C[15N+](C)(C)CC[18OH]
+choline	15N;2H	[2H]C([2H])(O)C([2H])([2H])[15N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+choline	18O;2H	[2H]C([2H])([18OH])C([2H])([2H])[N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+choline	13C;15N;18O	[13CH3][15N+]([13CH3])([13CH3])[13CH2][13CH2][18OH]
+choline	13C;15N;2H	[2H][13C]([2H])(O)[13C]([2H])([2H])[15N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+choline	13C;18O;2H	[2H][13C]([2H])([18OH])[13C]([2H])([2H])[N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+choline	15N;18O;2H	[2H]C([2H])([18OH])C([2H])([2H])[15N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+choline	13C;15N;18O;2H	[2H][13C]([2H])([18OH])[13C]([2H])([2H])[15N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+L-carnitine	13C	[13CH3][N+]([13CH3])([13CH3])[13CH2][13C@H](O)[13CH2][13C](=O)[O-]
+L-carnitine	15N	C[15N+](C)(C)C[C@H](O)CC(=O)[O-]
+L-carnitine	18O	C[N+](C)(C)C[C@H]([18OH])CC(=[18O])[18O-]
+L-carnitine	2H	[2H]C([2H])(C(=O)[O-])[C@@]([2H])(O)C([2H])([2H])[N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+L-carnitine	13C;15N	[13CH3][15N+]([13CH3])([13CH3])[13CH2][13C@H](O)[13CH2][13C](=O)[O-]
+L-carnitine	13C;18O	[13CH3][N+]([13CH3])([13CH3])[13CH2][13C@H]([18OH])[13CH2][13C](=[18O])[18O-]
+L-carnitine	13C;2H	[2H][13C]([2H])([13C](=O)[O-])[13C@@]([2H])(O)[13C]([2H])([2H])[N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+L-carnitine	15N;18O	C[15N+](C)(C)C[C@H]([18OH])CC(=[18O])[18O-]
+L-carnitine	15N;2H	[2H]C([2H])(C(=O)[O-])[C@@]([2H])(O)C([2H])([2H])[15N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+L-carnitine	18O;2H	[2H]C([2H])(C(=[18O])[18O-])[C@@]([2H])([18OH])C([2H])([2H])[N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+L-carnitine	13C;15N;18O	[13CH3][15N+]([13CH3])([13CH3])[13CH2][13C@H]([18OH])[13CH2][13C](=[18O])[18O-]
+L-carnitine	13C;15N;2H	[2H][13C]([2H])([13C](=O)[O-])[13C@@]([2H])(O)[13C]([2H])([2H])[15N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+L-carnitine	13C;18O;2H	[2H][13C]([2H])([13C](=[18O])[18O-])[13C@@]([2H])([18OH])[13C]([2H])([2H])[N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+L-carnitine	15N;18O;2H	[2H]C([2H])(C(=[18O])[18O-])[C@@]([2H])([18OH])C([2H])([2H])[15N+](C([2H])([2H])[2H])(C([2H])([2H])[2H])C([2H])([2H])[2H]
+L-carnitine	13C;15N;18O;2H	[2H][13C]([2H])([13C](=[18O])[18O-])[13C@@]([2H])([18OH])[13C]([2H])([2H])[15N+]([13C]([2H])([2H])[2H])([13C]([2H])([2H])[2H])[13C]([2H])([2H])[2H]
+ethanol	13C	[13CH3][13CH2]O
+ethanol	18O	CC[18OH]
+ethanol	2H	[2H]C([2H])([2H])C([2H])([2H])O
+ethanol	13C;18O	[13CH3][13CH2][18OH]
+ethanol	13C;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])O
+ethanol	18O;2H	[2H]C([2H])([2H])C([2H])([2H])[18OH]
+ethanol	13C;18O;2H	[2H][13C]([2H])([2H])[13C]([2H])([2H])[18OH]
+methanol	13C	[13CH3]O
+methanol	18O	C[18OH]
+methanol	2H	[2H]C([2H])([2H])O
+methanol	13C;18O	[13CH3][18OH]
+methanol	13C;2H	[2H][13C]([2H])([2H])O
+methanol	18O;2H	[2H]C([2H])([2H])[18OH]
+methanol	13C;18O;2H	[2H][13C]([2H])([2H])[18OH]
+hypoxanthine	13C	O=[13c]1[nH][13cH]n[13c]2n[13cH][nH][13c]12
+hypoxanthine	15N	O=c1[15nH]c[15n]c2[15n]c[15nH]c12
+hypoxanthine	18O	[18O]=c1[nH]cnc2nc[nH]c12
+hypoxanthine	2H	[2H]c1nc2nc([2H])[nH]c2c(=O)[nH]1
+hypoxanthine	13C;15N	O=[13c]1[15nH][13cH][15n][13c]2[15n][13cH][15nH][13c]12
+hypoxanthine	13C;18O	[18O]=[13c]1[nH][13cH]n[13c]2n[13cH][nH][13c]12
+hypoxanthine	13C;2H	[2H][13c]1n[13c]2n[13c]([2H])[nH][13c]2[13c](=O)[nH]1
+hypoxanthine	15N;18O	[18O]=c1[15nH]c[15n]c2[15n]c[15nH]c12
+hypoxanthine	15N;2H	[2H]c1[15n]c2[15n]c([2H])[15nH]c2c(=O)[15nH]1
+hypoxanthine	18O;2H	[2H]c1nc2nc([2H])[nH]c2c(=[18O])[nH]1
+hypoxanthine	13C;15N;18O	[18O]=[13c]1[15nH][13cH][15n][13c]2[15n][13cH][15nH][13c]12
+hypoxanthine	13C;15N;2H	[2H][13c]1[15n][13c]2[15n][13c]([2H])[15nH][13c]2[13c](=O)[15nH]1
+hypoxanthine	13C;18O;2H	[2H][13c]1n[13c]2n[13c]([2H])[nH][13c]2[13c](=[18O])[nH]1
+hypoxanthine	15N;18O;2H	[2H]c1[15n]c2[15n]c([2H])[15nH]c2c(=[18O])[15nH]1
+hypoxanthine	13C;15N;18O;2H	[2H][13c]1[15n][13c]2[15n][13c]([2H])[15nH][13c]2[13c](=[18O])[15nH]1
+adenine	13C	N[13c]1n[13cH]n[13c]2n[13cH][nH][13c]12
+adenine	15N	[15NH2]c1[15n]c[15n]c2[15n]c[15nH]c12
+adenine	2H	[2H]c1nc(N)c2[nH]c([2H])nc2n1
+adenine	13C;15N	[15NH2][13c]1[15n][13cH][15n][13c]2[15n][13cH][15nH][13c]12
+adenine	13C;2H	[2H][13c]1n[13c](N)[13c]2[nH][13c]([2H])n[13c]2n1
+adenine	15N;2H	[2H]c1[15n]c([15NH2])c2[15nH]c([2H])[15n]c2[15n]1
+adenine	13C;15N;2H	[2H][13c]1[15n][13c]([15NH2])[13c]2[15nH][13c]([2H])[15n][13c]2[15n]1
+adenosine	13C	N[13c]1n[13cH]n[13c]2[13c]1n[13cH]n2[13C@@H]1O[13C@H]([13CH2]O)[13C@@H](O)[13C@H]1O
+adenosine	15N	[15NH2]c1[15n]c[15n]c2c1[15n]c[15n]2[C@@H]1O[C@H](CO)[C@@H](O)[C@H]1O
+adenosine	18O	Nc1ncnc2c1ncn2[C@@H]1[18O][C@H](C[18OH])[C@@H]([18OH])[C@H]1[18OH]
+adenosine	2H	[2H]c1nc(N)c2nc([2H])n([C@]3([2H])O[C@]([2H])(C([2H])([2H])O)[C@@]([2H])(O)[C@@]3([2H])O)c2n1
+adenosine	13C;15N	[15NH2][13c]1[15n][13cH][15n][13c]2[13c]1[15n][13cH][15n]2[13C@@H]1O[13C@H]([13CH2]O)[13C@@H](O)[13C@H]1O
+adenosine	13C;18O	N[13c]1n[13cH]n[13c]2[13c]1n[13cH]n2[13C@@H]1[18O][13C@H]([13CH2][18OH])[13C@@H]([18OH])[13C@H]1[18OH]
+adenosine	13C;2H	[2H][13c]1n[13c](N)[13c]2n[13c]([2H])n([13C@]3([2H])O[13C@]([2H])([13C]([2H])([2H])O)[13C@@]([2H])(O)[13C@@]3([2H])O)[13c]2n1
+adenosine	15N;18O	[15NH2]c1[15n]c[15n]c2c1[15n]c[15n]2[C@@H]1[18O][C@H](C[18OH])[C@@H]([18OH])[C@H]1[18OH]
+adenosine	15N;2H	[2H]c1[15n]c([15NH2])c2[15n]c([2H])[15n]([C@]3([2H])O[C@]([2H])(C([2H])([2H])O)[C@@]([2H])(O)[C@@]3([2H])O)c2[15n]1
+adenosine	18O;2H	[2H]c1nc(N)c2nc([2H])n([C@]3([2H])[18O][C@]([2H])(C([2H])([2H])[18OH])[C@@]([2H])([18OH])[C@@]3([2H])[18OH])c2n1
+adenosine	13C;15N;18O	[15NH2][13c]1[15n][13cH][15n][13c]2[13c]1[15n][13cH][15n]2[13C@@H]1[18O][13C@H]([13CH2][18OH])[13C@@H]([18OH])[13C@H]1[18OH]
+adenosine	13C;15N;2H	[2H][13c]1[15n][13c]([15NH2])[13c]2[15n][13c]([2H])[15n]([13C@]3([2H])O[13C@]([2H])([13C]([2H])([2H])O)[13C@@]([2H])(O)[13C@@]3([2H])O)[13c]2[15n]1
+adenosine	13C;18O;2H	[2H][13c]1n[13c](N)[13c]2n[13c]([2H])n([13C@]3([2H])[18O][13C@]([2H])([13C]([2H])([2H])[18OH])[13C@@]([2H])([18OH])[13C@@]3([2H])[18OH])[13c]2n1
+adenosine	15N;18O;2H	[2H]c1[15n]c([15NH2])c2[15n]c([2H])[15n]([C@]3([2H])[18O][C@]([2H])(C([2H])([2H])[18OH])[C@@]([2H])([18OH])[C@@]3([2H])[18OH])c2[15n]1
+adenosine	13C;15N;18O;2H	[2H][13c]1[15n][13c]([15NH2])[13c]2[15n][13c]([2H])[15n]([13C@]3([2H])[18O][13C@]([2H])([13C]([2H])([2H])[18OH])[13C@@]([2H])([18OH])[13C@@]3([2H])[18OH])[13c]2[15n]1
+ammonium	15N	[15NH4+]
+ammonium	2H	[2H][N+]([2H])([2H])[2H]
+ammonium	15N;2H	[2H][15N+]([2H])([2H])[2H]
+sodium bicarbonate	13C	O=[13C]([O-])O.[Na+]
+sodium bicarbonate	18O	[18O]=C([18O-])[18OH].[Na+]
+sodium bicarbonate	2H	[2H]OC(=O)[O-].[Na+]
+sodium bicarbonate	13C;18O	[18O]=[13C]([18O-])[18OH].[Na+]
+sodium bicarbonate	13C;2H	[2H]O[13C](=O)[O-].[Na+]
+sodium bicarbonate	18O;2H	[2H][18O]C(=[18O])[18O-].[Na+]
+sodium bicarbonate	13C;18O;2H	[2H][18O][13C](=[18O])[18O-].[Na+]
+water	18O	[18OH2]
+water	2H	[2H]O[2H]
+water	18O;2H	[2H][18O][2H]
+oxygen	18O	[18O]=[18O]

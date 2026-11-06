@@ -4,7 +4,8 @@ after the NCBI lineage is known (ncbi_database.py) and the rules of final_table_
 care products, BiologicalSex), before the cache columns (add_cache_columns.py).
 
 1. Diet / FastingStatus from the texts (diet_columns.py), InternalStandardsUsed from them
-   (istd_exposure_columns.py; Exposure is only checked, the converters fill it);
+   (istd_exposure_columns.py; Exposure is only checked, the converters fill it), MetabolicLabelingTracer
+   from them (tracer_columns.py);
 2. the factors these columns hold are removed (sample_groups.remove_held_factors), per dataset and
    factor and separately for each column's factors;
 3. the group-consistency rule (sample_groups.consistent_sample_groups) as the last edit.
@@ -18,11 +19,13 @@ import pandas as pd
 
 import diet_columns
 import istd_exposure_columns
+import tracer_columns
 from ncbi_database import write_tsv_atomic
 from sample_groups import MISSING, consistent_sample_groups, remove_held_factors
 
 # (rows of earlier runs' tables can lack these columns or carry empty values)
-TEXT_COLUMNS = ('Diet', 'FastingStatus', 'SampleGroupFreeText', 'InternalStandardsUsed', 'Exposure')
+TEXT_COLUMNS = ('Diet', 'FastingStatus', 'SampleGroupFreeText', 'InternalStandardsUsed', 'Exposure',
+                'MetabolicLabelingTracer')
 
 
 def finalize(df, allowed_terms, exposure_table):
@@ -32,18 +35,22 @@ def finalize(df, allowed_terms, exposure_table):
         if c not in df.columns:
             df[c] = MISSING
         df[c] = df[c].fillna(MISSING).replace('', MISSING)
-    before = {c: df[c].copy() for c in ('Diet', 'FastingStatus', 'InternalStandardsUsed', 'SampleGroupFreeText')}
+    before = {c: df[c].copy() for c in ('Diet', 'FastingStatus', 'InternalStandardsUsed', 'SampleGroupFreeText',
+                                        'MetabolicLabelingTracer')}
     foods = allowed_terms['FoodOntologyTerm']['allowed_values']
     regimens = [t for t in allowed_terms['Diet']['allowed_values'] if t not in set(foods)]
     df, diet_fac, diet_log = diet_columns.apply(df, foods, regimens)
     df, ie_fac, ie_stats = istd_exposure_columns.apply(df, allowed_terms, exposure_table)
+    df, tr_fac, tr_stats = tracer_columns.apply(df)
     texts, removed_diet = remove_held_factors(df['SampleGroupFreeText'], diet_fac)
     texts, removed_ie = remove_held_factors(texts, ie_fac)
+    texts, removed_tr = remove_held_factors(texts, tr_fac)
     df['SampleGroupFreeText'] = texts
     kinds = collections.Counter(ie_fac.drop_duplicates(['dataset', 'key']).set_index(['dataset', 'key'])['kind']
                                 .reindex(sorted(removed_ie)).tolist()) if removed_ie else {}
     print(f"[final text columns] Diet / FastingStatus factors removed from the texts: {len(removed_diet)} "
           f"(dataset x factor); internal-standard / exposure factors removed: {dict(kinds)}; {dict(ie_stats)}; "
+          f"tracer factors removed: {len(removed_tr)}; {dict(sorted(tr_stats.items()))}; "
           f"guard reasons of rows with a Diet value from the text: "
           f"{diet_log.loc[diet_log['text_diet'].notna(), 'guard'].replace('', 'ok').value_counts().to_dict()}", flush=True)
     df = consistent_sample_groups(df)

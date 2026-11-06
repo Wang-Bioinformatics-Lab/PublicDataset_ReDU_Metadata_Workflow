@@ -12,6 +12,7 @@ import traceback
 import weakref
 from io import StringIO
 from REDU_conversion_functions import age_category, normalize_redu_datetime, metabolic_labeling_tracer
+import tracer_columns
 from REDU_conversion_functions import pinned_genus_term, sp_generic_label, sp_other_strain
 from REDU_conversion_functions import bare_sp_id_term, _GENUS_LEVEL_SP, NCBI_COLLECTING_TAXON
 from blank_qc_names import apply_filename_blank_qc, blank_qc_type_from_filename
@@ -558,7 +559,10 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
             if key == 'MetabolicLabelingTracer':
                 # 'unlabeled', or labelled SMILES with optional ChemCalc isotope ratios (REDU_conversion_functions);
                 # anything else is missing
+                # ... or a tracer phrase ('[U-13C6]glucose 99 atom %', tracer_columns.py)
                 value_map = {v: metabolic_labeling_tracer(v, missing_value) for v in unique_values}
+                value_map = {v: (t if t != missing_value else (tracer_columns.tracer_value(v) or missing_value))
+                             for v, t in value_map.items()}
                 df[key] = df[key].map(value_map).fillna(missing_value).replace("", missing_value)
                 filtered_map = {k: v for k, v in value_map.items() if k != v and k != ''}
                 if filtered_map:
