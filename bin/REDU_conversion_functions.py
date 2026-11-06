@@ -1244,8 +1244,8 @@ def packyears_to_numeric(x):
 
 
 # MetabolicLabelingTracer: the isotope-labelled tracer as a SMILES with isotope atoms ('[13CH3]O'), optionally
-# followed by the isotope ratios of the labelled elements in ChemCalc notation ('C{50.245,49.755}': % of each
-# isotope, lightest first, for the labelled atoms of that element). No RDKit in the workflow environment, so the
+# followed by the isotope composition of the labelled elements in braces as in ChemCalc, but with each isotope named
+# ('C{12C:50.245,13C:49.755}': % of each isotope at the labelled atoms of that element). No RDKit in the workflow environment, so the
 # SMILES is checked by syntax (OpenSMILES tokens, branches, ring closures, element symbols, isotope mass numbers)
 # and kept as written.
 _ELEMENTS = ('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb '
@@ -1258,12 +1258,14 @@ _SMILES_TOKEN = re.compile(r'\[(?P<iso>\d+)?(?P<el>se|as|[A-Z][a-z]?|[bcnops]|\*
                            r'(?P<h>H\d?)?(?P<chg>[+-](?:\d{1,2}|[+-]*))?(?::\d+)?\]'
                            r'|(?P<org>Br|Cl|[BCNOPSFI]|[bcnops]|\*)|(?P<ring>%\d\d|\d)|(?P<bond>[-=#$:/\\])|(?P<sym>[().])')
 _RATIOS = re.compile(r'([A-Z][a-z]?)\{([^{}]*)\}')
+_RATIO_PART = re.compile(r'(\d+)([A-Z][a-z]?):(\d+(?:\.\d+)?)')
 _UNLABELED_SPELLINGS = {'unlabeled', 'unlabelled', 'natural abundance', 'natural isotopic abundance'}
 
 
 def labelled_smiles_elements(smiles):
-    """Elements carrying an isotope in a SMILES ('[13CH3]O' -> {'C'}), or None when it is not a valid SMILES."""
-    pos, depth, rings, labelled, atoms, prev = 0, 0, set(), set(), 0, None
+    """{element: isotope mass numbers} of the isotope atoms of a SMILES ('[13CH3]O' -> {'C': {13}}), or None when
+    it is not a valid SMILES."""
+    pos, depth, rings, labelled, atoms, prev = 0, 0, set(), {}, 0, None
     while pos < len(smiles):
         m = _SMILES_TOKEN.match(smiles, pos)
         if not m:
@@ -1277,7 +1279,7 @@ def labelled_smiles_elements(smiles):
                 z, a = _ATOMIC_NUMBER.get(el), int(m.group('iso'))
                 if z is None or not (z <= a <= 3 * z + 10):  # no isotope outside these mass numbers exists
                     return None
-                labelled.add(el)
+                labelled.setdefault(el, set()).add(a)
             atoms, prev = atoms + 1, 'atom'
         elif m.group('org'):
             atoms, prev = atoms + 1, 'atom'
@@ -1310,9 +1312,11 @@ def labelled_smiles_elements(smiles):
 
 
 def metabolic_labeling_tracer(value, missing_value='missing value'):
-    """MetabolicLabelingTracer value: 'unlabeled', or ';'-joined tracers 'SMILES[ El{p1,p2,...}...]': a SMILES with
-    at least one isotope atom, then for labelled elements the % of each isotope of their labelled atoms, lightest
-    first, adding up to 100 (ChemCalc notation; no ratio = fully labelled). Anything else is missing."""
+    """MetabolicLabelingTracer value: 'unlabeled', or ';'-joined tracers 'SMILES[ El{isotope:%,...}...]': a SMILES
+    with at least one isotope atom, then for labelled elements the % of each named isotope at their labelled atoms,
+    e.g. '[13CH3]O C{12C:50.245,13C:49.755}'. The isotopes must be of that element and include the one in the
+    SMILES; they add up to 100, or to less when only some are given (the rest is the element at natural abundance,
+    'C{13C:49.755}'). Isotopes are written in mass order; no braces = fully labelled. Anything else is missing."""
     text = ' '.join(str(value).split())
     if text.lower() in ('', 'nan', 'none', missing_value):
         return missing_value
@@ -1325,20 +1329,28 @@ def metabolic_labeling_tracer(value, missing_value='missing value'):
         labelled = labelled_smiles_elements(smiles)
         if not labelled:
             return missing_value
-        ratios, seen = [], set()
         rest = rest.replace(' ', '')
         if _RATIOS.sub('', rest):
             return missing_value
-        for el, nums in _RATIOS.findall(rest):
-            try:
-                values = [float(n) for n in nums.split(',')]
-            except ValueError:
-                return missing_value
-            if el not in labelled or el in seen or len(values) < 2 or min(values) < 0 \
-                    or abs(sum(values) - 100) > 0.01:
+        ratios, seen = [], set()
+        for el, body in _RATIOS.findall(rest):
+            if el not in labelled or el in seen:
                 return missing_value
             seen.add(el)
-            ratios.append(f"{el}{{{nums}}}")
+            composition = {}
+            for item in body.split(','):
+                m = _RATIO_PART.fullmatch(item)
+                if not m or m.group(2) != el:
+                    return missing_value
+                mass, pct = int(m.group(1)), m.group(3)
+                z = _ATOMIC_NUMBER[el]
+                if mass in composition or not (z <= mass <= 3 * z + 10):
+                    return missing_value
+                composition[mass] = pct
+            total = sum(float(v) for v in composition.values())
+            if not labelled[el] <= set(composition) or total > 100.01:
+                return missing_value
+            ratios.append(el + '{' + ','.join(f'{m}{el}:{composition[m]}' for m in sorted(composition)) + '}')
         tracers.append(' '.join([smiles] + ratios))
     return ';'.join(tracers)
 
