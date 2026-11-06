@@ -1227,7 +1227,7 @@
         "generate": "False",
         "type": "analysis",
         "missing": "missing value",
-        "description": "The chromatography and phase used in the analysis.",
+        "description": "The chromatography and phase used in the analysis. 'flow injection analysis' (FIA) when the sample was injected into the solvent flow to the mass spectrometer without a column.",
         "example": "reverse phase (C18)",
         "source": "-",
         "allowed_values": [
@@ -1244,7 +1244,8 @@
             "reverse phase (C30)",
             "gas chromatography (NOS)",
             "mixed mode (Scherzo SS-C18)",
-            "ion chromatography (anion exchange)"
+            "ion chromatography (anion exchange)",
+            "flow injection analysis"
         ]
     },
     "SubjectIdentifierAsRecorded": {
