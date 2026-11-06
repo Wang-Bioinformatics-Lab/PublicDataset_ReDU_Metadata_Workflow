@@ -1319,6 +1319,18 @@
             "healthy"
         ]
     },
+    "HealthStatusDerived": {
+        "generate": "True",
+        "type": "biology/medicine",
+        "missing": "missing value",
+        "description": "(automatically generated) Healthy subjects versus subjects with a health condition, for comparisons across studies: 'health condition' where the subject has a disease (DOIDCommonName), a condition or phenotype (HPOCommonName), comorbidities (ComorbidityListDOIDIndex) or a HealthStatus other than healthy (acute illness, chronic illness, unhealthy (NOS)); 'healthy' where HealthStatus is healthy and none of these is given. Missing where nothing is known about the subject's health, where 'healthy' comes with a disease or condition, and on blanks, QCs and standards.",
+        "example": "health condition",
+        "source": "-",
+        "allowed_values": [
+            "healthy",
+            "health condition"
+        ]
+    },
     "SmokingStatus": {
         "generate": "False",
         "type": "biology/medicine",

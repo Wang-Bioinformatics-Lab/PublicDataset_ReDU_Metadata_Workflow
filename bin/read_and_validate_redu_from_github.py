@@ -1166,6 +1166,9 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
         if value.get('generate') == 'True' and key not in df.columns and key not in ('USI',):
             if key in ('OrganismExposureAgent', 'OrganismExposureAgentIndex'):
                 df[key] = value['missing']
+            elif key == 'HealthStatusDerived':
+                # filled from the final table's health columns (health_status_derived.py, finalizeTextColumns)
+                df[key] = value['missing']
             elif key == 'FoodOntologyIndex':
                 # WebProtege ID of the GFOP food ontology term (translation_sheets/GFOP_food_ontology.csv)
                 terms = df['FoodOntologyTerm'] if 'FoodOntologyTerm' in df.columns else pd.Series('', index=df.index)

@@ -899,7 +899,8 @@ process finalTableRules {
 // rows saveOlderData keeps from earlier runs), after finalTableRules: Diet / FastingStatus /
 // InternalStandardsUsed from the texts, removal of the factors these columns hold, the group-consistency rule.
 // If a MASST step fell back, the fields MASST filled into other sources' rows are taken from the --old_redu table
-// for the datasets whose rows differ from it only by cells left missing (masst_fallback.py; otherwise a no-op)
+// for the datasets whose rows differ from it only by cells left missing (masst_fallback.py; otherwise a no-op).
+// Last, HealthStatusDerived (healthy / health condition) from the health columns (health_status_derived.py)
 process finalizeTextColumns {
     publishDir "./nf_output", mode: 'copy'
 
@@ -928,6 +929,9 @@ process finalizeTextColumns {
     ${old_redu} \
     --masst_status ${masst_status} \
     || echo "WARNING: masst_fallback.py failed; the fields MASST filled in earlier runs are not kept" >&2
+
+    # HealthStatusDerived from the health columns as they now are (after the MASST fallback)
+    python $TOOL_FOLDER/health_status_derived.py merged_with_text_columns.tsv
     """
 }
 
