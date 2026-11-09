@@ -1711,7 +1711,16 @@ def build_doid_lookup(doid_table):
         for name in {label, syn}:
             if isinstance(name, str) and len(name.strip()) >= 4:
                 names.setdefault(name.strip().lower(), set()).add(f'{label}|{idx}')
-    return {name: next(iter(v)) for name, v in names.items() if len(v) == 1}
+    lookup = {name: next(iter(v)) for name, v in names.items() if len(v) == 1}
+    # also each name as study_abbreviations writes it out ("crohn s disease" for "Crohn's disease",
+    # ST001000 'Diagnosis: CD'), where that form names one disease and is not a name of its own
+    norm = {}
+    for name, v in names.items():
+        norm.setdefault(_norm_doid_name(name), set()).update(v)
+    for name, v in norm.items():
+        if len(v) == 1 and name not in names and len(name) >= 4:
+            lookup[name] = next(iter(v))
+    return lookup
 
 
 # ---------------------------------------------------------------------------------
@@ -2666,13 +2675,15 @@ _ABBR_CONTACT_KEY_RE = re.compile(r'(?:INSTITUTE|NAME|ADDRESS|EMAIL|PHONE|DEPART
                                   r'SUBMIT_DATE|DATE|NUM_GROUPS|TOTAL_SUBJECTS|PUBLICATIONS|DOI|ID$|_ID$)')
 
 
-def _abbr_like(s):
-    """2-8 characters, mostly upper case or digits ('AKI', 'T2D', 'PM2.5')."""
+def _abbr_like(s, defined=False):
+    """2-8 characters, mostly upper case or digits ('AKI', 'T2D', 'PM2.5'). defined: the study text
+    defines it next to its full name ('Crohn’s disease (CD)', ST001000), where the stop list
+    (_ABBR_STOP: 'CD' is also a control diet) does not apply."""
     if not isinstance(s, str) or not (2 <= len(s) <= 8) or \
             not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.\-+]*[A-Za-z0-9+])?', s):
         return False
     core = re.sub(r'[^A-Za-z0-9]', '', s)
-    if not re.search(r'[A-Za-z]', core) or s.upper() in _ABBR_STOP or s.upper() in _ABBR_WORDS:
+    if not re.search(r'[A-Za-z]', core) or (s.upper() in _ABBR_STOP and not defined) or s.upper() in _ABBR_WORDS:
         return False
     return sum(c.isupper() or c.isdigit() for c in core) >= 0.6 * len(core)
 
@@ -2768,6 +2779,8 @@ def study_abbreviations(text, doid_table, path_to_csvs='translation_sheets', pla
     """[(regex for the abbreviation, full name)] defined by the study text."""
     if not text or not text.strip():
         return []
+    # typographic quotes as plain ones: 'Crohn’s disease (CD)' (ST001000) names DOID's "Crohn's disease"
+    text = text.replace('\u2019', "'").replace('\u2018', "'").replace('\u02bc', "'")
     index = _abbr_index(doid_table, path_to_csvs, plant)
     names, found = index['names'], {}
 
@@ -2777,7 +2790,7 @@ def study_abbreviations(text, doid_table, path_to_csvs='translation_sheets', pla
     # (a) 'full name (ABBR)' and 'ABBR (full name)'
     for m in re.finditer(r'\(\s*([A-Za-z0-9][A-Za-z0-9.\-+]{0,7})\s*[),;]', text):
         abbr = m.group(1).rstrip('.')
-        if not _abbr_like(abbr):
+        if not _abbr_like(abbr, defined=True):
             continue
         words = re.findall(r'[A-Za-z0-9\'\-]+', text[max(0, m.start() - 200):m.start()])[-(len(abbr) + 5):]
         for i in range(len(words)):
@@ -2789,7 +2802,7 @@ def study_abbreviations(text, doid_table, path_to_csvs='translation_sheets', pla
                 break
     for m in re.finditer(r'(?<![A-Za-z0-9])([A-Za-z0-9][A-Za-z0-9.\-+]{1,7})\s*\(\s*([^()]{4,120}?)\s*\)', text):
         abbr, n = m.group(1), _norm_doid_name(m.group(2))
-        if _abbr_like(abbr) and n in names and n not in index['abbr_norms'] and _abbr_fits(abbr, n):
+        if _abbr_like(abbr, defined=True) and n in names and n not in index['abbr_norms'] and _abbr_fits(abbr, n):
             _add(abbr, n)
     # (b) abbreviation synonyms of terms named in the text
     words = _norm_doid_name(text).split()
@@ -3694,6 +3707,21 @@ def sample_group_texts(data):
     return {sid: clean(sid) + _GROUP_SID + t for sid, t in out.items() if t}
 
 
+def _redu_values_tell_apart(t, missing='missing value', max_pairs=20000):
+    """Whether the ReDU columns tell every two values of a factor apart by a column both have
+    a value in (t: 'redu' = the ReDU columns joined by \\x1f, 'v' = the factor value). Groups
+    that differ only where one of them is missing are not told apart: ST001000 'Diagnosis: CD'
+    (no disease term) next to UC (ulcerative colitis) and Control (healthy)."""
+    filled = lambda x: x.strip().lower() not in ('', 'nan', missing)
+    tuples = {v: {tuple(r.split('\x1f')) for r in g} for v, g in t.groupby('v')['redu']}
+    vals = list(tuples)
+    pairs = [(a, b) for i, a in enumerate(vals) for b in vals[i + 1:]]
+    if sum(len(tuples[a]) * len(tuples[b]) for a, b in pairs) > max_pairs:
+        return True
+    return all(any(x != y and filled(x) and filled(y) for x, y in zip(ra, rb))
+               for a, b in pairs for ra in tuples[a] for rb in tuples[b])
+
+
 def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing value', study_id=''):
     """Turns the internal sample groups into 'Key: value; Key: value' for one study.
     Factors (other than genotype / strain / cell line-like ones) whose groups the
@@ -3719,14 +3747,19 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
     redu_cols = [c for c in _GROUP_REDU_COLUMNS if c in df.columns]
     redu_tuple = df[redu_cols].astype(str).agg('\x1f'.join, axis=1) if redu_cols else pd.Series('', index=df.index)
     keys = list(dict.fromkeys(k for ps in parts[real] for k, _ in ps))
-    dropped = set()
+    dropped, partly_covered = set(), set()
     for k in keys:
         if _GROUP_INDEPENDENT_KEY_RE.search(_norm_key(k)):
             continue
         kv = parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None))
         t = pd.DataFrame({'redu': redu_tuple[real], 'v': kv, 'sid': sid[real]}).dropna().drop_duplicates(['sid'])
         if len(t) and t['v'].nunique() > 1 and (t.groupby('redu')['v'].nunique() <= 1).all():
-            dropped.add(k)
+            if _redu_values_tell_apart(t):
+                dropped.add(k)
+            else:
+                # groups told apart only where some are missing: kept, but the first to go
+                # when there are too many groups (below)
+                partly_covered.add(k)
         # a factor with a ReDU column of its own and one value over the real samples
         # ('Sample source: Feces' on every row) tells no groups apart
         elif t['v'].nunique() <= 1 and _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k)):
@@ -3738,10 +3771,11 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
         return text, len(groups), groups['g'].nunique()
     text, n_samples, n_groups = texts(dropped)
     # too many groups: leave out the kept factors that have a ReDU column, most levels first
-    spare = [k for k in keys if k not in dropped and _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k))]
+    spare = [k for k in keys if k not in dropped and (k in partly_covered or _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k)))]
     levels = {k: parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None)).nunique() for k in spare}
     too_many = []
-    for k in sorted(spare, key=lambda k: -levels[k]):
+    # the factors the ReDU columns partly tell apart first, then by most levels
+    for k in sorted(spare, key=lambda k: (k not in partly_covered, -levels[k])):
         if n_groups <= n_samples / 2:
             break
         too_many.append(k)
