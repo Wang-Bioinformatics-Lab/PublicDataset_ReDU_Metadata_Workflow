@@ -100,6 +100,9 @@ def longest_common_dir_suffix_score(meta_dirs, cand_dirs):
 _ACCESSION = re.compile(r'^[A-Z]+\d+$')
 _MZ_EXTENSIONS = ('.mzml', '.mzxml')
 PREFERRED_DIRECTORIES = ['ccms_peak', 'peak', 'raw']
+# share of a sheet's files of another dataset that the metadata file's own dataset must hold for its
+# copies to get the rows too (_match_filenames_and_add_usi)
+COPY_MIN_SHARE = 0.9
 
 # matching rules, in the order they are tried for a metadata row; a later rule is only
 # used when the earlier ones find no file of that name at all
@@ -704,6 +707,8 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
     output_row_list = []
     # rows not found in their stated dataset, to look for in own_dataset: (row, result)
     elsewhere = []
+    # rows matched in another dataset than own_dataset, whose file own_dataset may hold a copy of: (row, dataset)
+    copies = []
     # file paths of own_dataset that rows of this metadata file are matched to
     own_paths = set()
     for dataset, group in dataset_metadata_df.groupby('ATTRIBUTE_DatasetAccession', sort=False):
@@ -773,6 +778,8 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
                 continue
             MATCH_STATS[f'rows_matched_{rule}'] += 1
             MATCH_REPORT.append((source, dataset, meta_path, f'matched_{rule}', selected_path))
+            if retry_elsewhere:
+                copies.append((dict(metadata_row, filename=meta_path), dataset))
             if polarity_twins:
                 _mark_polarity_twin(files, metadata_row, selected_path, rule, sheet_names, twin_blank, sheet_dirs)
             metadata_row["filename"] = "f." + selected_path
@@ -807,6 +814,33 @@ def _match_filenames_and_add_usi(dataset_metadata_df, file_accession=None, files
         if isinstance(subject, str) and subject.startswith(str(dataset) + '_'):
             metadata_row['UniqueSubjectID'] = own_dataset + subject[len(str(dataset)):]
             MATCH_STATS['rows_matched_in_metadata_file_dataset_subject_id_fixed'] += 1
+        metadata_row["filename"] = "f." + selected_path
+        metadata_row["USI"] = _make_usi_from_filename(metadata_row["filename"], own_dataset)
+        output_row_list.append(metadata_row)
+
+    # rows matched in the dataset they state, when the metadata file's own dataset holds a copy of
+    # the file (a sheet uploaded with a re-deposit names the original dataset, MSV000084587 ->
+    # MSV000084430): the copy gets the row too, unless a row of this sheet already describes it.
+    # Only where own_dataset holds copies of nearly all (COPY_MIN_SHARE) of the sheet's files of that
+    # dataset: single shared names ('Blank_1.mzML', 'QC.mzML') are no copies.
+    files = _dataset_files(own_dataset, files_cache) if copies else None
+    found = [(row, dataset, _match_row(files, row)[1]) for row, dataset in copies] if files is not None else []
+    share = pd.DataFrame([(d, p is not None and not isinstance(p, tuple)) for _, d, p in found],
+                         columns=['dataset', 'hit']).groupby('dataset')['hit'].mean() if found else pd.Series(dtype=float)
+    for dataset in share.index[share < COPY_MIN_SHARE]:
+        MATCH_STATS['datasets_not_copied_too_few_shared_files'] += 1
+    for metadata_row, dataset, selected_path in found:
+        if share[dataset] < COPY_MIN_SHARE or selected_path is None or isinstance(selected_path, tuple) \
+                or selected_path in own_paths:
+            continue
+        own_paths.add(selected_path)
+        MATCH_STATS['rows_copied_to_metadata_file_dataset'] += 1
+        MATCH_REPORT.append((source, own_dataset, str(metadata_row['filename']), f'copy_in_metadata_file_dataset_of_{dataset}',
+                             selected_path))
+        metadata_row['ATTRIBUTE_DatasetAccession'] = own_dataset
+        subject = metadata_row.get('UniqueSubjectID')
+        if isinstance(subject, str) and subject.startswith(str(dataset) + '_'):
+            metadata_row['UniqueSubjectID'] = own_dataset + subject[len(str(dataset)):]
         metadata_row["filename"] = "f." + selected_path
         metadata_row["USI"] = _make_usi_from_filename(metadata_row["filename"], own_dataset)
         output_row_list.append(metadata_row)
