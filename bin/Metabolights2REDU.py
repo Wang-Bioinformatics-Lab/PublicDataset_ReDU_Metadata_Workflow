@@ -36,7 +36,7 @@ from water_kind import water_kind_of_unstated_water
 # time point, fasting and sample group rules shared with the Workbench converter
 from MWB_to_REDU import (_norm_key, _TP_UNIT_WORDS, timepoint_key_tier, timepoint_hours, _timepoint_key_unit,
                          sample_timepoint_hours, sample_fasting_status,
-                         _GROUP_KEY_EXCLUDE_RE, _GROUP_KEY_NOT_GROUP_RE, _GROUP_ID_KEY_RE, _GROUP_NA_VALUES, _GROUP_SID, _GROUP_KV, _GROUP_PART,
+                         _GROUP_KEY_EXCLUDE_RE, _GROUP_KEY_NOT_GROUP_RE, _GROUP_KEY_REDU_COLUMN_RE, _GROUP_ID_KEY_RE, _GROUP_NA_VALUES, _GROUP_SID, _GROUP_KV, _GROUP_PART,
                          finalize_sample_groups)
 
 
@@ -3353,10 +3353,19 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
             drop.append(key)
             continue
         values[key] = v
+    # a factor with a ReDU column of its own whose value differs between the rows of one sample
+    # (MTBLS209 'tissue': berry flesh / seeds / peel extracts of one sample name) describes the
+    # extracts, not the sample's group: left out, so that the sample keeps its other factors
+    # (the one-text-per-sample rule below would otherwise give the sample none)
+    for key in [k for k in values if _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k))]:
+        per_sample = pd.DataFrame({'sid': sid, 'v': values[key]}).dropna()
+        if len(per_sample) and (per_sample.groupby('sid')['v'].nunique() > 1).any():
+            values.pop(key)
+            drop.append(key)
     # a time factor kept whole needs no separate before-the-intervention values
     pre_values = {k: v for k, v in pre_values.items() if k not in values}
     if drop:
-        print(f"[SampleGroupFreeText] {study_id}: factors not used (no groups): {drop}")
+        print(f"[SampleGroupFreeText] {study_id}: factors not used (no groups, or differing within a sample): {drop}")
     if not values:
         print(f"[SampleGroupFreeText] {study_id}: no grouping factors left")
         return out
