@@ -13,6 +13,7 @@ import json
 from ftplib import FTP_TLS, error_perm, all_errors as ftp_errors
 
 from ncbi_database import MULTI_SEP, submitted_taxonomy_parts
+import dataset_factors
 
 
 CACHE_FILENAME_URL = "https://datasetcache.gnps2.org/datasette/database/filename.json"
@@ -140,6 +141,14 @@ LEGACY_ALIASES = {
     'sampletype_sub1': 'SampleTypeSub1', 'comorbidity_listdoids': 'ComorbidityListDOIDIndex',
     'massiveid': 'MassiveID', 'datasetaccession': 'MassiveID',
 }
+
+
+# The other metadata files of the datasets that have a sheet (dataset_factors.py): tabular files with 'metadata' in
+# their path, outside MassIVE's own ccms_* folders, in any folder (e.g. other/, methods/: 131 of the 292 such
+# files of the 126 datasets of the run15b missing-metadata report were outside metadata/ and updates/)
+FACTOR_SHEETS_WHERE = (
+    "filepath like '%metadata%' and filepath not like '%ccms_%' and ("
+    + " or ".join(f"filepath like '%{ext}'" for ext in TEMPLATE_SHEET_EXTENSIONS) + ")")
 
 
 def template_column(column, template_keys):
@@ -652,6 +661,50 @@ class MassiveFTPS:
         self.ftp = None
 
 
+def add_dataset_factors(folder, saved, github_files, fetch, template_keys):
+    """SampleGroupFreeText of each MassIVE dataset's sheets in the folder (the saved MassIVE sheets, not the
+    fill-only ones, and the GitHub sheets) from their extra columns and the dataset's other metadata files
+    (FACTOR_SHEETS_WHERE, up to MAX_SHEET_BYTES); a sheet is rewritten only when a factor is added"""
+    sheets = collections.defaultdict(list)
+    for path in list(saved) + [p for paths in github_files.values() for p in paths]:
+        name = os.path.basename(path)
+        dataset = name.split('_')[0].split('.')[0]
+        if FILL_ONLY_MARK not in name and re.match(r'^R?MSV\d+$', dataset):
+            sheets[dataset].append(path)
+    if not sheets:
+        return
+    listing = list_cache_files(FACTOR_SHEETS_WHERE)
+    listing = listing[listing['dataset'].isin(set(sheets))]
+    listing = listing[pd.to_numeric(listing['size'], errors='coerce').fillna(0) <= MAX_SHEET_BYTES]
+    tables = collections.defaultdict(list)
+    for dataset, filepath in sorted(zip(listing['dataset'], listing['filepath'])):
+        link = _dataset_path(dataset, filepath)
+        content = fetch(link)
+        table = read_sheet(content, link, template_keys) if content is not None else None
+        if table is not None:
+            tables[dataset].append((filepath, table))
+    print(f"Other metadata files of the datasets with a sheet: {len(listing)} listed, "
+          f"{sum(map(len, tables.values()))} read, of {len(tables)} datasets")
+    column = lambda c: template_column(c, template_keys)
+    counts = collections.Counter()
+    for dataset, paths in sorted(sheets.items()):
+        for path in paths:
+            with open(path, 'rb') as handle:
+                sheet = read_sheet(handle.read(), path)
+            if sheet is None:
+                continue
+            sheet = _canonical_column(_canonical_column(sheet, 'filename', template_keys), 'SampleGroupFreeText', template_keys)
+            if 'filename' not in sheet.columns:
+                continue
+            sheet, added = dataset_factors.add_factors(sheet, tables.get(dataset, []), column, _sample_key)
+            if added:
+                sheet.to_csv(path, sep='\t', index=False)
+                counts['sheets'] += 1
+                counts['factors'] += len(added)
+                print(f"{dataset}: sample groups from {', '.join(f'{f} ({s})' for s, f, _, _ in added)}")
+    print(f"Sample groups from the datasets' metadata: {dict(counts)}")
+
+
 def main():
     # Args parse
     parser = argparse.ArgumentParser(description='Download GNPS files')
@@ -659,6 +712,8 @@ def main():
     parser.add_argument('--allowed_terms', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'allowed_terms.json'),
                         help='allowed terms json (only its column names are used, to recognise ReDU-format sheets)')
     parser.add_argument('--no_other_sheets', action='store_true', help='only read files named *gnps_metadata.tsv')
+    parser.add_argument('--no_dataset_factors', action='store_true',
+                        help="no SampleGroupFreeText from the sheets' extra columns and the datasets' other metadata files")
     args = parser.parse_args()
 
     with open(args.allowed_terms) as f:
@@ -928,12 +983,21 @@ def main():
             index += 1
         print(f"Other metadata sheets: {dict(n_sheets)}")
 
-    ftps.close()
     # (an unexpected sheet must not cost the summary and file_paths.tsv: only the fill-only rows are lost)
     try:
         write_fill_only()
     except Exception as e:
         print(f"ERROR: writing the fill-only rows failed ({type(e).__name__}: {e}); they are left out this run")
+
+    # sample groups from the sheets' extra columns and the datasets' other metadata files (dataset_factors.py);
+    # on any error the sheets stay as they are
+    if not args.no_dataset_factors:
+        try:
+            add_dataset_factors(args.output_metadata_folder, file_paths["sys_name"], github_files, fetch, template_keys)
+        except Exception as e:
+            print(f"ERROR: sample groups from the datasets' metadata files failed ({type(e).__name__}: {e}); "
+                  f"the sheets are used as they are")
+    ftps.close()
     print(f"Downloaded metadata files: {dict(downloaded_via)}")
     if missing_on_massive:
         print(f"{len(missing_on_massive)} metadata files listed by the dataset cache are not on MassIVE:")
