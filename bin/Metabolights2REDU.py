@@ -36,7 +36,7 @@ from water_kind import water_kind_of_unstated_water
 # time point, fasting and sample group rules shared with the Workbench converter
 from MWB_to_REDU import (_norm_key, _TP_UNIT_WORDS, timepoint_key_tier, timepoint_hours, _timepoint_key_unit,
                          sample_timepoint_hours, sample_fasting_status,
-                         _GROUP_KEY_EXCLUDE_RE, _GROUP_ID_KEY_RE, _GROUP_NA_VALUES, _GROUP_SID, _GROUP_KV, _GROUP_PART,
+                         _GROUP_KEY_EXCLUDE_RE, _GROUP_KEY_NOT_GROUP_RE, _GROUP_ID_KEY_RE, _GROUP_NA_VALUES, _GROUP_SID, _GROUP_KV, _GROUP_PART,
                          finalize_sample_groups)
 
 
@@ -3304,10 +3304,10 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
                           gfop=None):
     """Per-row sample group in the internal form of finalize_sample_groups (sample ID,
     then 'factor -> value' parts) from the Factor Value columns, in the study's factor
-    order and wording (values with their unit). Factors that have a ReDU column of their
-    own or are no groups (Workbench rules), and factors with a different value for nearly
-    every sample, are left out. Of a time factor, the values naming a sampling before the
-    intervention ('Visit: Baseline') stay where another factor names a diet (gfop: GFOP label
+    order and wording (values with their unit). Factors that are no groups (Workbench rules)
+    and factors with a different value for nearly every sample are left out; factors that
+    have a ReDU column of their own stay until finalize_sample_groups checks them. Of a
+    time factor, the values naming a sampling before the intervention ('Visit: Baseline') stay where another factor names a diet (gfop: GFOP label
     index of diet_columns.gfop_index): the final table's diet pass (diet_columns.py) then does
     not give these samples their arm's diet, which no column could tell it
     (TimePointHoursRelativeToEvent needs hours); not where they would make more groups than
@@ -3337,7 +3337,7 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
             unit = df[uc].map(clean).where(~_is_missing(df[uc]), '')
             v = v.where(unit == '', v + ' ' + unit)
         v = v.where(~v.str.lower().isin(_ML_GROUP_NA_VALUES) & ~_is_missing(df[c]))
-        if not nk or _GROUP_KEY_EXCLUDE_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) or _ML_GROUP_ID_KEY_RE.search(nk) \
+        if not nk or _GROUP_KEY_NOT_GROUP_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) or _ML_GROUP_ID_KEY_RE.search(nk) \
                 or _ML_GROUP_TECH_KEY_RE.search(nk):
             drop.append(key)
             continue
@@ -3353,8 +3353,10 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
             drop.append(key)
             continue
         values[key] = v
+    # a time factor kept whole needs no separate before-the-intervention values
+    pre_values = {k: v for k, v in pre_values.items() if k not in values}
     if drop:
-        print(f"[SampleGroupFreeText] {study_id}: factors not used (ReDU column or no groups): {drop}")
+        print(f"[SampleGroupFreeText] {study_id}: factors not used (no groups): {drop}")
     if not values:
         print(f"[SampleGroupFreeText] {study_id}: no grouping factors left")
         return out

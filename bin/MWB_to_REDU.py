@@ -3601,23 +3601,31 @@ def study_fasting_status(text):
 
 
 # ---- SampleGroupFreeText ----
-# factor keys whose information has a ReDU column of its own (sex, age, life stage,
-# organism, body part / sample type, disease / health, smoking, BMI, diet, location,
-# dates and times, fasting, instrument / LC / polarity, methods, QC / blank class) or
-# that are not groups (batch, replicate, run order, injection, plate / well, raw files,
-# subject IDs)
-_GROUP_KEY_EXCLUDE_RE = re.compile(
-    r'time|visit|\b(?:day|days|week|weeks|hour|hours|hr|hrs|month|months|tp|timept)\b|'
+# factor keys that are not groups (batch, replicate, run order, injection, plate / well,
+# instrument / LC / polarity, methods, dates, raw files, IDs, QC / blank class, cages):
+# always left out
+_GROUP_KEY_NOT_GROUP_RE = re.compile(
     r'\b(?:batch|batches|replicate|replicates|rep|reps|replication|run|runs|order|injection|inj|plate|well|position|'
     r'vial|tray|rack|sequence|seq|block|polarity|ion mode|ionization|ionisation|column|chromatography|lc|ms|'
     r'instrument|platform|method|methods|extraction|protocol|date|raw|file|files|mzml|id|ids|identifier|identifiers|'
-    r'sex|gender|age|aged|ages|life stage|lifestage|developmental stage|species|organism|organisms|taxon|taxonomy|'
+    r'collection|qc|blank|blanks|quality|sample class|samle type|subject|subjects|cage|cages|ion model)\b|'
+    r'collection\w*|ionmode')
+# factor keys whose information has a ReDU column of its own (sex, age, life stage,
+# organism, body part / sample type, disease / health, smoking, BMI, diet, location,
+# times, fasting). These are kept in SampleGroupFreeText and dropped only where the
+# study's ReDU columns really tell their groups apart (finalize_sample_groups): a
+# 'Diagnosis: CD / UC / nonIBD' that did not become DOIDCommonName stays as a group.
+_GROUP_KEY_REDU_COLUMN_RE = re.compile(
+    r'time|visit|\b(?:day|days|week|weeks|hour|hours|hr|hrs|month|months|tp|timept)\b|'
+    r'\b(?:sex|gender|age|aged|ages|life stage|lifestage|developmental stage|species|organism|organisms|taxon|taxonomy|'
     r'tissue|tissues|organ|organs|body part|bodypart|body site|sample type|sample types|sampletype|sample source|'
     r'source|matrix|specimen|specimens|biofluid|fluid|material|biospecimen|disease|diseases|diagnosis|diagnoses|'
     r'health|healthy|smok\w*|tobacco|bmi|body mass|diet|diets|dietary|chow|feed|feeding|fed|fasting|fasted|fast|'
-    r'country|location|site|region|latitude|longitude|lat|lon|depth|altitude|elevation|collection|season|year|'
-    r'qc|blank|blanks|quality|sample class|samle type|subject|subjects|cage|cages|moment|duration|ion model)\b|'
-    r'^age(?!nt)|\bage(?:months?|years?|weeks?|days?|at\w*)|collection\w*|ionmode|tissue\w*|\w*duration\w*')
+    r'country|location|site|region|latitude|longitude|lat|lon|depth|altitude|elevation|season|year|'
+    r'moment|duration)\b|'
+    r'^age(?!nt)|\bage(?:months?|years?|weeks?|days?|at\w*)|tissue\w*|\w*duration\w*')
+# either of the two (the MetaboLights converter's time-factor rule uses it)
+_GROUP_KEY_EXCLUDE_RE = re.compile(f'(?:{_GROUP_KEY_NOT_GROUP_RE.pattern})|(?:{_GROUP_KEY_REDU_COLUMN_RE.pattern})')
 _GROUP_ID_KEY_RE = re.compile(r'(?:subject|participant|individual|donor|person)s?|'
                               r'(?:subject|participant|patient|animal|mouse|mice|rat|individual|donor|sample|pig|cow|'
                               r'fish|plant|tree|person|host)s? (?:no|number|num|nr|name|code|label)')
@@ -3644,8 +3652,9 @@ _GROUP_REDU_COLUMNS = ['SampleType', 'SampleTypeSub1', 'NCBITaxonomy', 'UBERONBo
 def sample_group_texts(data):
     """Sample ID -> the sample's grouping factors from the mwTab SUBJECT_SAMPLE_FACTORS
     'Factors', in the study's order and wording (internal form, see
-    finalize_sample_groups). Factors that have a ReDU column of their own, that are no
-    groups, and factors with a different value for nearly every sample are left out.
+    finalize_sample_groups). Factors that are no groups and factors with a different value
+    for nearly every sample are left out; factors that have a ReDU column of their own stay
+    until finalize_sample_groups checks whether the ReDU columns tell their groups apart.
     ';' inside a key or value becomes ','."""
     items = [(str(it.get('Sample ID', '')).strip(), it.get('Factors') or {})
              for it in (data or []) if isinstance(it, dict)]
@@ -3660,7 +3669,7 @@ def sample_group_texts(data):
     drop = set()
     for k, vs in values.items():
         nk = _norm_key(k)
-        if not nk or _GROUP_KEY_EXCLUDE_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) \
+        if not nk or _GROUP_KEY_NOT_GROUP_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) \
                 or is_variant_raw_file_key(k.lower()) or k.lower() in _EXACT_RAW_KEYS:
             drop.add(k)
             continue
@@ -3690,7 +3699,9 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
     Factors (other than genotype / strain / cell line-like ones) whose groups the
     study's ReDU columns already tell apart are dropped; the column is filled only where the real
     samples (no QC / blanks) form at least 2 groups and at most half as many groups as
-    samples. Never removes rows."""
+    samples. Where there are more groups than that, factors that have a ReDU column of their
+    own (_GROUP_KEY_REDU_COLUMN_RE) are dropped first, most groups first, so that keeping them
+    never empties a column the other factors fill. Never removes rows."""
     if column not in df.columns or len(df) == 0:
         return df
     df = df.copy()
@@ -3716,10 +3727,27 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
         t = pd.DataFrame({'redu': redu_tuple[real], 'v': kv, 'sid': sid[real]}).dropna().drop_duplicates(['sid'])
         if len(t) and t['v'].nunique() > 1 and (t.groupby('redu')['v'].nunique() <= 1).all():
             dropped.add(k)
-    text = parts.map(lambda ps: '; '.join(f'{k}: {v}' for k, v in ps if k not in dropped))
-    text = text.where(has & (text != ''))
-    groups = pd.DataFrame({'sid': sid[real], 'g': text[real]}).dropna().drop_duplicates('sid')
-    n_samples, n_groups = len(groups), groups['g'].nunique()
+        # a factor with a ReDU column of its own and one value over the real samples
+        # ('Sample source: Feces' on every row) tells no groups apart
+        elif t['v'].nunique() <= 1 and _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k)):
+            dropped.add(k)
+    def texts(dropped):
+        text = parts.map(lambda ps: '; '.join(f'{k}: {v}' for k, v in ps if k not in dropped))
+        text = text.where(has & (text != ''))
+        groups = pd.DataFrame({'sid': sid[real], 'g': text[real]}).dropna().drop_duplicates('sid')
+        return text, len(groups), groups['g'].nunique()
+    text, n_samples, n_groups = texts(dropped)
+    # too many groups: leave out the kept factors that have a ReDU column, most levels first
+    spare = [k for k in keys if k not in dropped and _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k))]
+    levels = {k: parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None)).nunique() for k in spare}
+    too_many = []
+    for k in sorted(spare, key=lambda k: -levels[k]):
+        if n_groups <= n_samples / 2:
+            break
+        too_many.append(k)
+        text, n_samples, n_groups = texts(dropped | set(too_many))
+    if too_many:
+        print(f"[SampleGroupFreeText] {study_id}: dropped for too many groups: {too_many}")
     reason = None
     if n_groups < 2:
         reason = 'fewer than 2 groups'
