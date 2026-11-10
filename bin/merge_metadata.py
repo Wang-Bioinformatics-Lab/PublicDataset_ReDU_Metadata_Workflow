@@ -433,6 +433,9 @@ SUPPLEMENT_SUBJECT = {'NCBITaxonomy', 'UBERONBodyPartName', 'DOIDCommonName', 'H
                       'SmokingStatus', 'SmokingPackYears', 'BodyMassIndex', 'Diet', 'TimePointHoursRelativeToEvent', 'FastingStatus',
                       'ColonizationStatus', 'ComorbidityListDOIDIndex', 'SampleGroupFreeText', 'TermsofPosition',
                       'IsolationSourceNCBITaxonomy', 'IsolationSourceUBERONBodyPartName', 'IsolationSourceENVOEnvironmentMaterial'}
+# texts that MASST adds to (instead of only filling): the 'Intervention: <type>: <value>' parts of
+# microbiomeMASST are kept next to the submitter's own sample group text
+SUPPLEMENT_APPEND = {'SampleGroupFreeText'}
 # fields that do not depend on what the sample is: filled even when the sample types disagree
 SUPPLEMENT_TYPE_INDEPENDENT = {'ProductCategory', 'Country', 'SampleCollectionDateandTime'}
 # disease fields: MASST tables often give one disease for all files of a study, so a disease is
@@ -464,6 +467,13 @@ def study_level_diseases(masst_rows):
     return out
 
 
+def _parts_not_in(text, have):
+    """the '; '-separated parts of text that `have` does not contain (letters and digits compared)"""
+    norm = lambda t: re.sub(r'[^a-z0-9]+', '', str(t).lower())
+    have = norm(have)
+    return [p.strip() for p in str(text).split(';') if p.strip() and norm(p) and norm(p) not in have]
+
+
 def _says_no_disease(redu):
     if str(redu.get('HealthStatus', '')).strip().lower() == 'healthy':
         return True
@@ -492,7 +502,8 @@ def _sample_type_key(value):
 
 def supplement_from_masst(primary, supplement, columns, study_level=frozenset()):
     """Fills missing fields of `primary` (one row per USI: the submitter/converter rows)
-    from MASST rows of the same USI. Only missing fields are filled; linked fields
+    from MASST rows of the same USI. Only missing fields are filled (SUPPLEMENT_APPEND texts are added
+    to: the MASST parts the row's text does not have); linked fields
     (SUPPLEMENT_GROUPS) only together and only when all of them are missing. Rows where
     ReDU and MASST disagree on blank/QC vs sample are left as they are; where the sample
     types differ, only SUPPLEMENT_TYPE_INDEPENDENT fields are filled; subject fields are
@@ -541,6 +552,14 @@ def supplement_from_masst(primary, supplement, columns, study_level=frozenset())
             if not same_type and head not in SUPPLEMENT_TYPE_INDEPENDENT:
                 continue
             if head in SUPPLEMENT_SUBJECT and not subject_ok:
+                continue
+            if head in SUPPLEMENT_APPEND and not _is_missing(redu.get(head)):
+                extra = _parts_not_in(row.get(head), redu.get(head))
+                if extra:
+                    values[i, col_index[head]] = '; '.join([str(redu[head]).strip()] + extra)
+                    fills.append((row['USI'], head, '; '.join(extra)))
+                    stats[f'appended_{head}'] += 1
+                    filled_any = True
                 continue
             if not all(_is_missing(redu.get(c)) for c in unit):
                 continue

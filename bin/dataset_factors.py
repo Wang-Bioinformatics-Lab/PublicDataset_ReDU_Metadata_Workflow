@@ -8,8 +8,9 @@ folders and extension (gnps_downloader._sample_key):
   - a factor is added only where it tells the sheet's real samples apart (sample_groups.is_real_sample): 2 to n/2
     different values over the n real samples it gives a value, numbers with more than MAX_NUMERIC_LEVELS values
     are measurements (no groups);
-  - columns that stand for a ReDU template column, file / sample / subject identifiers and technical,
-    storage and administrative columns (SKIP_NAME) are left out;
+  - columns that stand for a ReDU template column, file / sample / subject identifiers, cages, dates and
+    technical, storage and administrative columns (SKIP_NAME) are left out, and so are columns whose values are
+    dates or calendar years (_DATE);
   - a file is used when its file-name column names at least MIN_MATCHED_SHARE of the sheet's files;
   - a part whose factor the row's text already has is not added; the sheet's own columns come first, then the
     files by path.
@@ -43,7 +44,13 @@ SKIP_NAME = re.compile(
     r'common name|center|lab code|pf code|animal number|gps|coordinates|bodypart|\bid$|code$|catalog|#|ear tag|'
     r'experimenter|funding|^labels?$|line color|strain number|ibt number|'
     r'^(host )?subject( id)?$|^(host|patient|participant|individual|animal|mouse|donor|person) ?id$|'
-    r'^(patient|participant|individual|donor)$')
+    r'^(patient|participant|individual|donor)$|'
+    # cages (housing, not a group) and dates (SampleCollectionDateandTime, not a group)
+    r'(?<![a-z])(cages?|dates?)(?![a-z])')
+# values that are dates or calendar years ('3/1/19', '2019-03-07', '07-Mar-2019', '2019')
+_DATE = re.compile(r'(?i)(\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\.\d{1,2}\.\d{4}|\d{4}\.\d{1,2}\.\d{1,2})([ t]\d{1,2}:\d{2}(:\d{2})?)?|'
+                   r'\d{1,2}[- ]?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[- ]?\d{2,4}|'
+                   r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2},? \d{4}|(19|20)\d{2}')
 _NUMBER = re.compile(r'-?\d+(?:\.\d+)?(?:e-?\d+)?', re.I)
 
 
@@ -115,6 +122,8 @@ def add_factors(sheet, tables, template_column, sample_key):
             given = [v for v, r in zip(values, real) if v and r]
             levels = len(set(given))
             numeric = sum(bool(_NUMBER.fullmatch(g)) for g in given) >= 0.9 * len(given) if given else False
+            if given and sum(bool(_DATE.fullmatch(g)) for g in given) >= 0.9 * len(given):
+                continue
             if len(given) >= 2 and 2 <= levels <= len(given) / 2 and not (numeric and levels > MAX_NUMERIC_LEVELS):
                 added[name] = values
                 log.append((source, name, len(given), levels))
