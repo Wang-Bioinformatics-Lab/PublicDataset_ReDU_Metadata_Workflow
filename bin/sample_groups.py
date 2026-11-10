@@ -30,9 +30,11 @@ label and goes (MSV000080918: an antibiotic arm of 27 files next to diet arms he
   different labels where there were more is not made, it would wipe the design (ST001714:
   'Parasite Stage' on every sample, 'Concentration: 10X IC50' on the treated ones only: both stay);
 - the texts are kept where the real samples carry at least 2 different labels and the texts on
-  average at least 2 samples per text (as in the converters); otherwise every row of the dataset gets
-  'missing value' (also a single label next to real samples without text). Real samples the source
-  gives no group for keep 'missing value'.
+  average at least 2 samples per text (as in the converters). Where there are more texts than that
+  (one combination of factors per sample, MSV000089070: phylum, class, family, site and season next to
+  LC50 values), only the factors that group samples stay (drop_ungrouping_factors). Where fewer than 2
+  labels are left, every row of the dataset gets 'missing value' (also a single label next to real
+  samples without text). Real samples the source gives no group for keep 'missing value'.
 """
 import collections
 import re
@@ -156,6 +158,39 @@ def study_level_parts(labels):
     return common, set()
 
 
+def _factor_key(part, masst):
+    name, sep, value = part.partition(': ')
+    if not sep:
+        return '', part
+    if masst and name == 'Intervention':
+        itype, _, ivalue = value.partition(': ')
+        return f'Intervention: {itype}', ivalue
+    return name, value
+
+
+def drop_ungrouping_factors(texts, masst):
+    """texts (one per real sample of a dataset, '' for none) without the factors that do not group
+    samples: more different values than half of the samples carrying the factor (at least 1: per-sample
+    IDs, notes and measurements); and a Counter of the reasons"""
+    dropped = collections.Counter()
+    values = collections.defaultdict(list)
+    for t, m in zip(texts, masst):
+        for p in (t.split('; ') if t else []):
+            k, v = _factor_key(p, m)
+            values[k.lower().strip()].append(' '.join(v.lower().split()))
+    drop = set()
+    for k, vs in values.items():
+        levels = len(set(vs))
+        if levels > max(1, len(vs) / 2):
+            drop.add(k)
+            dropped['more values than half of its samples'] += 1
+    if not drop:
+        return texts, dropped
+    out = [('; '.join(p for p in t.split('; ') if _factor_key(p, m)[0].lower().strip() not in drop) if t else t)
+           for t, m in zip(texts, masst)]
+    return pd.Series(out, index=texts.index), dropped
+
+
 def consistent_sample_groups(df, column='SampleGroupFreeText', dataset_column='ATTRIBUTE_DatasetAccession'):
     """See the module docstring. Never removes rows; a second pass changes nothing."""
     if column not in df.columns or len(df) == 0:
@@ -182,8 +217,15 @@ def consistent_sample_groups(df, column='SampleGroupFreeText', dataset_column='A
             guarded.append(dataset)
         n_groups = len({frozenset(s - study) for s in labels if s - study})
         texts = kept[kept != '']
-        if n_groups < 2 or texts.nunique() > len(texts) / 2:
-            stats['datasets_cleared (fewer than 2 groups)' if n_groups < 2 else 'datasets_cleared (texts > half of the samples)'] += 1
+        if n_groups >= 2 and texts.nunique() > len(texts) / 2:
+            # more texts than half of the samples: the factors that group samples (drop_ungrouping_factors)
+            kept, dropped = drop_ungrouping_factors(kept, masst.loc[idx])
+            stats['datasets_only_factors_that_group (texts > half of the samples)'] += 1
+            for reason, n in dropped.items():
+                stats[f'factors_removed ({reason})'] += n
+            n_groups = len({frozenset(part_identity(p, m) for p in t.split('; ')) for t, m in zip(kept, masst.loc[idx]) if t})
+        if n_groups < 2:
+            stats['datasets_cleared (fewer than 2 groups)'] += 1
             stats['real_rows_cleared'] += int((kept != '').sum())
             out.loc[idx] = ''
         else:

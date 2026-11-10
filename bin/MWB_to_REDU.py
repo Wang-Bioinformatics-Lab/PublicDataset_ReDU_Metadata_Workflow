@@ -3729,7 +3729,9 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
     samples (no QC / blanks) form at least 2 groups and at most half as many groups as
     samples. Where there are more groups than that, factors that have a ReDU column of their
     own (_GROUP_KEY_REDU_COLUMN_RE) are dropped first, most groups first, so that keeping them
-    never empties a column the other factors fill. Never removes rows."""
+    never empties a column the other factors fill; where there are still more, the column keeps the
+    factors that group samples (each with at most half as many values as the real samples carrying it),
+    also where together they tell every sample apart. Never removes rows."""
     if column not in df.columns or len(df) == 0:
         return df
     df = df.copy()
@@ -3782,10 +3784,26 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
         text, n_samples, n_groups = texts(dropped | set(too_many))
     if too_many:
         print(f"[SampleGroupFreeText] {study_id}: dropped for too many groups: {too_many}")
+    per_factor = n_groups > n_samples / 2
+    if per_factor:
+        # still too many groups (one combination per sample): instead of none, the factors that group
+        # samples, i.e. without those with more values than half of the real samples carrying them (per-
+        # sample IDs, notes, measurements). MTBLS220: donor / recipient, CMV status, GVHD yes / no
+        ungrouping = []
+        for k in keys:
+            if k in dropped:
+                continue
+            kv = parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None))
+            t = pd.DataFrame({'sid': sid[real], 'v': kv}).dropna().drop_duplicates('sid')
+            if len(t) and t['v'].nunique() > max(1, len(t) / 2):
+                ungrouping.append(k)
+        print(f"[SampleGroupFreeText] {study_id}: too many groups; only the factors that group samples, "
+              f"without: {ungrouping}")
+        text, n_samples, n_groups = texts(dropped | set(ungrouping))
     reason = None
     if n_groups < 2:
         reason = 'fewer than 2 groups'
-    elif n_groups > n_samples / 2:
+    elif n_groups > n_samples / 2 and not per_factor:
         reason = 'groups > half of the samples'
     if dropped:
         print(f"[SampleGroupFreeText] {study_id}: dropped as covered by ReDU columns: {sorted(dropped)}")

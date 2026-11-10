@@ -9,8 +9,10 @@ folders and extension (gnps_downloader._sample_key):
     different values over the n real samples it gives a value, numbers with more than MAX_NUMERIC_LEVELS values
     are measurements (no groups);
   - columns that stand for a ReDU template column, file / sample / subject identifiers, cages, dates and
-    technical, storage and administrative columns (SKIP_NAME) are left out, and so are columns whose values are
-    dates or calendar years (_DATE);
+    technical, storage, sequencing-preparation and administrative columns, numbers as names (SKIP_NAME) and
+    numberings with more than MAX_NUMERIC_LEVELS values (_NUMBERED: identifiers) are left out, and so are
+    columns whose values are dates or calendar years (_DATE) or file names (_FILE_VALUE);
+    values below / above a measurement's range ('LOD') count as numbers;
   - a file is used when its file-name column names at least MIN_MATCHED_SHARE of the sheet's files;
   - a part whose factor the row's text already has is not added; the sheet's own columns come first, then the
     files by path.
@@ -46,12 +48,23 @@ SKIP_NAME = re.compile(
     r'^(host )?subject( id)?$|^(host|patient|participant|individual|animal|mouse|donor|person) ?id$|'
     r'^(patient|participant|individual|donor)$|'
     # cages (housing, not a group) and dates (SampleCollectionDateandTime, not a group)
-    r'(?<![a-z])(cages?|dates?)(?![a-z])')
+    r'(?<![a-z])(cages?|dates?)(?![a-z])|'
+    # numbers as names (feature tables: 'm/z RT' columns), catalogue numbers, sequencing preparation (Qiita)
+    r'^[-\d.\s]+$|(?<![a-z])lot( number)?$|primer|linker|robot|^platform$|^plating$|'
+    r'target (gene|subfragment)|tool$|^project name$|emp status|samp size|assigned from geo|has extracted data|'
+    r'required sample info')
 # values that are dates or calendar years ('3/1/19', '2019-03-07', '07-Mar-2019', '2019')
 _DATE = re.compile(r'(?i)(\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\.\d{1,2}\.\d{4}|\d{4}\.\d{1,2}\.\d{1,2})([ t]\d{1,2}:\d{2}(:\d{2})?)?|'
                    r'\d{1,2}[- ]?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[- ]?\d{2,4}|'
                    r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2},? \d{4}|(19|20)\d{2}')
-_NUMBER = re.compile(r'-?\d+(?:\.\d+)?(?:e-?\d+)?', re.I)
+# a numbering ('Fish Number', 'Museum Number update', 'IBT-number') with more than MAX_NUMERIC_LEVELS values
+# is an identifier ('cohort number' with 3 values is a group)
+_NUMBERED = re.compile(r'(?i)number( update)?$')
+_NUMBER = re.compile(r'[<>]?\s*-?\d+(?:\.\d+)?(?:e-?\d+)?', re.I)
+# values of a measurement below / above the range ('LOD', '<LOQ', 'n.d.'): counted with its numbers
+_CENSORED = re.compile(r'(?i)[<>]?\s*(lod|loq|lld|bld|blq|bdl|nd|n\.d\.|below .*|above .*|not detected)')
+# file names as values (instrument methods, raw files)
+_FILE_VALUE = re.compile(r'(?i)\S+\.(meth|method|raw|mzml|mzxml|d|wiff2?|txt|csv|tsv|xlsx?|m|qgd|lcd)')
 
 
 def factor_name(column):
@@ -121,8 +134,11 @@ def add_factors(sheet, tables, template_column, sample_key):
             values = [by_key.get(k) for k in keys]
             given = [v for v, r in zip(values, real) if v and r]
             levels = len(set(given))
-            numeric = sum(bool(_NUMBER.fullmatch(g)) for g in given) >= 0.9 * len(given) if given else False
-            if given and sum(bool(_DATE.fullmatch(g)) for g in given) >= 0.9 * len(given):
+            numeric = sum(bool(_NUMBER.fullmatch(g) or _CENSORED.fullmatch(g)) for g in given) >= 0.9 * len(given) \
+                if given else False
+            if given and sum(bool(_DATE.fullmatch(g) or _FILE_VALUE.fullmatch(g)) for g in given) >= 0.9 * len(given):
+                continue
+            if levels > MAX_NUMERIC_LEVELS and _NUMBERED.search(name):
                 continue
             if len(given) >= 2 and 2 <= levels <= len(given) / 2 and not (numeric and levels > MAX_NUMERIC_LEVELS):
                 added[name] = values
