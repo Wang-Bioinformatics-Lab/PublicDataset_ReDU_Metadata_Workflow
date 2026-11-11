@@ -259,6 +259,24 @@ def _sample_key(filename):
 FILL_ONLY_MARK = '_fill_only'
 
 
+def _filled_down_accessions(accession, dataset, source=''):
+    """A dataset's sheet whose MassiveID column counts up row by row from the dataset (MSV000100809, MSV000100810,
+    ..., MSV000100844: a spreadsheet cell dragged down) describes the dataset's own files: all its rows are the
+    dataset's. Any other column of accessions is kept."""
+    m = re.fullmatch(r'(R?MSV)(\d+)', str(dataset))
+    if m is None or len(accession) < 3:
+        return accession
+    parts = accession.str.extract(r'^(R?MSV)(\d+)$')
+    if parts[1].isna().any() or (parts[0] != m.group(1)).any():
+        return accession
+    numbers = parts[1].astype(int).tolist()
+    if numbers[0] != int(m.group(2)) or any(b - a != 1 for a, b in zip(numbers, numbers[1:])):
+        return accession
+    print(f"  {source}: MassiveID {accession.iloc[0]} .. {accession.iloc[-1]} counts up row by row (filled down): "
+          f"all {len(accession)} rows are {dataset}'s")
+    return pd.Series(dataset, index=accession.index)
+
+
 def combine_versions(sheets, dataset, template_keys, skip_first=0):
     """Rows from several metadata files of a dataset, given newest first, as (rows, fill-only
     rows), each None if empty. Rows of the newest file are all kept; an older file only adds
@@ -278,7 +296,9 @@ def combine_versions(sheets, dataset, template_keys, skip_first=0):
         df = df.copy()
         accession = df['MassiveID'].fillna('').astype(str).str.strip()
         accession = accession.where(accession.str.match(r'^R?MSV\d+$'), dataset)
-        if rank > 0:
+        filled_down = _filled_down_accessions(accession, dataset, source)
+        if rank > 0 or not filled_down.equals(accession):
+            accession = filled_down
             df['MassiveID'] = accession
         keys = list(zip(accession, df['filename'].map(_sample_key)))
         # rows without a file name (empty template rows) describe nothing

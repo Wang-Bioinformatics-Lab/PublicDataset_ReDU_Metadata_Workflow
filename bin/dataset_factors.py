@@ -258,12 +258,22 @@ def _spelling(values):
     return [best[re.sub(r'\s+', '', v.lower())] if v else v for v in values]
 
 
+# values of yes / no flags (_is_copy)
+_FLAG_VALUES = {'yes', 'no', 'y', 'n', 'true', 'false', '0', '1', 'present', 'absent', 'positive', 'negative', '+', '-',
+                'x'}
+
+
 def _is_copy(values, added, real):
-    """the values (per row) a renaming of an added factor's (the same rows, one to one, at least 3 values)"""
+    """the values (per row) a renaming of an added factor's (the same rows, one to one, at least 3 values), or the
+    added factor's own values on the same rows (any number: 'susceptiblility' of a second metadata file =
+    'susceptibility', High / Low, MSV000089633; not yes / no flags, which several factors share: the drugs of one
+    patient)"""
     for other in added.values():
         pairs = {(a, b) for a, b, r in zip(values, other, real) if r and (a or b)}
         if not pairs or any(not a or not b for a, b in pairs):
             continue
+        if all(a == b for a, b in pairs) and not {a.lower() for a, _ in pairs} <= _FLAG_VALUES:
+            return True
         left, right = collections.defaultdict(set), collections.defaultdict(set)
         for a, b in pairs:
             left[a].add(b)

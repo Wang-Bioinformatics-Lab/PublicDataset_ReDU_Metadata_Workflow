@@ -945,6 +945,23 @@ def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
     _neg = pd.to_numeric(df['negative_polarity_count'], errors='coerce').fillna(0)
     _few_other = np.minimum(_pos, _neg) < 0.05 * (_pos + _neg)
     _ion = df['IonizationSourceAndPolarity'].astype(str)
+    # a file whose every row contradicts its scans (its analysis declares the other polarity: ST002355, declared
+    # positive, all 150 files negative) takes its scans' polarity instead of being dropped; a file that an
+    # analysis of its polarity also lists keeps that row and loses the contradicted ones below
+    _contra = (_ion.str.contains('negative') & (_pos > 0) & ~(_few_other & (_neg > _pos))) | \
+              (_ion.str.contains('positive') & (_neg > 0) & ~(_few_other & (_pos > _neg)))
+    _all_contra = _contra.groupby(df['filename']).transform('all').reindex(df.index).fillna(False).astype(bool)
+    _swap = _all_contra & _few_other & df['filename'].notna()
+    if _swap.any():
+        _to = np.where(_neg > _pos, 'negative', 'positive')
+        _new = pd.Series([re.sub(r'\((?:positive|negative)\)$', f'({t})', i) for i, t in zip(_ion, _to)], index=df.index)
+        _allowed_ion = _allowed_values('IonizationSourceAndPolarity')
+        _swap &= (_new != _ion) & (_new.isin(_allowed_ion) if _allowed_ion else True)
+        if _swap.any():
+            print(f"{df.loc[_swap, 'filename'].nunique()} files of the other polarity than their analysis declares: "
+                  f"polarity taken from their scans")
+            df.loc[_swap, 'IonizationSourceAndPolarity'] = _new[_swap]
+            _ion = df['IonizationSourceAndPolarity'].astype(str)
     df = df[~(_ion.str.contains('negative') & (_pos > 0) & ~(_few_other & (_neg > _pos)))]
     _ion = df['IonizationSourceAndPolarity'].astype(str)
     df = df[~(_ion.str.contains('positive') & (_neg.loc[df.index] > 0) & ~(_few_other.loc[df.index] & (_pos.loc[df.index] > _neg.loc[df.index])))]
@@ -4812,6 +4829,48 @@ def match_unmatched_names_by_prefix(df, raw_file_name_df):
     return df
 
 
+def match_unmatched_names_by_sample_id(df, raw_file_name_df):
+    """After the exact and prefix matches of an analysis' raw file names: a sample whose listed name matched no
+    file gets the one file nothing else matched whose stem is its Sample ID (ST002063: Sample ID
+    '209-10103_LPS-IL_0.raw' and file 'Metabolomics/209-10103_LPS-IL_0.mzXML', while the RAW_FILE_NAME
+    '209-10103_LPS-IL_48.mZXML' was copied from another sample), also up to separators (ST001279: Sample ID
+    'MTZH4DM.1_t3', file 'MTZH4DM-1_t3.raw'). A Sample ID that is the stem of several free files, or of a file
+    another sample's Sample ID or listed name also names, stays unmatched."""
+    if 'USI' not in df.columns or '_sample_id' not in df.columns:
+        return df
+    todo = df['USI'].isna() & df['_sample_id'].notna()
+    if not todo.any():
+        return df
+    claimed = set(df['USI'].dropna())
+    free = raw_file_name_df[~raw_file_name_df['USI'].isin(claimed)]
+    hits = {}
+    for key in (listed_file_stem, lambda n: separator_free_stem(listed_file_stem(n))):
+        by_stem = {}
+        for lbl, base in zip(free.index, free['filename_base'].astype(str)):
+            if lbl not in hits.values():
+                by_stem.setdefault(key(base), []).append(lbl)
+        # the samples each stem names: by Sample ID or by listed name
+        named = {}
+        for r, s in zip(df['filename_raw'].astype(str), df['_sample_id'].astype(str)):
+            for t in (key(r), key(s)):
+                named.setdefault(t, set()).add(s)
+        for s in sorted(set(df.loc[todo, '_sample_id'].astype(str)) - set(hits)):
+            t = key(s)
+            if len(t) >= 4 and len(by_stem.get(t, [])) == 1 and named.get(t, set()) == {s}:
+                hits[s] = by_stem[t][0]
+    if not hits:
+        return df
+    df = df.copy()
+    rows = todo & df['_sample_id'].astype(str).isin(hits)
+    cols = [c for c in raw_file_name_df.columns if c in df.columns]
+    fill = raw_file_name_df.loc[df.loc[rows, '_sample_id'].astype(str).map(hits), cols]
+    fill.index = df.index[rows]
+    for c in cols:
+        df.loc[rows, c] = fill[c]
+    print(f"[rawfile] {len(hits)} samples whose listed raw file name matched no file paired with the file named after their Sample ID")
+    return df
+
+
 def map_potential_matches(df, target_df, target_column, source_columns):
     
     # Temporary storage for potential matches
@@ -6233,6 +6292,16 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         df['_raw_base_lower'] = df['filename_raw'].map(_basename_lower)
         df['_raw_stem'] = df['_raw_base_lower'].str.rsplit('.', n=1).str[0]
         df['_raw_ext']  = df['_raw_base_lower'].str.rsplit('.', n=1).str[-1].fillna('')
+        # a name without extension may hold a dot ('20220526_Trichinella adult 0.1% DMSO_1', ST003974; 'VJ_17.05.17',
+        # ST001751): the whole name is its stem where that is a listed stem and no word with a letter follows the last
+        # dot, if at least half of such names are (ST004836: one of 58 dated names '2023.09.20_..._Celula_01', whose
+        # numbers are off, would leave the others unmatched)
+        _no_ext = df['_raw_base_lower'].str.contains('.', regex=False, na=False) & \
+            ~df['_raw_base_lower'].str.contains(r'\.\s*(?=[a-z0-9]*[a-z])[a-z0-9]{1,10}$', regex=True, na=False)
+        _whole = _no_ext & df['_raw_base_lower'].isin(set(raw_file_name_df['_stem']))
+        if _whole.any() and df.loc[_whole, '_raw_base_lower'].nunique() >= 0.5 * df.loc[_no_ext, '_raw_base_lower'].nunique():
+            df.loc[_whole, '_raw_stem'] = df.loc[_whole, '_raw_base_lower']
+            df.loc[_whole, '_raw_ext'] = ''
 
         df = df.merge(preferred_raw_by_stem, left_on='_raw_stem', right_on='_stem', how='left')
 
@@ -6276,11 +6345,11 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
             print('found filename_raw to filename_base match')
             df = df.merge(raw_file_name_df, left_on='filename_raw', right_on='filename_base', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
-            df = match_unmatched_names_by_prefix(df, raw_file_name_df)
+            df = match_unmatched_names_by_sample_id(match_unmatched_names_by_prefix(df, raw_file_name_df), raw_file_name_df)
         elif bool(set(df['filename_raw_lower']) & set(raw_file_name_df['filename_base_lower'])):
             df = df.merge(raw_file_name_df, left_on='filename_raw_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
-            df = match_unmatched_names_by_prefix(df, raw_file_name_df)
+            df = match_unmatched_names_by_sample_id(match_unmatched_names_by_prefix(df, raw_file_name_df), raw_file_name_df)
         elif bool(set(df['filename_lower']) & set(raw_file_name_df['filename_base_lower'])):
             df = df.merge(raw_file_name_df, left_on='filename_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
