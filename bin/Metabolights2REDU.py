@@ -3333,6 +3333,10 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
     for c in columns:
         key = clean(_ml_key(c))
         nk = _norm_key(key)
+        if key in values:
+            # a second factor of the same name: the first is the factor (MTBLS774 lists the concentration of
+            # 'Drug 2' as another 'Factor Value[Drug 2]')
+            continue
         v = df[c].map(clean)
         if nk and _GROUP_KEY_EXCLUDE_RE.search(nk) and _ML_GROUP_TIME_KEY_RE.search(nk):
             # (the value without its unit: 'Baseline', not 'Baseline hour')
@@ -3510,7 +3514,11 @@ def Metabolights2REDU(study_id, **kwargs):
         _sample_kinds = _table_headers(
             {'fields': {k: dict(f, header=str(f.get('fieldType'))) for k, f in _sample_table['fields'].items()},
              'data': _sample_table['data']}, '')
-        _sample_kind_pos = dict(zip(df_samples.columns, _sample_kinds))
+        # (keyed by the names the study table gets, rename_duplicated_column_names: a factor and a comment of the
+        # same header, MTBLS406 'Factor Value[Relapse]' and 'Comment[Relapse]', are 'Samples_Relapse' and
+        # 'Samples_Relapse_1'; one key for both hid the factor)
+        _sample_kind_pos = dict(zip(rename_duplicated_column_names(pd.DataFrame(columns=df_samples.columns)).columns,
+                                    _sample_kinds))
     
         # Sample names are typed by hand in both sheets; ignore surrounding whitespace
         df_assays['Assay_Sample Name'] = df_assays['Assay_Sample Name'].astype(str).str.strip()

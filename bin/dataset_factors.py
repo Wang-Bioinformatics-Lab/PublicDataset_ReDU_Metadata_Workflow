@@ -79,9 +79,9 @@ SKIP_NAME = re.compile(
     r'^[-\d.\s]+$|(?<![a-z])lot( number)?$|primer|linker|robot|^platform$|^plating$|'
     r'target (gene|subfragment)|tool$|^project name$|emp status|samp size|assigned from geo|has extracted data|'
     r'required sample info')
-# values that are dates ('3/1/19', '2019-03-07', '07-Mar-2019'; not a calendar year '2019': a harvest year is a group)
+# values that are dates ('3/1/19', '2019-03-07', '07-Mar-2019', '1/31/2025 8:45 AM'; not a calendar year '2019': a harvest year is a group)
 _MONTH = r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*'
-_DATE = re.compile(r'(?i)(\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\.\d{1,2}\.\d{4}|\d{4}\.\d{1,2}\.\d{1,2})([ t]\d{1,2}:\d{2}(:\d{2})?)?|'
+_DATE = re.compile(r'(?i)(\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}\.\d{1,2}\.\d{4}|\d{4}\.\d{1,2}\.\d{1,2})([ t]\d{1,2}:\d{2}(:\d{2})?( ?[ap]m)?)?|'
                    r'\d{1,2}[- ]?' + _MONTH + r'[- ]?\d{2,4}|' + _MONTH + r' \d{1,2},? \d{4}|'
                    # day-month without a year: what Excel makes of IDs like 1-1, 10-11 (MSV000083605 '1-Jan')
                    r'\d{1,2}-' + _MONTH + r'|' + _MONTH + r'-\d{1,2}')

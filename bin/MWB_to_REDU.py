@@ -3675,7 +3675,7 @@ _GROUP_REDU_COLUMNS = ['SampleType', 'SampleTypeSub1', 'NCBITaxonomy', 'UBERONBo
 # factor values that are dates or clock times ('2021-11-22T11:22Z', '17/04/2012', '12/31/99 12:00 AM',
 # '00:02:10'): a factor of such values is no group, whatever its name ('Sampling datetime',
 # 'Collection time' of MTBLS2245); calendar years are (a harvest year or a season '2019' is a group), see
-# _measure_like_factors
+# _measure_like_factors, and so are a few times of day (_mostly_dates)
 _DATE_VALUE_RE = re.compile(r'^\s*(?:\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}\S*)?|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}'
                             r'(?:\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?)?|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?)\s*$', re.I)
 # a number with at most a short unit ('21', '0.058 gram', '29.025 degree celsius', '1 x 10-5', '45%')
@@ -3683,10 +3683,18 @@ _NUMERIC_VALUE_RE = re.compile(r'^\s*[<>~]?\s*[-+]?\d+(?:[.,]\d+)?(?:\s*(?:x|\*)
                                r'(?:\s*[-–]\s*\d+(?:[.,]\d+)?)?\s*[^\d\s]{0,4}(?:\s+[A-Za-zµ%/°.]{1,25}){0,3}\s*$')
 
 
+# a clock time alone ('8:00 AM', '17:00:00')
+_CLOCK_VALUE_RE = re.compile(r'^\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?\s*$', re.I)
+
+
 def _mostly_dates(values):
-    """Whether at least 80% of the (two or more) filled values are dates or clock times."""
+    """Whether at least 80% of the (two or more) filled values are dates or clock times; not clock times
+    alone with at most MAX_NUMERIC_LEVELS values: times of day a study samples at are groups (MTBLS14075
+    'Time: 4:00 AM / 8:00 AM / 1:00 PM / 7:00 PM', MTBLS3038 'Sampling time')."""
     vals = [str(v).strip() for v in values if str(v).strip().lower() not in _GROUP_NA_VALUES]
-    return len(vals) >= 2 and sum(bool(_DATE_VALUE_RE.match(v)) for v in vals) >= 0.8 * len(vals)
+    if len(vals) < 2 or sum(bool(_DATE_VALUE_RE.match(v)) for v in vals) < 0.8 * len(vals):
+        return False
+    return not (all(_CLOCK_VALUE_RE.match(v) for v in vals) and len(set(vals)) <= MAX_NUMERIC_LEVELS)
 
 
 def _case_canon(values):
@@ -3870,7 +3878,8 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
     as many groups as samples. Where there are more groups than that, a factor with more values
     than half of its samples first keeps only its values of three samples at least
     (_repeated_values); then the factors that have a ReDU column of their own
-    (_GROUP_KEY_REDU_COLUMN_RE) are dropped, most groups first, so that keeping them never empties
+    (_GROUP_KEY_REDU_COLUMN_RE; not where the ReDU columns are the same on all its samples, then no column
+    holds it) are dropped, most groups first, so that keeping them never empties
     a column the other factors fill; where that would drop such a factor the ReDU columns do not
     hold, measurement- and ID-like factors go before it (_measure_like_factors); where there are
     still more, the column keeps the factors that group samples (each with at most half as many
@@ -3943,9 +3952,16 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
             text, n_samples, n_groups = texts(dropped)
     # then leave out the kept factors that have a ReDU column, most levels first (the factors the ReDU columns
     # partly tell apart first)
-    spare = [k for k in keys if k not in dropped and (k in partly_covered or _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k)))]
+    # (a factor with such a name over samples whose ReDU columns are all the same is held by no column: it stays,
+    # ST003696 'Sample source: OMVs / Whole cells' of one bacterial culture, MTBLS1187 'Location' of one crop)
+    def redu_varies(k):
+        t = pd.DataFrame({'redu': redu_tuple[real], 'v': value_of(k)}).dropna()
+        return t['redu'].nunique() > 1
+    named = [k for k in keys if k not in dropped and (k in partly_covered or _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k)))]
+    spare = [k for k in named if k in partly_covered or redu_varies(k)]
     levels = {k: value_of(k).nunique() for k in keys if k not in dropped}
-    order = sorted(spare, key=lambda k: (k not in partly_covered, -levels[k]))
+    by_levels = lambda ks: sorted(ks, key=lambda k: (k not in partly_covered, -levels[k]))
+    order = by_levels(spare)
 
     def leave_out(candidates, out, text, n_samples, n_groups):
         for k in candidates:
@@ -3956,24 +3972,24 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
             out.append(k)
             text, n_samples, n_groups = texts(dropped | set(out))
         return out, text, n_samples, n_groups
-    too_many, *_ = leave_out(order, [], text, n_samples, n_groups)
-    if any(k not in partly_covered for k in too_many):
-        # that would drop a factor the ReDU columns do not hold (MTBLS7560 'Timepoint' for 'Sample pairs',
-        # ST004265 site and season for 'Temp'): measurement- and ID-like factors go first
+    first = []
+    if any(k not in partly_covered for k in leave_out(by_levels(named), [], text, n_samples, n_groups)[0]):
+        # that would drop a factor the ReDU columns do not hold, or one with the name of a ReDU column
+        # (MTBLS7560 'Timepoint' for 'Sample pairs', ST004265 site and season for 'Temp', MTBLS1187 'Location'
+        # for 'Weight'): measurement- and ID-like factors go first
         first, text, n_samples, n_groups = leave_out(_measure_like_factors(keys, dropped, levels, per_sample), [],
                                                      text, n_samples, n_groups)
         if first:
             print(f"[SampleGroupFreeText] {study_id}: too many groups, measurement / ID-like factors left out first: {first}")
-        too_many, text, n_samples, n_groups = leave_out(order, first, text, n_samples, n_groups)
-    else:
-        too_many, text, n_samples, n_groups = leave_out(order, [], text, n_samples, n_groups)
+    too_many, text, n_samples, n_groups = leave_out(order, list(first), text, n_samples, n_groups)
     if too_many:
         print(f"[SampleGroupFreeText] {study_id}: dropped for too many groups: {too_many}")
     per_factor = n_groups > n_samples / 2
     if per_factor:
         # still too many groups (one combination per sample): instead of none, the factors that group
         # samples, i.e. without those with more values than half of the real samples carrying them (per-
-        # sample IDs, notes, measurements). MTBLS220: donor / recipient, CMV status, GVHD yes / no
+        # sample IDs, notes, measurements) and the measurement- and ID-like ones left out above.
+        # MTBLS220: donor / recipient, CMV status, GVHD yes / no
         ungrouping = []
         for k in keys:
             if k in dropped:
@@ -3982,8 +3998,8 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
             if len(t) and t['v'].nunique() > max(1, len(t) / 2):
                 ungrouping.append(k)
         print(f"[SampleGroupFreeText] {study_id}: too many groups; only the factors that group samples, "
-              f"without: {ungrouping}")
-        text, n_samples, n_groups = texts(dropped | set(ungrouping))
+              f"without: {ungrouping + [k for k in first if k not in ungrouping]}")
+        text, n_samples, n_groups = texts(dropped | set(ungrouping) | set(first))
     reason = None
     if n_groups < 2:
         reason = 'fewer than 2 groups'
@@ -6669,8 +6685,11 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                                                "diet_group"], new_col="MWB_diet")
     df = get_key_info_into_outer(df, key_vars=["collection_country", "collection country", "country", "site", "location", "country_of_origin"],
                                  new_col="Country")
-    df = get_key_info_into_outer(df, key_vars=["latitude", "lat", "lat_dd", "decimal latitude", "latitude (decimal degrees)"], new_col="Latitude")
-    df = get_key_info_into_outer(df, key_vars=["longitude", "lon", "long", "lon_dd", "decimal longitude", "longitude (decimal degrees)"], new_col="Longitude")
+    # (also with a qualifier: ST004352 'lat_collected' / 'lon_collected'; values that are no numbers stay empty)
+    df = get_key_info_into_outer(df, key_vars=["latitude", "lat", "lat_dd", "decimal latitude", "latitude (decimal degrees)"], new_col="Latitude",
+                                 key_regex=r'^(?:lat|latitude)_(?:collected|collection|sampled|sampling|site|station|start)$')
+    df = get_key_info_into_outer(df, key_vars=["longitude", "lon", "long", "lon_dd", "decimal longitude", "longitude (decimal degrees)"], new_col="Longitude",
+                                 key_regex=r'^(?:lon|long|longitude)_(?:collected|collection|sampled|sampling|site|station|start)$')
 
     # extra per-sample fields (depth, collection date, health, life stage); a problem
     # here must never cost the study its rows
