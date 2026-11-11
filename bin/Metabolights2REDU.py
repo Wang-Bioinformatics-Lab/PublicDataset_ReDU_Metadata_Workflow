@@ -365,13 +365,13 @@ _NOT_A_SUBJECT = re.compile(r'\b(?:qc|quality control|pool(?:ed)?|blank|standard
 _DATE_COLUMNS = re.compile(r'Samples_(?:collection date|sample collection date|sampling date|sample date|date of sampling'
                            r'|date of collection|date of sample collection|sampling datetime|collection datetime'
                            r'|sampling date and time|collection date and time|utc date and time|utc sampling time'
-                           r'|harvest date|harvest year|harvesting date|year of harvest|year of harvesting'
+                           r'|harvest date|harvest time|harvest year|harvesting date|year of harvest|year of harvesting|sampling day'
                            r'|year of collection|collection year|sampling year|sampling year date)(?:_\d+)?$', re.I)
 
 
 def _collection_dates(series):
     """ISO-8601 collection dates (precision kept) for one column, None where not parseable.
-    Dotted dates are day-first (d.m.Y). Slash/dash day-month dates are only used when the
+    Dotted dates are day-first (d.m.Y; a 2-digit year is 20yy). Slash/dash day-month dates are only used when the
     column itself shows the order (a field > 12); otherwise they are left out."""
     values = series.astype(str).str.strip()
     slash = values.str.extract(r'^(\d{1,2})[/-](\d{1,2})[/-]\d{2,4}(?:\s|T|$)').dropna().astype(int)
@@ -381,9 +381,10 @@ def _collection_dates(series):
     def one(v):
         if not v or v.lower() in _MISSING_VALUES:
             return None
-        m = re.fullmatch(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', v)
+        m = re.fullmatch(r'(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})', v)
         if m:
-            v = f'{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}'
+            year = m.group(3) if len(m.group(3)) == 4 else '20' + m.group(3)
+            v = f'{year}-{int(m.group(2)):02d}-{int(m.group(1)):02d}'
         elif re.match(r'\d{1,2}[/-]\d{1,2}[/-]\d', v):
             if dmy == mdy:
                 return None
