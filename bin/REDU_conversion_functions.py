@@ -672,6 +672,68 @@ def ncbi_name_fallback(text, term_of_id, exact=None):
     return (term, 'typo') if term else (None, None)
 
 
+# ---- microbial communities ---------------------------------------------------------------------------------------
+# An organism text that describes a microbial community instead of naming a taxon ('Biofilm microbial community' of
+# ST002807, 'soil biocrust' of MTBLS492) names the NCBI metagenome taxon of its habitat where names.dmp has one
+# ('biofilm metagenome' 718308, 'biocrust metagenome' 1710357, 'microbial mat metagenome' 527640, 'soil metagenome'
+# 410658 for 'soil microbial community'), else 'metagenome' (256318) where it says community, consortium,
+# microbiome or microbiota; get_taxonomy_info gives the ecological metagenomes SampleType 'environmental'. The
+# ENVO material of such a community (community_envo_material) where ENVO has one.
+_COMMUNITY_RE = re.compile(r'\b(?:community|communities|consortium|consortia|assemblage|microbiomes?|microbiota|'
+                           r'metagenome)\b')
+_COMMUNITY_MODIFIER_RE = re.compile(r'\b(?:microbial|microbe|microbes|bacterial|mixed|natural|environmental|'
+                                    r'sample|samples)\b')
+# (pattern of the text, NCBI name of the community, ENVO material label)
+_COMMUNITY_HABITATS = (
+    (r'\bbio-?crusts?\b|\b(?:biological |cryptogamic )?soil crusts?\b', 'biocrust metagenome', 'soil'),
+    (r'\bbiofilms?\b|\bmicrobial films?\b', 'biofilm metagenome', 'biofilm material'),
+    (r'\bmicrobial mats?\b', 'microbial mat metagenome', 'microbial mat material'),
+    (r'\b(?:synthetic|mock|defined) (?:microbial |bacterial )?communit(?:y|ies)\b', 'synthetic microbial community',
+     'mock community culture'),
+)
+
+
+def community_metagenome_term(text, term_of_id):
+    """(allowed 'ID|Name' term, 'microbial community') of an organism text that describes a microbial community (see
+    the block comment above), else (None, None); term_of_id(ID as str): the allowed term of a taxon ID or None.
+    Needs the pinned taxonomy (use_pinned_ncbi_taxonomy)."""
+    if _PINNED_LINEAGE is None or not isinstance(text, str):
+        return None, None
+    norm = ' '.join(text.lower().split())
+    names = [name for pattern, name, _ in _COMMUNITY_HABITATS if re.search(pattern, norm)]
+    if not names and _COMMUNITY_RE.search(norm):
+        # the habitat, also without its first words ('Maize Rhizosphere Microbiome': rhizosphere metagenome)
+        habitat = _COMMUNITY_MODIFIER_RE.sub(' ', _COMMUNITY_RE.sub(' ', norm)).split()
+        names = [' '.join(habitat[i:]) + ' metagenome' for i in range(len(habitat))] + ['metagenome']
+    for name in names:
+        taxon = _named_taxon(name) if name != 'metagenome' else 256318
+        term = term_of_id(str(taxon)) if taxon is not None else None
+        if term:
+            return term, 'microbial community'
+    return None, None
+
+
+def is_community_term(term):
+    """Whether an 'ID|Name' NCBITaxonomy term is a community of organisms rather than one: a metagenome or a mixed
+    culture taxon of NCBI's unclassified sequences (pinned taxonomy only)."""
+    if _PINNED_LINEAGE is None or not isinstance(term, str) or '|' not in term:
+        return False
+    lineage = _PINNED_LINEAGE.lineage(term.split('|', 1)[0].strip())
+    return bool(lineage) and ('metagenomes' in lineage or 'mixed culture' in lineage)
+
+
+def community_envo_material(text, allowed_materials):
+    """The allowed ENVOEnvironmentMaterial label of the microbial community an organism / sample text describes
+    ('soil biocrust' -> soil, 'Microbial biofilm' -> biofilm material), else None."""
+    if not isinstance(text, str):
+        return None
+    norm = ' '.join(text.lower().split())
+    for pattern, _, material in _COMMUNITY_HABITATS:
+        if re.search(pattern, norm) and material in allowed_materials:
+            return material
+    return None
+
+
 # ---- 'Genus sp. <designation>' ------------------------------------------------------------------------------------
 # NCBI names many unnamed species by the designation of a strain, isolate or clone after 'sp.' ('Synechocystis sp.
 # PCC 6803', 'Streptomyces sp. CNQ-509'): a text or 'ID|Name' naming such an allowed taxon names that organism
@@ -1007,7 +1069,23 @@ def _get_ncbi_lineage(ncbi_id, retries=3):
         return None
 
 
+# Eukaryotes that are no plant, animal or fungus (NCBI: no Viridiplantae, Metazoa or Fungi in the lineage):
+# red and brown algae are 'algae'; the photosynthetic protists (diatoms and the other Ochrophyta, haptophytes,
+# dinoflagellates, euglenids, cryptophytes, chlorarachniophytes, glaucophytes) 'microalgae', as the green
+# microalgae (Chlorophyta) are; the other protists (Plasmodium, Toxoplasma, Trypanosoma, Leishmania, ...)
+# 'culture_protist', as bacteria and fungi named by their taxon are 'culture_bacterial' / 'culture_fungal'.
+# Eukaryotic 'environmental samples' and the ecological metagenomes ('biofilm metagenome', 'soil
+# metagenome'; not the organismal ones such as 'human gut metagenome', whose samples are their host's) are
+# 'environmental'; a 'mixed culture' taxon ('synthetic microbial community') a culture of several species.
+_ALGAE_LINEAGE = frozenset({'rhodophyta', 'phaeophyceae'})
+_MICROALGAE_LINEAGE = frozenset({'ochrophyta', 'bacillariophyta', 'haptophyta', 'dinophyceae', 'euglenida',
+                                 'cryptophyceae', 'chlorarachniophyceae', 'glaucocystophyceae'})
+PROTIST_CULTURE = 'culture_protist'
+
+
 def _sample_type_from_lineage(classification, cell_culture_key1='', cell_culture_key2=''):
+    """[SampleType, SampleTypeSub1] of a taxon from its lower-cased lineage (the taxon's own name last where
+    get_taxonomy_info adds it: '2|Bacteria' has the lineage 'cellular organisms' only), else [None, None]."""
     cell_culture_key_words = ["cell", "media", "culture"]
     SampleType = None
     SampleTypeSub1 = None
@@ -1049,6 +1127,27 @@ def _sample_type_from_lineage(classification, cell_culture_key1='', cell_culture
     elif "bacteria" in classification:
         SampleType = "culture_bacterial"
         SampleTypeSub1 = "culture_bacterial"
+    elif "archaea" in classification:
+        SampleType = "archaea"
+    elif "eukaryota" in classification and classification[-1] != "eukaryota":
+        # (not '2759|Eukaryota' itself, any eukaryote)
+        lineage = set(classification)
+        if "environmental samples" in lineage:
+            SampleType = "environmental"
+        elif lineage & _ALGAE_LINEAGE:
+            SampleType = "algae"
+        elif lineage & _MICROALGAE_LINEAGE:
+            SampleType = "microalgae"
+            if "bacillariophyta" in lineage:
+                SampleTypeSub1 = "marine_diatom"
+        else:
+            SampleType = PROTIST_CULTURE
+            SampleTypeSub1 = PROTIST_CULTURE
+    elif "metagenomes" in classification and "organismal metagenomes" not in classification:
+        SampleType = "environmental"
+    elif "mixed culture" in classification:
+        SampleType = "culture_multiplespecies"
+        SampleTypeSub1 = "culture_multiplespecies"
     return [SampleType, SampleTypeSub1]
 
 
@@ -1060,6 +1159,13 @@ def get_taxonomy_info(ncbi_id, cell_culture_key1 = '', cell_culture_key2 = ''):
             classification = _PINNED_LINEAGE.lineage(ncbi_id)
             if classification is None:
                 return [None, None]
+            # the taxon's own name too (the lineage holds its ancestors only: '2|Bacteria', '2157|Archaea')
+            try:
+                own = _PINNED_LINEAGE.names.get(_PINNED_LINEAGE.taxonomy.resolve(int(str(ncbi_id).strip())))
+            except ValueError:
+                own = None
+            if own:
+                classification = classification + (own.lower(),)
             try:
                 return _sample_type_from_lineage(classification, cell_culture_key1, cell_culture_key2)
             except Exception as e:
@@ -1084,7 +1190,7 @@ ORGANISM_LIST = re.compile(r'[;,+&]|\band\b|(?<=[A-Za-z]{2})\s*/\s*(?=[A-Za-z]{2
 
 
 # culture types of one organism; a sample of organisms of several of them is a culture of several species
-_CULTURE_SAMPLE_TYPES = frozenset({'culture_bacterial', 'culture_fungal', 'culture_mammalian'})
+_CULTURE_SAMPLE_TYPES = frozenset({'culture_bacterial', 'culture_fungal', 'culture_mammalian', PROTIST_CULTURE})
 MULTIPLE_SPECIES_CULTURE = 'culture_multiplespecies'
 
 

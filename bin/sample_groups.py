@@ -21,7 +21,11 @@ parts were moved into (Diet, FastingStatus, Exposure, InternalStandardsUsed) do 
 groups are the texts shown: one text next to samples whose groups now sit only in Diet is a single
 label and goes (MSV000080918: an antibiotic arm of 27 files next to diet arms held in Diet).
 - blanks, QCs, standards, reference material and personal care products get 'missing value': their
-  SampleType says what they are;
+  SampleType says what they are. Except in a dataset without real samples: there its reference material
+  and personal care product rows (OBJECT_TYPES) are the samples whose groups count (MSV000086988: NIST
+  human fecal material of omnivore and vegetarian donors; MSV000083605: tablets of 6 drugs). Not standards
+  (their factors are amounts, concentrations, adducts, collision energies), and not reference materials next
+  to real samples (there they are QCs of the study);
 - a part that every real sample of the dataset has, with or without other parts, is the same
   across all samples: a property of the study, not a group (MTBLS2776 'Treatment: caffeine', the
   antibiotics of MSV000083777): removed from all rows of the dataset. A part some real sample lacks
@@ -44,6 +48,28 @@ import pandas as pd
 MISSING = 'missing value'
 _NA_TEXT = {'', 'nan', 'none', 'missing value', 'not applicable', 'not specified'}
 _NOT_REAL_TYPES = {'pool_QC', 'reference material', 'personal care product', 'molecular_standards'}
+# rows that are the samples of a dataset without real samples (consistent_sample_groups, dataset_factors.py)
+OBJECT_TYPES = {'reference material', 'personal care product'}
+
+
+# fields that do not describe the sample: the file, the dataset, the group text (it is no field ReDU fills), subject
+# identifiers, and the instrument, chromatography and internal standards of the analysis. A row needs a value of
+# another field (sample_metadata_columns; read_and_validate_redu_from_github.complete_and_fill_REDU_table, and
+# merge_metadata.py for the GNPS rows kept only for their group text). (Before 2026-11-10 the rule counted 23 named fields; the fields it now
+# also counts: ProductCategory, FoodOntologyTerm, MetabolicLabelingTracer, TermsofPosition, SmokingStatus,
+# SmokingPackYears, BodyMassIndex, Diet, TimePointHoursRelativeToEvent, FastingStatus, ColonizationStatus,
+# CellLine, SampleCollectionDateandTime, ENVOBroadScale, ENVOLocalScale, ENVOMediumScale.)
+NOT_SAMPLE_METADATA = {'MassiveID', 'filename', 'USI', 'DataSource', 'SampleGroupFreeText', 'SubjectIdentifierAsRecorded',
+                       'UniqueSubjectID', 'qiita_sample_name', 'YearOfAnalysis', 'MassSpectrometer',
+                       'IonizationSourceAndPolarity', 'ChromatographyAndPhase', 'InternalStandardsUsed'}
+
+
+def sample_metadata_columns(allowedTerm_dict):
+    """The ReDU fields a row needs one value of (complete_and_fill_REDU_table): all template fields but
+    NOT_SAMPLE_METADATA and the generated ones (indices, ranks, derived fields: they follow from another
+    field), LifeStage (generated from the age, or the submitter's) included"""
+    return [k for k, v in allowedTerm_dict.items()
+            if k not in NOT_SAMPLE_METADATA and (v.get('generate') != 'True' or k == 'LifeStage')]
 
 
 def norm(text):
@@ -200,6 +226,11 @@ def consistent_sample_groups(df, column='SampleGroupFreeText', dataset_column='A
     text = df[column].fillna('').astype(str).str.strip()
     text = text.where(~text.str.lower().isin(_NA_TEXT), '')
     real = df['SampleType'].map(is_real_sample)
+    # a dataset without real samples: its reference material / personal care product rows are its samples
+    objects = df['SampleType'].fillna('').astype(str).str.strip().isin(OBJECT_TYPES)
+    without_real = ~df[dataset_column].isin(df.loc[real, dataset_column].unique())
+    stats['datasets_without_real_samples_objects_as_samples'] = int(df.loc[objects & without_real, dataset_column].nunique())
+    real = real | (objects & without_real)
     masst = masst_rows(df)
     stats['non_real_rows_cleared'] = int(((~real) & (text != '')).sum())
     out = text.where(real, '')

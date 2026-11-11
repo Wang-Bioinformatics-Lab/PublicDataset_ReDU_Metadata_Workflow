@@ -25,7 +25,7 @@ from REDU_conversion_functions import map_instrument_to_allowed
 from REDU_conversion_functions import convert_smoking, bmi_to_numeric, convert_diet, food_ontology_term, packyears_to_numeric
 from REDU_conversion_functions import normalize_redu_datetime
 from REDU_conversion_functions import multi_sample_type, ORGANISM_LIST
-from REDU_conversion_functions import sp_name_term, bare_sp_id_term
+from REDU_conversion_functions import sp_name_term, bare_sp_id_term, community_envo_material, is_community_term
 # several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
 from ncbi_database import all_parts_series, is_multi, join_parts, single_taxid, single_taxid_series, taxonomy_parts
 from ms_instrument_matching import match_mass_spectrometer
@@ -37,7 +37,7 @@ from water_kind import water_kind_of_unstated_water
 from MWB_to_REDU import (_norm_key, _TP_UNIT_WORDS, timepoint_key_tier, timepoint_hours, _timepoint_key_unit,
                          sample_timepoint_hours, sample_fasting_status,
                          _GROUP_KEY_EXCLUDE_RE, _GROUP_KEY_NOT_GROUP_RE, _GROUP_KEY_REDU_COLUMN_RE, _GROUP_ID_KEY_RE, _GROUP_NA_VALUES, _GROUP_SID, _GROUP_KV, _GROUP_PART,
-                         finalize_sample_groups)
+                         finalize_sample_groups, unify_group_sids, _mostly_dates, _case_canon, _repeated_values)
 
 
 
@@ -284,7 +284,8 @@ def culture_media_blank_rows(organism_part):
 # of collection' are left to the exact-name match above: in MetaboLights they describe the
 # provenance of germplasm accessions (cultivar/landrace origin), not where the analysed
 # sample was collected.
-_COUNTRY_CODE_COLUMNS = re.compile(r'Samples_(?:country|country of sampling|sampling country|geographic(?:al)? location)(?:_\d+)?$', re.I)
+_COUNTRY_CODE_COLUMNS = re.compile(r'Samples_(?:country|country of (?:sample )?(?:sampling|collection)|(?:sampling|collection) country|'
+                                   r'geographic(?:al)? location)(?:_\d+)?$', re.I)
 
 
 def _country_term(value, vocab, aliases):
@@ -2080,8 +2081,9 @@ def ml_organism_fallback(text, allowedTerm_dict, organism_aliases=None, study_id
     """Allowed term of an organism text that neither the allowed names nor the alias sheet resolve: other white
     space (a no-break space), a strain designation at the end ('... ATCC 31916'), one wrong character
     ('Arbidopsis thaliana'); see
-    REDU_conversion_functions.ncbi_name_fallback (pinned taxonomy only). Else None. Each text is looked up and
-    logged once per study."""
+    REDU_conversion_functions.ncbi_name_fallback (pinned taxonomy only); the metagenome of a microbial community
+    (REDU_conversion_functions.community_metagenome_term). Else None. Each text is looked up and logged once per
+    study."""
     if not isinstance(text, str) or not text.strip():
         return None
     key = (study_id, text)
@@ -2093,6 +2095,9 @@ def ml_organism_fallback(text, allowedTerm_dict, organism_aliases=None, study_id
         def exact(name):
             return by_name.get(name.lower()) or aliases.get(name.strip().lower())
         term, how = REDU_conversion_functions.ncbi_name_fallback(text, _ncbi_term_by_id(allowedTerm_dict).get, exact)
+        if term is None:
+            # a microbial community ('soil biocrust': biocrust metagenome)
+            term, how = REDU_conversion_functions.community_metagenome_term(text, _ncbi_term_by_id(allowedTerm_dict).get)
         if term:
             print(f"[NCBITaxonomy] {study_id}: organism text {text!r} read as {term} ({how})")
         _organism_fallback_memo[key] = term
@@ -3305,7 +3310,9 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
     """Per-row sample group in the internal form of finalize_sample_groups (sample ID,
     then 'factor -> value' parts) from the Factor Value columns, in the study's factor
     order and wording (values with their unit). Factors that are no groups (Workbench rules)
-    and factors with a different value for nearly every sample are left out; factors that
+    and factors of dates are left out; values that differ only in letter case are one value; of a
+    factor with a different value for nearly every sample only the values of three samples at least
+    stay (MWB_to_REDU._repeated_values), else it is left out; factors that
     have a ReDU column of their own stay until finalize_sample_groups checks them. Of a
     time factor, the values naming a sampling before the intervention ('Visit: Baseline') stay where another factor names a diet (gfop: GFOP label
     index of diet_columns.gfop_index): the final table's diet pass (diet_columns.py) then does
@@ -3337,6 +3344,14 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
             unit = df[uc].map(clean).where(~_is_missing(df[uc]), '')
             v = v.where(unit == '', v + ' ' + unit)
         v = v.where(~v.str.lower().isin(_ML_GROUP_NA_VALUES) & ~_is_missing(df[c]))
+        if nk and _mostly_dates(df[c].map(clean).where(v.notna()).dropna().unique()):
+            print(f"[SampleGroupFreeText] {study_id}: factor {key!r}: dates / clock times, left out")
+            drop.append(key)
+            continue
+        # values that differ only in letter case are one ('AMB cure' / 'AmB cure')
+        if v.notna().any():
+            canon = _case_canon(v.dropna())
+            v = v.map(lambda x: canon.get(' '.join(x.lower().split()), x) if isinstance(x, str) else x)
         if not nk or _GROUP_KEY_NOT_GROUP_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) or _ML_GROUP_ID_KEY_RE.search(nk) \
                 or _ML_GROUP_TECH_KEY_RE.search(nk):
             drop.append(key)
@@ -3350,16 +3365,29 @@ def ml_sample_group_texts(df, factor_columns, factor_order=(), sample_column='Sa
                 continue
         per_sample = pd.DataFrame({'sid': sid, 'v': v}).dropna().drop_duplicates()
         if n >= 8 and per_sample['v'].nunique() >= 0.9 * n:
-            drop.append(key)
-            continue
+            keep = _repeated_values(list(per_sample.drop_duplicates('sid')['v']))
+            if keep is None:
+                drop.append(key)
+                continue
+            print(f"[SampleGroupFreeText] {study_id}: factor {key!r}: {per_sample['v'].nunique()} values for {n} samples, "
+                  f"only those of 3 samples at least kept: {sorted(keep)[:6]}")
+            v = v.where(v.isin(keep))
         values[key] = v
     # a factor with a ReDU column of its own whose value differs between the rows of one sample
     # (MTBLS209 'tissue': berry flesh / seeds / peel extracts of one sample name) describes the
     # extracts, not the sample's group: left out, so that the sample keeps its other factors
-    # (the one-text-per-sample rule below would otherwise give the sample none)
+    # (the one-text-per-sample rule below would otherwise give the sample none); where it differs in a few
+    # samples only (at most 5%: MTBLS865 'Site', two sites for one blank of 376 samples), it is left out
+    # on these samples only
     for key in [k for k in values if _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k))]:
         per_sample = pd.DataFrame({'sid': sid, 'v': values[key]}).dropna()
-        if len(per_sample) and (per_sample.groupby('sid')['v'].nunique() > 1).any():
+        n_values = per_sample.groupby('sid')['v'].nunique() if len(per_sample) else pd.Series(dtype=int)
+        if (n_values > 1).any():
+            if (n_values > 1).sum() <= 0.05 * len(n_values):
+                values[key] = values[key].where(~sid.isin(set(n_values.index[n_values > 1])))
+                print(f"[SampleGroupFreeText] {study_id}: factor {key!r} differs within {int((n_values > 1).sum())} "
+                      f"of {len(n_values)} samples: left out on these only")
+                continue
             values.pop(key)
             drop.append(key)
     # a time factor kept whole needs no separate before-the-intervention values
@@ -3520,7 +3548,8 @@ def Metabolights2REDU(study_id, **kwargs):
         file_dfs = []
         for col in file_columns:
             df_files = df_study[df_study[col].str.contains(r'\.', regex=True, na=False)].copy()
-            df_files['filepath'] = df_files[col]
+            # (blanks around a file name: 'N_X_1.mzML ' in MTBLS10792)
+            df_files['filepath'] = df_files[col].astype(str).str.strip()
             df_files = df_files.drop(columns=file_columns)
             print(f'Assay table has {len(df_files)} rows and {len(df_files.columns)} columns.')
             if len(df_files) > 0:
@@ -3797,6 +3826,12 @@ def Metabolights2REDU(study_id, **kwargs):
                             updated_species_dict[key] = match_norm[0] if match_norm.size > 0 else 'missing value'
 
                 df_study.loc[:, 'ENVOEnvironmentMaterial'] = df_study['Samples_Organism'].map(updated_species_dict)
+                # the material of a microbial community the organism text describes ('soil biocrust': soil;
+                # REDU_conversion_functions.community_envo_material), where no ENVO label matched
+                _materials = set((allowedTerm_dict.get('ENVOEnvironmentMaterial') or {}).get('allowed_values') or [])
+                _community = df_study['Samples_Organism'].map(lambda v: community_envo_material(v, _materials))
+                _need = _is_missing(df_study['ENVOEnvironmentMaterial'].fillna('missing value')) & _community.notna()
+                df_study.loc[_need, 'ENVOEnvironmentMaterial'] = _community[_need]
 
 
                 #add ENV biome column
@@ -4241,7 +4276,9 @@ def Metabolights2REDU(study_id, **kwargs):
                 _anatomy = _uberon_lookups(ontology_table, allowedTerm_dict)['anatomy']
                 _part = df_study['Samples_Organism part'].astype(str).str.strip().str.lower()
                 _m = _part.map(lambda v: None if v in _anatomy or v in ('plasma', 'cell culture') else _envm_vocab.get(v))
-                _ok = (_is_missing(df_study['NCBITaxonomy']) | df_study['NCBITaxonomy'].astype(str).str.startswith('2582415|')) & df_study['_qc_label'].isna()
+                # (also where the organism is a community: 'microbial community' read as metagenome)
+                _ok = (_is_missing(df_study['NCBITaxonomy']) | df_study['NCBITaxonomy'].astype(str).str.startswith('2582415|')
+                       | df_study['NCBITaxonomy'].map(is_community_term)) & df_study['_qc_label'].isna()
                 if 'ENVOEnvironmentMaterial' not in df_study.columns:
                     df_study['ENVOEnvironmentMaterial'] = 'missing value'
                 _need = _is_missing(df_study['ENVOEnvironmentMaterial']) & _m.notna() & _ok
@@ -4749,6 +4786,8 @@ def Metabolights2REDU(study_id, **kwargs):
             
             ontology_table = ontology_table.drop_duplicates(subset=['Label'])
             df_study = df_study.drop(columns=['_pair_dropped'], errors='ignore')
+            # a file listed under sample names of the same factors keeps its group (unify_group_sids)
+            df_study = unify_group_sids(df_study, study_id=study_id)
             df_study = merge_repeated_fileobservations(df_study)
             # HPO and exposure tables (one row per label) so complete_and_fill_REDU_table can generate their indexes
             _index_tables = {}

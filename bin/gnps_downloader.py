@@ -143,12 +143,20 @@ LEGACY_ALIASES = {
 }
 
 
-# The other metadata files of the datasets that have a sheet (dataset_factors.py): tabular files with 'metadata' in
-# their path, outside MassIVE's own ccms_* folders, in any folder (e.g. other/, methods/: 131 of the 292 such
-# files of the 126 datasets of the run15b missing-metadata report were outside metadata/ and updates/)
+# The other metadata files of the MassIVE datasets (dataset_factors.py): tabular files with 'metadata' in their path,
+# outside MassIVE's own ccms_* folders, in any folder (e.g. other/, methods/: 131 of the 292 such files of the 126
+# datasets of the run15b missing-metadata report were outside metadata/ and updates/). Datasets with a sheet use
+# them up to MAX_SHEET_BYTES; datasets without one (their rows come from MASST: 626 MassIVE datasets in run 18,
+# 108 of them with such files) up to NO_SHEET_MAX_BYTES (2026-11-10: 4,017 files of 1,402 datasets, 240 MB;
+# with 50 MB 4,062 files, 1 GB), into a factor sheet of their own (FACTOR_SHEET_MARK).
 FACTOR_SHEETS_WHERE = (
     "filepath like '%metadata%' and filepath not like '%ccms_%' and ("
     + " or ".join(f"filepath like '%{ext}'" for ext in TEMPLATE_SHEET_EXTENSIONS) + ")")
+NO_SHEET_MAX_BYTES = 5 * 1024 * 1024
+# a factor sheet: file names and SampleGroupFreeText only, for the MASST rows of the same files (merge_metadata.py)
+FACTOR_SHEET_MARK = '_factors'
+# MS data file names as values (the file-name column of a table without a sheet to match)
+_MS_FILE_VALUE = re.compile(r'(?i)\.(mzml|mzxml|mzdata|raw|d|wiff2?|cdf|mgf|lcd|qgd)$')
 
 
 def template_column(column, template_keys):
@@ -661,21 +669,64 @@ class MassiveFTPS:
         self.ftp = None
 
 
-def add_dataset_factors(folder, saved, github_files, fetch, template_keys):
+def _factor_file_column(table, template_keys):
+    """the column of a table (without a sheet to match) that names MS data files: the one with most such names
+    (at least half of its values), else the template's filename column, else None"""
+    best, n = None, 0
+    for c in table.columns:
+        values = table[c].dropna().astype(str).str.strip()
+        values = values[values != '']
+        hits = int(values.str.contains(_MS_FILE_VALUE).sum())
+        if hits > n and hits >= 0.5 * len(values):
+            best, n = c, hits
+    if best is None:
+        best = next((c for c in table.columns if template_column(c, template_keys) == 'filename'), None)
+    return best
+
+
+def factor_sheet(dataset, tables, template_keys, allowed_terms):
+    """For a dataset without a sheet: its files ([(path, table)]) as a ReDU-format table of MassiveID, filename
+    and SampleGroupFreeText (dataset_factors.add_factors over the files the tables name; only rows with a group
+    text), and the factors added; (None, []) if none"""
+    names = collections.OrderedDict()
+    for _, table in dataset_factors.same_column_tables(tables):
+        column = _factor_file_column(table, template_keys)
+        if column is None:
+            continue
+        for value in table[column].dropna().astype(str).str.strip():
+            key = _sample_key(value)
+            if key and key not in names:
+                names[key] = os.path.basename(value.replace('\\', '/'))
+    if len(names) < 2:
+        return None, []
+    sheet = pd.DataFrame({'MassiveID': dataset, 'filename': list(names.values())})
+    sheet, added = dataset_factors.add_factors(sheet, tables, lambda c: template_column(c, template_keys), _sample_key,
+                                               allowed_terms)
+    if not added:
+        return None, []
+    sheet = sheet[sheet['SampleGroupFreeText'] != dataset_factors.MISSING]
+    return (sheet, added) if len(sheet) else (None, [])
+
+
+def add_dataset_factors(folder, saved, github_files, fetch, template_keys, allowed_terms=None):
     """SampleGroupFreeText of each MassIVE dataset's sheets in the folder (the saved MassIVE sheets, not the
     fill-only ones, and the GitHub sheets) from their extra columns and the dataset's other metadata files
-    (FACTOR_SHEETS_WHERE, up to MAX_SHEET_BYTES); a sheet is rewritten only when a factor is added"""
+    (FACTOR_SHEETS_WHERE, up to MAX_SHEET_BYTES); a sheet is rewritten only when a factor is added. MassIVE
+    datasets without a sheet get a factor sheet of their own from their metadata files (up to
+    NO_SHEET_MAX_BYTES; factor_sheet, <MSV>_factors_gnps_metadata.tsv)."""
     sheets = collections.defaultdict(list)
     for path in list(saved) + [p for paths in github_files.values() for p in paths]:
         name = os.path.basename(path)
         dataset = name.split('_')[0].split('.')[0]
         if FILL_ONLY_MARK not in name and re.match(r'^R?MSV\d+$', dataset):
             sheets[dataset].append(path)
-    if not sheets:
-        return
+    # every dataset of the folder (also one whose sheets are all fill-only) counts as one with a sheet
+    with_sheet = {os.path.basename(p).split('_')[0].split('.')[0] for p in list(saved) + [p for ps in github_files.values() for p in ps]}
     listing = list_cache_files(FACTOR_SHEETS_WHERE)
-    listing = listing[listing['dataset'].isin(set(sheets))]
-    listing = listing[pd.to_numeric(listing['size'], errors='coerce').fillna(0) <= MAX_SHEET_BYTES]
+    listing = listing[listing['dataset'].astype(str).str.match(r'^R?MSV\d+$')]
+    size = pd.to_numeric(listing['size'], errors='coerce').fillna(0)
+    no_sheet = ~listing['dataset'].isin(with_sheet)
+    listing = listing[(listing['dataset'].isin(set(sheets)) & (size <= MAX_SHEET_BYTES)) | (no_sheet & (size <= NO_SHEET_MAX_BYTES))]
     tables = collections.defaultdict(list)
     for dataset, filepath in sorted(zip(listing['dataset'], listing['filepath'])):
         link = _dataset_path(dataset, filepath)
@@ -683,7 +734,8 @@ def add_dataset_factors(folder, saved, github_files, fetch, template_keys):
         table = read_sheet(content, link, template_keys) if content is not None else None
         if table is not None:
             tables[dataset].append((filepath, table))
-    print(f"Other metadata files of the datasets with a sheet: {len(listing)} listed, "
+    print(f"Other metadata files of the MassIVE datasets: {len(listing)} listed "
+          f"({int(no_sheet[listing.index].sum())} of datasets without a sheet), "
           f"{sum(map(len, tables.values()))} read, of {len(tables)} datasets")
     column = lambda c: template_column(c, template_keys)
     counts = collections.Counter()
@@ -696,12 +748,24 @@ def add_dataset_factors(folder, saved, github_files, fetch, template_keys):
             sheet = _canonical_column(_canonical_column(sheet, 'filename', template_keys), 'SampleGroupFreeText', template_keys)
             if 'filename' not in sheet.columns:
                 continue
-            sheet, added = dataset_factors.add_factors(sheet, tables.get(dataset, []), column, _sample_key)
+            sheet, added = dataset_factors.add_factors(sheet, tables.get(dataset, []), column, _sample_key, allowed_terms)
             if added:
                 sheet.to_csv(path, sep='\t', index=False)
                 counts['sheets'] += 1
                 counts['factors'] += len(added)
                 print(f"{dataset}: sample groups from {', '.join(f'{f} ({s})' for s, f, _, _ in added)}")
+    for dataset in sorted(set(tables) - with_sheet):
+        try:
+            sheet, added = factor_sheet(dataset, tables[dataset], template_keys, allowed_terms)
+        except Exception as e:
+            print(f"{dataset}: no factor sheet ({type(e).__name__}: {e})")
+            continue
+        if sheet is None:
+            continue
+        sheet.to_csv(os.path.join(folder, f"{dataset}{FACTOR_SHEET_MARK}_gnps_metadata.tsv"), sep='\t', index=False)
+        counts['factor_sheets (datasets without a sheet)'] += 1
+        counts['factor_sheet_rows'] += len(sheet)
+        print(f"{dataset} (no sheet): {len(sheet)} rows, sample groups from {', '.join(f'{f} ({s})' for s, f, _, _ in added)}")
     print(f"Sample groups from the datasets' metadata: {dict(counts)}")
 
 
@@ -710,14 +774,15 @@ def main():
     parser = argparse.ArgumentParser(description='Download GNPS files')
     parser.add_argument('output_metadata_folder')
     parser.add_argument('--allowed_terms', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'allowed_terms.json'),
-                        help='allowed terms json (only its column names are used, to recognise ReDU-format sheets)')
+                        help='allowed terms json (its column names recognise ReDU-format sheets; its allowed terms are used for the sample groups, dataset_factors.py)')
     parser.add_argument('--no_other_sheets', action='store_true', help='only read files named *gnps_metadata.tsv')
     parser.add_argument('--no_dataset_factors', action='store_true',
                         help="no SampleGroupFreeText from the sheets' extra columns and the datasets' other metadata files")
     args = parser.parse_args()
 
     with open(args.allowed_terms) as f:
-        template_keys = set(json.load(f).keys())
+        allowed_terms = json.load(f)
+    template_keys = set(allowed_terms.keys())
 
     # Print message to indicate importing is done
     print("echo Importing Done!")
@@ -993,7 +1058,8 @@ def main():
     # on any error the sheets stay as they are
     if not args.no_dataset_factors:
         try:
-            add_dataset_factors(args.output_metadata_folder, file_paths["sys_name"], github_files, fetch, template_keys)
+            add_dataset_factors(args.output_metadata_folder, file_paths["sys_name"], github_files, fetch, template_keys,
+                                allowed_terms)
         except Exception as e:
             print(f"ERROR: sample groups from the datasets' metadata files failed ({type(e).__name__}: {e}); "
                   f"the sheets are used as they are")

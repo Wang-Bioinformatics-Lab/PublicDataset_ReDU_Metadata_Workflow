@@ -939,8 +939,15 @@ def merge_repeated_fileobservations_across_mwatb(df, **kwargs):
     except Exception as e:
         print(f"Could not check polarity-switching files: {type(e).__name__}: {e}")
 
-    df = df[~((df['IonizationSourceAndPolarity'].str.contains('negative')) & (df['positive_polarity_count'] > 0))]
-    df = df[~((df['IonizationSourceAndPolarity'].str.contains('positive')) & (df['negative_polarity_count'] > 0))]
+    # a file of the declared polarity with a few scans of the other one (below 5% of its scans, the bound of
+    # the switching files above: ST002569, 56 negative of ~5000 scans in each positive file) is no contradiction
+    _pos = pd.to_numeric(df['positive_polarity_count'], errors='coerce').fillna(0)
+    _neg = pd.to_numeric(df['negative_polarity_count'], errors='coerce').fillna(0)
+    _few_other = np.minimum(_pos, _neg) < 0.05 * (_pos + _neg)
+    _ion = df['IonizationSourceAndPolarity'].astype(str)
+    df = df[~(_ion.str.contains('negative') & (_pos > 0) & ~(_few_other & (_neg > _pos)))]
+    _ion = df['IonizationSourceAndPolarity'].astype(str)
+    df = df[~(_ion.str.contains('positive') & (_neg.loc[df.index] > 0) & ~(_few_other.loc[df.index] & (_pos.loc[df.index] > _neg.loc[df.index])))]
     df = df[~((df['IonizationSourceAndPolarity'].str.contains('alternating')) & ((df['negative_polarity_count'] == 0) | (df['positive_polarity_count'] == 0)))]
 
     try:
@@ -3615,14 +3622,17 @@ def study_fasting_status(text):
 
 # ---- SampleGroupFreeText ----
 # factor keys that are not groups (batch, replicate, run order, injection, plate / well,
-# instrument / LC / polarity, methods, dates, raw files, IDs, QC / blank class, cages):
-# always left out
+# instrument / LC / polarity, methods, dates, coordinates, raw files, IDs, QC / blank class,
+# cages): always left out. Neither 'collection' nor 'quality' alone is such a word: 'Collection
+# time point: Pre / Post surgery', 'Season collection', 'Country of collection' and 'Oil quality:
+# EVOO / Defective' are design factors (collection dates go by their values, _mostly_dates);
+# coordinates and dates are no groups (LatitudeandLongitude and SampleCollectionDateandTime hold them)
 _GROUP_KEY_NOT_GROUP_RE = re.compile(
     r'\b(?:batch|batches|replicate|replicates|rep|reps|replication|run|runs|order|injection|inj|plate|well|position|'
     r'vial|tray|rack|sequence|seq|block|polarity|ion mode|ionization|ionisation|column|chromatography|lc|ms|'
-    r'instrument|platform|method|methods|extraction|protocol|date|raw|file|files|mzml|id|ids|identifier|identifiers|'
-    r'collection|qc|blank|blanks|quality|sample class|samle type|subject|subjects|cage|cages|ion model)\b|'
-    r'collection\w*|ionmode')
+    r'instrument|platform|method|methods|extraction|protocol|date|dates|datetime|timestamp|raw|file|files|mzml|'
+    r'id|ids|identifier|identifiers|qc|blank|blanks|quality control|sample class|samle type|subject|subjects|'
+    r'cage|cages|ion model|latitude|longitude|lat|lon|coordinate|coordinates|gps)\b|ionmode')
 # factor keys whose information has a ReDU column of its own (sex, age, life stage,
 # organism, body part / sample type, disease / health, smoking, BMI, diet, location,
 # times, fasting). These are kept in SampleGroupFreeText and dropped only where the
@@ -3655,31 +3665,117 @@ _GROUP_NA_VALUES = {'', '-', '--', 'na', 'n/a', 'nan', 'null',
                      'not provided', 'not reported', 'missing', 'missing value'}
 # internal form until the study-level check: sample ID \x1d key \x1e value \x1f key \x1e value
 _GROUP_SID, _GROUP_KV, _GROUP_PART = '\x1d', '\x1e', '\x1f'
-# ReDU columns that may already tell a design factor's groups apart
+# ReDU columns that may already tell a design factor's groups apart. Not Diet and FastingStatus:
+# the final table's diet pass clears them on rows that are no animal eating (cell cultures: ST004642
+# 'Diet: Control / Keto' media) and removes the diet factors the columns hold itself
+# (sample_groups.remove_held_factors)
 _GROUP_REDU_COLUMNS = ['SampleType', 'SampleTypeSub1', 'NCBITaxonomy', 'UBERONBodyPartName', 'BiologicalSex',
-                       'HealthStatus', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'Diet', 'SmokingStatus',
-                       'LifeStage', 'Country', 'ENVOEnvironmentMaterial', 'FastingStatus',
-                       'TimePointHoursRelativeToEvent']
+                       'HealthStatus', 'DOIDCommonName', 'HPOCommonName', 'Exposure', 'SmokingStatus',
+                       'LifeStage', 'Country', 'ENVOEnvironmentMaterial', 'TimePointHoursRelativeToEvent']
+# factor values that are dates or clock times ('2021-11-22T11:22Z', '17/04/2012', '12/31/99 12:00 AM',
+# '00:02:10'): a factor of such values is no group, whatever its name ('Sampling datetime',
+# 'Collection time' of MTBLS2245); calendar years are (a harvest year or a season '2019' is a group), see
+# _measure_like_factors
+_DATE_VALUE_RE = re.compile(r'^\s*(?:\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}\S*)?|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}'
+                            r'(?:\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?)?|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?)\s*$', re.I)
+# a number with at most a short unit ('21', '0.058 gram', '29.025 degree celsius', '1 x 10-5', '45%')
+_NUMERIC_VALUE_RE = re.compile(r'^\s*[<>~]?\s*[-+]?\d+(?:[.,]\d+)?(?:\s*(?:x|\*)\s*10\s*[-^]?\s*-?\d+)?'
+                               r'(?:\s*[-–]\s*\d+(?:[.,]\d+)?)?\s*[^\d\s]{0,4}(?:\s+[A-Za-zµ%/°.]{1,25}){0,3}\s*$')
 
 
-def sample_group_texts(data):
+def _mostly_dates(values):
+    """Whether at least 80% of the (two or more) filled values are dates or clock times."""
+    vals = [str(v).strip() for v in values if str(v).strip().lower() not in _GROUP_NA_VALUES]
+    return len(vals) >= 2 and sum(bool(_DATE_VALUE_RE.match(v)) for v in vals) >= 0.8 * len(vals)
+
+
+def _case_canon(values):
+    """Value (lower-cased, white space normalised) -> its most common spelling: values that differ only
+    in letter case are one group (MTBLS1606 'AMB cure' / 'AmB cure')."""
+    best = {}
+    for v, _ in Counter(str(v) for v in values).most_common():
+        best.setdefault(' '.join(v.lower().split()), v)
+    return best
+
+
+def _repeated_values(per_sample_values, min_samples=3):
+    """Of a factor with (nearly) one value per sample, the values that each group at least min_samples
+    samples, if there are two at least and on average four samples per value (MTBLS2188 'Gene mutation':
+    wild type and zwf next to 175 single knockouts; MTBLS12770 'Treatment': two mouse groups next to one
+    text per bacterial sample); else None. The other values are left out on their samples only."""
+    c = Counter(per_sample_values)
+    keep = {v for v, n in c.items() if n >= min_samples}
+    if len(keep) >= 2 and sum(c[v] for v in keep) >= 4 * len(keep):
+        return keep
+    return None
+
+
+def _rest_factor_values(rest_response):
+    """local_sample_id -> {factor name: value} of the study's REST /factors records ('Sample source:Saliva |
+    Weight:Normal Weight | stress:High stress')."""
+    out = {}
+    for rec in (rest_response or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        sid = str(rec.get('local_sample_id') or '').strip()
+        if not sid:
+            continue
+        for part in str(rec.get('factors') or '').split('|'):
+            kv = part.split(':')
+            if len(kv) == 2 and kv[0].strip():
+                out.setdefault(sid, {}).setdefault(kv[0].strip(), kv[1].strip())
+    return out
+
+
+def _rest_only_factors(items, rest_response):
+    """{factor name: {Sample ID: value}} of the factors the Workbench lists in the study's REST /factors records
+    but the mwTab SUBJECT_SAMPLE_FACTORS do not (ST003706 / ST003709 'stress'), matched on the local sample ID:
+    only categorical ones with 2 to 10 values on 4 samples at least (the records of ST003706 also hold
+    questionnaire scores and measurements)."""
+    rest = _rest_factor_values(rest_response)
+    if not rest:
+        return {}
+    own = {str(k).strip().lower() for _, f in items for k in f} | {'sample source'}
+    extra = {}
+    for sid, _ in items:
+        for k, v in rest.get(sid, {}).items():
+            if k.lower() not in own:
+                extra.setdefault(k, {})[sid] = v
+    keep = {}
+    for k, per in extra.items():
+        vals = [v for v in per.values() if v.lower() not in _GROUP_NA_VALUES]
+        levels = {' '.join(v.lower().split()) for v in vals}
+        if 2 <= len(levels) <= 10 and len(vals) >= 4 and \
+                sum(bool(_NUMERIC_VALUE_RE.match(v)) for v in vals) < 0.5 * len(vals):
+            keep[k] = per
+    return keep
+
+
+def sample_group_texts(data, rest_response=None):
     """Sample ID -> the sample's grouping factors from the mwTab SUBJECT_SAMPLE_FACTORS
     'Factors', in the study's order and wording (internal form, see
-    finalize_sample_groups). Factors that are no groups and factors with a different value
-    for nearly every sample are left out; factors that have a ReDU column of their own stay
-    until finalize_sample_groups checks whether the ReDU columns tell their groups apart.
+    finalize_sample_groups), and the categorical factors only the study's REST /factors records
+    list (_rest_only_factors). Factors that are no groups and factors of dates are left out;
+    values that differ only in letter case are one value; of a factor with a different value for
+    nearly every sample only the values of three samples at least stay (_repeated_values), else
+    the factor is left out. Factors that have a ReDU column of their own stay until
+    finalize_sample_groups checks whether the ReDU columns tell their groups apart.
     ';' inside a key or value becomes ','."""
     items = [(str(it.get('Sample ID', '')).strip(), it.get('Factors') or {})
              for it in (data or []) if isinstance(it, dict)]
     items = [(sid, f) for sid, f in items if sid and isinstance(f, dict)]
     if not items:
         return {}
+    rest_only = _rest_only_factors(items, rest_response)
+    if rest_only:
+        print(f"[SampleGroupFreeText] factors of the REST /factors records only: {sorted(rest_only)}")
+        items = [(sid, {**f, **{k: per[sid] for k, per in rest_only.items() if sid in per}}) for sid, f in items]
     values = {}
     for _, f in items:
         for k, v in f.items():
             values.setdefault(str(k).strip(), []).append(str(v).strip())
     n = len({sid for sid, _ in items})
-    drop = set()
+    drop, canon, keep_only = set(), {}, {}
     for k, vs in values.items():
         nk = _norm_key(k)
         if not nk or _GROUP_KEY_NOT_GROUP_RE.search(nk) or _GROUP_ID_KEY_RE.fullmatch(nk) \
@@ -3687,24 +3783,67 @@ def sample_group_texts(data):
             drop.add(k)
             continue
         filled = [x for x in vs if x.lower() not in _GROUP_NA_VALUES]
-        if n >= 8 and len(set(filled)) >= 0.9 * n:
+        if _mostly_dates(filled):
+            print(f"[SampleGroupFreeText] factor {k!r}: dates / clock times, left out")
             drop.add(k)
+            continue
+        canon[k] = _case_canon(filled)
+        filled = [canon[k][' '.join(x.lower().split())] for x in filled]
+        if n >= 8 and len(set(filled)) >= 0.9 * n:
+            keep = _repeated_values(filled)
+            if keep is None:
+                drop.add(k)
+            else:
+                print(f"[SampleGroupFreeText] factor {k!r}: {len(set(filled))} values for {n} samples, "
+                      f"only those of 3 samples at least kept: {sorted(keep)[:6]}")
+                keep_only[k] = keep
     clean = lambda x: ' '.join(str(x).replace(';', ',').replace(_GROUP_SID, ' ').replace(_GROUP_KV, ' ')
                                .replace(_GROUP_PART, ' ').split())
     out = {}
     for sid, f in items:
         parts = []
         for k, v in f.items():
-            k, v = str(k).strip(), clean(v)
+            k, v = str(k).strip(), str(v).strip()
             if k in drop or v.lower() in _GROUP_NA_VALUES:
                 continue
-            parts.append(clean(k) + _GROUP_KV + v)
+            v = canon.get(k, {}).get(' '.join(v.lower().split()), v)
+            if k in keep_only and v not in keep_only[k]:
+                continue
+            parts.append(clean(k) + _GROUP_KV + clean(v))
         text = _GROUP_PART.join(parts)
         if sid in out and out[sid] != text:
             out[sid] = None  # one Sample ID listed with different factors
         elif sid not in out:
             out[sid] = text or None
     return {sid: clean(sid) + _GROUP_SID + t for sid, t in out.items() if t}
+
+
+def unify_group_sids(df, column='SampleGroupFreeText', key='filename', study_id=''):
+    """One internal group text for a file whose rows carry texts that differ only in the sample ID (the sample
+    IDs joined by ','), so that merging the rows of the file keeps its group: ST004715 lists each file of two
+    analyses under the sample IDs '217_M1' and '217_M2' with the same factors. Texts with other factors stay
+    (the merge then gives the file none)."""
+    if column not in df.columns or key not in df.columns or not len(df):
+        return df
+    raw = df[column].astype(str).reset_index(drop=True)
+    has = raw.str.contains(_GROUP_SID, regex=False)
+    if not has.any():
+        return df
+    # (by position: the rows of several analyses can share index labels)
+    sub = pd.DataFrame({'f': df[key].astype(str).reset_index(drop=True)[has], 'sid': raw[has].str.split(_GROUP_SID, n=1).str[0],
+                        'p': raw[has].str.split(_GROUP_SID, n=1).str[1]})
+    g = sub.groupby('f').agg(n_sid=('sid', 'nunique'), n_parts=('p', 'nunique'))
+    multi = set(g.index[(g['n_sid'] > 1) & (g['n_parts'] == 1)])
+    if not multi:
+        return df
+    rows = sub['f'].isin(multi)
+    joined = sub[rows].groupby('f').apply(lambda x: ','.join(sorted(set(x['sid']))) + _GROUP_SID + x['p'].iloc[0])
+    values = df[column].to_numpy(dtype=object).copy()
+    values[sub.index[rows].to_numpy()] = sub.loc[rows, 'f'].map(joined).to_numpy()
+    df = df.copy()
+    df[column] = values
+    print(f"[SampleGroupFreeText] {study_id}: {len(multi)} files under several sample IDs of the same factors: one group text")
+    return df
 
 
 def _redu_values_tell_apart(t, missing='missing value', max_pairs=20000):
@@ -3725,13 +3864,18 @@ def _redu_values_tell_apart(t, missing='missing value', max_pairs=20000):
 def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing value', study_id=''):
     """Turns the internal sample groups into 'Key: value; Key: value' for one study.
     Factors (other than genotype / strain / cell line-like ones) whose groups the
-    study's ReDU columns already tell apart are dropped; the column is filled only where the real
-    samples (no QC / blanks) form at least 2 groups and at most half as many groups as
-    samples. Where there are more groups than that, factors that have a ReDU column of their
-    own (_GROUP_KEY_REDU_COLUMN_RE) are dropped first, most groups first, so that keeping them
-    never empties a column the other factors fill; where there are still more, the column keeps the
-    factors that group samples (each with at most half as many values as the real samples carrying it),
-    also where together they tell every sample apart. Never removes rows."""
+    study's ReDU columns already tell apart are dropped (TimePointHoursRelativeToEvent tells
+    apart only factors with numbers in their values: not 'Class: Pre / Post'); the column is
+    filled only where the real samples (no QC / blanks) form at least 2 groups and at most half
+    as many groups as samples. Where there are more groups than that, a factor with more values
+    than half of its samples first keeps only its values of three samples at least
+    (_repeated_values); then the factors that have a ReDU column of their own
+    (_GROUP_KEY_REDU_COLUMN_RE) are dropped, most groups first, so that keeping them never empties
+    a column the other factors fill; where that would drop such a factor the ReDU columns do not
+    hold, measurement- and ID-like factors go before it (_measure_like_factors); where there are
+    still more, the column keeps the factors that group samples (each with at most half as many
+    values as the real samples carrying it), also where together they tell every sample apart.
+    Never removes rows."""
     if column not in df.columns or len(df) == 0:
         return df
     df = df.copy()
@@ -3747,14 +3891,22 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
     real = has & ~(sample_type.isin(['pool_QC', 'reference material']) | sample_type.str.contains('blank', case=False))
     # design keys whose value is a function of the ReDU columns over the real samples
     redu_cols = [c for c in _GROUP_REDU_COLUMNS if c in df.columns]
-    redu_tuple = df[redu_cols].astype(str).agg('\x1f'.join, axis=1) if redu_cols else pd.Series('', index=df.index)
+    join_cols = lambda cols: df[cols].astype(str).agg('\x1f'.join, axis=1) if cols else pd.Series('', index=df.index)
+    redu_tuple = join_cols(redu_cols)
+    redu_tuple_no_time = join_cols([c for c in redu_cols if c != 'TimePointHoursRelativeToEvent'])
     keys = list(dict.fromkeys(k for ps in parts[real] for k, _ in ps))
+    # value of a factor on the real rows (blanked: values left out on their samples only, below)
+    blanked = {}
+    value_of = lambda k: parts[real].map(lambda ps: next((v for kk, v in ps if kk == k and v not in blanked.get(k, ())), None))
     dropped, partly_covered = set(), set()
     for k in keys:
         if _GROUP_INDEPENDENT_KEY_RE.search(_norm_key(k)):
             continue
-        kv = parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None))
-        t = pd.DataFrame({'redu': redu_tuple[real], 'v': kv, 'sid': sid[real]}).dropna().drop_duplicates(['sid'])
+        kv = value_of(k)
+        # hours tell apart time points with numbers ('Day 7'), not labels ('Class: Pre / Post', 'rest / stat')
+        labels = len(kv.dropna()) and not kv.dropna().astype(str).str.contains(r'\d').any()
+        t = pd.DataFrame({'redu': (redu_tuple_no_time if labels else redu_tuple)[real], 'v': kv,
+                          'sid': sid[real]}).dropna().drop_duplicates(['sid'])
         if len(t) and t['v'].nunique() > 1 and (t.groupby('redu')['v'].nunique() <= 1).all():
             if _redu_values_tell_apart(t):
                 dropped.add(k)
@@ -3767,21 +3919,54 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
         elif t['v'].nunique() <= 1 and _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k)):
             dropped.add(k)
     def texts(dropped):
-        text = parts.map(lambda ps: '; '.join(f'{k}: {v}' for k, v in ps if k not in dropped))
+        text = parts.map(lambda ps: '; '.join(f'{k}: {v}' for k, v in ps if k not in dropped and v not in blanked.get(k, ())))
         text = text.where(has & (text != ''))
         groups = pd.DataFrame({'sid': sid[real], 'g': text[real]}).dropna().drop_duplicates('sid')
         return text, len(groups), groups['g'].nunique()
+    def per_sample(k):
+        return pd.DataFrame({'sid': sid[real], 'v': value_of(k)}).dropna().drop_duplicates('sid')
     text, n_samples, n_groups = texts(dropped)
-    # too many groups: leave out the kept factors that have a ReDU column, most levels first
+    # too many groups: a factor with more values than half of its samples keeps the values of three
+    # samples at least (MTBLS12770: the two mouse groups of 'Treatment' next to one text per bacterial sample)
+    if n_groups > n_samples / 2:
+        for k in keys:
+            if k in dropped:
+                continue
+            t = per_sample(k)
+            if len(t) and t['v'].nunique() > max(1, len(t) / 2):
+                keep = _repeated_values(list(t['v']))
+                if keep is not None:
+                    blanked[k] = set(t['v']) - keep
+                    print(f"[SampleGroupFreeText] {study_id}: {k!r} ({t['v'].nunique()} values for {len(t)} samples): "
+                          f"only the values of 3 samples at least kept: {sorted(keep)[:6]}")
+        if blanked:
+            text, n_samples, n_groups = texts(dropped)
+    # then leave out the kept factors that have a ReDU column, most levels first (the factors the ReDU columns
+    # partly tell apart first)
     spare = [k for k in keys if k not in dropped and (k in partly_covered or _GROUP_KEY_REDU_COLUMN_RE.search(_norm_key(k)))]
-    levels = {k: parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None)).nunique() for k in spare}
-    too_many = []
-    # the factors the ReDU columns partly tell apart first, then by most levels
-    for k in sorted(spare, key=lambda k: (k not in partly_covered, -levels[k])):
-        if n_groups <= n_samples / 2:
-            break
-        too_many.append(k)
-        text, n_samples, n_groups = texts(dropped | set(too_many))
+    levels = {k: value_of(k).nunique() for k in keys if k not in dropped}
+    order = sorted(spare, key=lambda k: (k not in partly_covered, -levels[k]))
+
+    def leave_out(candidates, out, text, n_samples, n_groups):
+        for k in candidates:
+            if n_groups <= n_samples / 2:
+                break
+            if k in out:
+                continue
+            out.append(k)
+            text, n_samples, n_groups = texts(dropped | set(out))
+        return out, text, n_samples, n_groups
+    too_many, *_ = leave_out(order, [], text, n_samples, n_groups)
+    if any(k not in partly_covered for k in too_many):
+        # that would drop a factor the ReDU columns do not hold (MTBLS7560 'Timepoint' for 'Sample pairs',
+        # ST004265 site and season for 'Temp'): measurement- and ID-like factors go first
+        first, text, n_samples, n_groups = leave_out(_measure_like_factors(keys, dropped, levels, per_sample), [],
+                                                     text, n_samples, n_groups)
+        if first:
+            print(f"[SampleGroupFreeText] {study_id}: too many groups, measurement / ID-like factors left out first: {first}")
+        too_many, text, n_samples, n_groups = leave_out(order, first, text, n_samples, n_groups)
+    else:
+        too_many, text, n_samples, n_groups = leave_out(order, [], text, n_samples, n_groups)
     if too_many:
         print(f"[SampleGroupFreeText] {study_id}: dropped for too many groups: {too_many}")
     per_factor = n_groups > n_samples / 2
@@ -3793,8 +3978,7 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
         for k in keys:
             if k in dropped:
                 continue
-            kv = parts[real].map(lambda ps: next((v for kk, v in ps if kk == k), None))
-            t = pd.DataFrame({'sid': sid[real], 'v': kv}).dropna().drop_duplicates('sid')
+            t = per_sample(k)
             if len(t) and t['v'].nunique() > max(1, len(t) / 2):
                 ungrouping.append(k)
         print(f"[SampleGroupFreeText] {study_id}: too many groups; only the factors that group samples, "
@@ -3814,6 +3998,33 @@ def finalize_sample_groups(df, column='SampleGroupFreeText', missing='missing va
     print(f"[SampleGroupFreeText] {study_id}: filled ({n_groups} groups, {n_samples} samples)")
     df[column] = text.fillna(missing)
     return df
+
+
+# numbers with more values are measurements (dataset_factors.MAX_NUMERIC_LEVELS)
+MAX_NUMERIC_LEVELS = 6
+
+
+def _measure_like_factors(keys, dropped, levels, per_sample):
+    """Of the kept factors (not genotype / strain-like ones, 3 values at least), the measurement- and ID-like
+    ones, most values first: values mostly numbers with a unit ('Temp: 21', 'Weight: 61 kg') with more than
+    MAX_NUMERIC_LEVELS values (a stage or grade 1-4 is a group) or calendar years ('year: 2019' of ST004265
+    goes before its season), more values than half of the samples carrying them, or coded values (mostly with
+    digits: 'plasma_ID_96', couple numbers) with more values than a quarter of their samples."""
+    out = []
+    for k in keys:
+        if k in dropped or _GROUP_INDEPENDENT_KEY_RE.search(_norm_key(k)):
+            continue
+        t = per_sample(k)
+        n_values = t['v'].nunique()
+        if not len(t) or n_values < 3:
+            continue
+        v = t['v'].astype(str)
+        numeric = v.str.match(_NUMERIC_VALUE_RE).mean() >= 0.8 and (
+            n_values > MAX_NUMERIC_LEVELS or v.str.fullmatch(r'\s*(?:19|20)\d{2}\s*').mean() >= 0.8)
+        coded = v.str.contains(r'\d').mean() >= 0.8
+        if numeric or n_values > len(t) / 2 or (coded and n_values > len(t) / 4):
+            out.append(k)
+    return sorted(out, key=lambda k: -levels[k])
 
 
 def study_fasting_text(mwtab):
@@ -4176,7 +4387,9 @@ def mwb_organism_fallback(text, allowedTerm_dict, where=''):
     """Allowed term of an organism text that neither the allowed names nor names.dmp synonyms resolve: other white
     space (a no-break space), a strain designation at the end ('... ATCC 31916'), one wrong character
     ('Arbidopsis thaliana'); see
-    REDU_conversion_functions.ncbi_name_fallback (pinned taxonomy only). Else None. Logged where it is used."""
+    REDU_conversion_functions.ncbi_name_fallback (pinned taxonomy only); the metagenome of a microbial community
+    ('Biofilm microbial community': biofilm metagenome; REDU_conversion_functions.community_metagenome_term).
+    Else None. Logged where it is used."""
     if not isinstance(text, str) or _rcf._PINNED_LINEAGE is None:
         return None
     if text not in _organism_fallback_memo:
@@ -4185,6 +4398,8 @@ def mwb_organism_fallback(text, allowedTerm_dict, where=''):
         def exact(name):
             return by_name.get(name.lower()) or _rcf.pinned_ncbi_synonym_term(name, allowedTerm_dict)
         _organism_fallback_memo[text] = _rcf.ncbi_name_fallback(text, by_id.get, exact)
+        if _organism_fallback_memo[text][0] is None:
+            _organism_fallback_memo[text] = _rcf.community_metagenome_term(text, by_id.get)
     term, how = _organism_fallback_memo[text]
     if term:
         print(f"[NCBITaxonomy] {where}: organism text {text!r} read as {term} ({how})")
@@ -5648,6 +5863,55 @@ def sample_body_parts(df_items, rest_sources, study_sample_type, lookups, study_
             for sid, l in out.items()}
 
 
+_MS_EXTENSION_RE = re.compile(r'\.(?:mzml|mzxml|mzdata|mzdata\.xml|raw|d|wiff|wiff2|cdf|netcdf|mgf|lcd|qgd|baf|yep|tdf)$', re.I)
+
+
+def listed_file_stem(name):
+    """Lower-cased file name without folders, compression, MS format and invisible characters ('Neg/X_1.mzML.gz'
+    -> 'x_1'; a zero-width space in the names of ST003511)."""
+    base = re.sub('[\u200b-\u200f\u2060\ufeff]', '', str(name)).replace('\\', '/').split('/')[-1].strip().lower()
+    base = re.sub(r'(?:\.(?:gz|zip|bz2|7z|tar))+$', '', base)
+    return _MS_EXTENSION_RE.sub('', base)
+
+
+def separator_free_stem(stem):
+    """A file stem with each run of separators (blank, '_', '-', '.') as one '_'."""
+    return re.sub(r'[\s_.\-]+', '_', str(stem)).strip('_')
+
+
+def fallback_file_pairs(df, raw_file_name_df):
+    """({(raw file stem, Sample ID): [listing labels]}, how) for an analysis whose raw file names are neither listed
+    names nor parts of them (keys as substring_file_matches gives them), else ({}, None):
+      * 'Sample IDs paired with the listed files of that stem': at least half of the Sample IDs are stems of listed
+        files (ST002537: the RAW_FILE_NAME 'Purslane_CP1_Adult_Polar_Positive.mzXML' leaves out the organ that the
+        Sample ID and the listed 'Purslane_CP1_Adult_Leaf_Polar_Positive.mzXML' name);
+      * 'raw file names paired with the listed files of the same name up to separators': at least half of the raw
+        file names are listed names but for their separators and invisible characters ('Alb-1974_1.mzXML' for
+        'Alb_1974_1.mzXML', 'GL(-)-G1_001' with a zero-width space for 'GL(-)-G1-001'), each such name of one
+        sample. All listed files of the stem are the sample's (pos and neg folders)."""
+    labels = {}
+    for lbl, base in zip(raw_file_name_df.index, raw_file_name_df['filename_base']):
+        labels.setdefault(listed_file_stem(base), []).append(lbl)
+    rows = list(zip(df['filename_base_wo_extension'], df['_sample_id'], df['filename_raw']))
+    key = lambda v, sid: (v, str(sid) if pd.notna(sid) else str(v))
+    sids = {str(sid) for _, sid, _ in rows if pd.notna(sid) and str(sid).strip()}
+    if sids and sum(sid.lower() in labels for sid in sids) >= 0.5 * len(sids):
+        return ({key(v, sid): labels[str(sid).lower()] for v, sid, _ in rows
+                 if pd.notna(sid) and str(sid).lower() in labels}, 'Sample IDs paired with the listed files of that stem')
+    by_sep = {}
+    for stem, lbls in labels.items():
+        by_sep.setdefault(separator_free_stem(stem), []).extend(lbls)
+    names = {}
+    for v, sid, raw in rows:
+        if isinstance(raw, str) and raw.strip():
+            names.setdefault(separator_free_stem(listed_file_stem(raw)), set()).add(key(v, sid))
+    names = {k: ks for k, ks in names.items() if k}
+    if names and sum(k in by_sep for k in names) >= 0.5 * len(names):
+        return ({ks: by_sep[k] for k, kss in names.items() if k in by_sep and len({x[1] for x in kss}) == 1 for ks in kss},
+                'raw file names paired with the listed files of the same name up to separators')
+    return {}, None
+
+
 def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_name_df=None, path_to_csvs='translation_sheets', attempt_taxa_extraction_from_inner = False, add_to_cols = [], **kwargs):
     
     ontology_table = kwargs['ontology_table']
@@ -6004,7 +6268,6 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         elif bool(set(df['filename_lower']) & set(raw_file_name_df['filename_base_lower'])):
             df = df.merge(raw_file_name_df, left_on='filename_lower', right_on='filename_base_lower', how='left')
             df.drop(['filename_raw_lower', 'filename_lower', 'filename_base_lower'], axis=1, inplace=True)
-    
         else:
             df['filename_base_wo_extension'] = df['filename_raw_lower'].str.split('.').str[0]
             raw_file_name_df['filename_base_wo_extension'] = raw_file_name_df['filename_base'].str.split('.').str[0].str.lower()
@@ -6063,11 +6326,19 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
                     if _r in _WITHHELD_REASONS:
                         note_withheld(raw_file_name_df.at[_lbl, 'USI'])
                 print("[rawfile] substring matches: " + ', '.join(f"{r}: {_why[r]}" for r in SUBSTRING_MATCH_REASONS if _why[r]))
+                if not _pairs:
+                    # no raw file name is part of a listed name: the Sample IDs as file stems, or the raw file
+                    # names up to separators (fallback_file_pairs)
+                    _pairs, _how = fallback_file_pairs(df, raw_file_name_df)
+                    if _pairs:
+                        print(f"[rawfile] {_how}: {len(_pairs)} samples")
 
                 df['match_index'] = [_pairs.get((_v, str(_s) if pd.notna(_s) else str(_v)))
                                      for _v, _s in zip(df['filename_base_wo_extension'], df['_sample_id'])]
                 df = df.explode('match_index')
-                
+                # (numbers: without any pair the column holds only None, of object dtype, which pandas does not merge
+                # with the listing's integer index)
+                df['match_index'] = pd.to_numeric(df['match_index'], errors='coerce')
                 df = pd.merge(df, raw_file_name_df, left_on='match_index', right_index=True, how='left', suffixes=('', '_matched'))
 
                 df['filename_raw'] = df['filename_raw_path']
@@ -6465,7 +6736,7 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
         df['MWB_cellline_values'] = None
         df['MWB_celltype'] = None
     try:
-        _groups = sample_group_texts(data)
+        _groups = sample_group_texts(data, rest_response)
         if _groups:
             df['MWB_samplegroup'] = df['filename'].map(_groups)
     except Exception as e:
@@ -6614,6 +6885,10 @@ def create_dataframe_from_SUBJECT_SAMPLE_FACTORS(data, rest_response, raw_file_n
    #add environemntal columns
     
     df['MWB_envo_exact'] = envo_material_exact_name(df['MWB_sampleSource'], allowedTerm_dict).values
+    # else the material of a microbial community the Sample Source describes ('Microbial Film': biofilm material)
+    _materials = set((allowedTerm_dict.get('ENVOEnvironmentMaterial') or {}).get('allowed_values') or [])
+    df['MWB_envo_exact'] = df['MWB_envo_exact'].fillna(
+        df['MWB_sampleSource'].map(lambda v: _rcf.community_envo_material(v, _materials)))
     # the taxa the samples' own organism items name (apply_own_organisms, in create_dataframe_outer_dict)
     try:
         _own_taxa = sample_own_taxa(df_additional, allowedTerm_dict)
@@ -6794,6 +7069,13 @@ def create_dataframe_outer_dict(MWB_mwTAB_dict, rest_response, raw_file_name_df=
     df_outer = pd.DataFrame(entry, index=[0])
     df_outer['STUDY_uberon_exact'] = uberon_exact_name(df_outer['SAMPLE_TYPE'], ontology_table, allowedTerm_dict).values
     df_outer['STUDY_envo_exact'] = envo_material_exact_name(df_outer['SAMPLE_TYPE'], allowedTerm_dict).values
+    # else the material of the microbial community the SAMPLE_TYPE or SUBJECT_SPECIES describes ('Microbial
+    # biofilm', 'Biofilm microbial community': biofilm material)
+    _materials = set((allowedTerm_dict.get('ENVOEnvironmentMaterial') or {}).get('allowed_values') or [])
+    for _col in ('SAMPLE_TYPE', 'SUBJECT_SPECIES'):
+        if _col in df_outer.columns:
+            df_outer['STUDY_envo_exact'] = df_outer['STUDY_envo_exact'].fillna(
+                df_outer[_col].map(lambda v: _rcf.community_envo_material(v, _materials)))
     try:
         df_outer['STUDY_celltype'] = [cell_type_term(v, ontology_table, allowedTerm_dict) if v else None
                                       for v in df_outer['CELL_STRAIN_DETAILS']]
@@ -7847,6 +8129,8 @@ def MWB_to_REDU_study_wrapper(study_id, path_to_csvs='translation_sheets',
         return None
 
 
+    # a file several analyses list under sample IDs of the same factors keeps its group (unify_group_sids)
+    redu_df_final = unify_group_sids(redu_df_final, study_id=str(study_id))
     redu_df_final = merge_repeated_fileobservations_across_mwatb(redu_df_final, polarity_table=polarity_table,
                                                                  file_contexts=listing_contexts(raw_file_name_df))
     try:

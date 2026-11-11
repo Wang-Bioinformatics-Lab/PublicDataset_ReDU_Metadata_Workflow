@@ -38,6 +38,12 @@ from merge_metadata import link_same_files, NameCopies, name_copy_datasets
 # 'Plants and Fungi' holds both)
 TAXID_ARCHAEA = '2157'
 TAXID_FUNGI = '4751'
+TAXID_EUKARYOTA, TAXID_PLANTS, TAXID_ANIMALS = '2759', '33090', '33208'
+# protists as REDU_conversion_functions._sample_type_from_lineage: red / brown algae, photosynthetic protists
+# (Ochrophyta incl. diatoms, haptophytes, dinoflagellates, euglenids, cryptophytes, chlorarachniophytes,
+# glaucophytes), the other protists
+TAXIDS_ALGAE = ('2763', '2870')
+TAXIDS_MICROALGAE = ('2696291', '2836', '2830', '2864', '3035', '3027', '29197', '38254')
 
 # most specific first
 TABLE_PRECEDENCE = ['food', 'personal_care', 'microbe', 'microbiome', 'plant']
@@ -140,6 +146,13 @@ def microbe_sample_type(taxid, division_by_taxid, parents):
     # microbeMASST also holds mammalian cell cultures (e.g. human cell lines)
     if division in ('Primates', 'Rodents', 'Mammals'):
         return 'culture_mammalian', 'culture_mammalian'
+    if parents is not None and taxid != TAXID_EUKARYOTA and has_ancestor(taxid, TAXID_EUKARYOTA, parents) and not any(
+            has_ancestor(taxid, t, parents) for t in (TAXID_PLANTS, TAXID_ANIMALS, TAXID_FUNGI)):
+        if any(has_ancestor(taxid, t, parents) for t in TAXIDS_ALGAE):
+            return 'algae', ''
+        if any(has_ancestor(taxid, t, parents) for t in TAXIDS_MICROALGAE):
+            return 'microalgae', 'marine_diatom' if has_ancestor(taxid, '2836', parents) else ''
+        return 'culture_protist', 'culture_protist'
     return '', ''
 
 

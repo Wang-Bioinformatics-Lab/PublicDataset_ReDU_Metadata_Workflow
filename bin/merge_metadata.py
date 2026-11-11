@@ -6,6 +6,7 @@ import os
 import re
 
 from ncbi_database import taxon_ids
+from sample_groups import sample_metadata_columns
 
 
 # ---- same file: one identity for the copies of a file under other paths ----
@@ -589,6 +590,101 @@ def supplement_from_masst(primary, supplement, columns, study_level=frozenset())
     return out[primary.columns], pd.DataFrame(fills, columns=['USI', 'column', 'value']), stats
 
 
+def fill_from_duplicate_usis(df):
+    """The first row of each USI with its missing fields filled from the USI's later rows (in order), and the
+    number of fields filled; rows of a single USI are unchanged"""
+    dup = df['USI'].duplicated(keep=False) & df['USI'].notna()
+    if not dup.any():
+        return df, 0
+    sub = df[dup]
+    columns = [c for c in sub.columns if c != 'USI']
+    values = sub[columns].mask(sub[columns].apply(lambda c: c.map(_is_missing)))
+    first = values.groupby(sub['USI'], sort=False).transform('first')
+    head = ~sub['USI'].duplicated()
+    was_missing = values[head].isna()
+    gained = was_missing & first[head].notna()
+    df = df.copy()
+    rows = sub.index[head.values]
+    for c in columns:
+        g = gained[c].values
+        if g.any():
+            df.loc[rows[g], c] = first.loc[rows[g], c].values
+    return df, int(gained.values.sum())
+
+
+def group_text_rows(df, allowed_terms):
+    """GNPS rows the validator kept only for their group text (no value of a field that describes the sample,
+    sample_groups.sample_metadata_columns; read_and_validate_redu_from_github keep_group_text_rows)"""
+    columns = [c for c in sample_metadata_columns(allowed_terms) if c in df.columns]
+    if not len(df):
+        return pd.Series(False, index=df.index, dtype=bool)
+    has = df[columns].apply(lambda col: ~col.map(_is_missing)).any(axis=1) if columns else pd.Series(False, index=df.index)
+    text = ~df['SampleGroupFreeText'].map(_is_missing) if 'SampleGroupFreeText' in df.columns else False
+    return ~has & text
+
+
+def texts_onto_masst_rows(carriers, masst_df, supplement, columns):
+    """The group texts of the GNPS rows kept only for them (carriers) on the MASST row of the same file: a MASST
+    supplement row (MASST_to_REDU.py: a file GNPS metadata describes) of the carrier's USI becomes a row of its
+    own, a MASST row of the same file (same_file_keys; one carrier only) takes the text. The carrier's text first,
+    then the MASST row's parts it does not have; the carrier's other values fill the MASST row's missing fields
+    (its instrument, ...). A carrier without a MASST row is dropped: no field of ReDU describes its sample.
+    Returns (masst_df with the texts and the new rows, the supplement without them, Counter)."""
+    stats = collections.Counter()
+    stats['gnps_rows_with_only_a_group_text'] = len(carriers)
+    if not len(carriers):
+        return masst_df, supplement, stats
+    carriers = carriers.drop_duplicates('USI')
+    by_usi = {u: r for u, r in zip(carriers['USI'], carriers.to_dict('records'))}
+    used = set()
+
+    def apply(row, carrier):
+        row = dict(row)
+        text = carrier.get('SampleGroupFreeText')
+        own = row.get('SampleGroupFreeText')
+        row['SampleGroupFreeText'] = text if _is_missing(own) else '; '.join([str(text).strip()] + _parts_not_in(own, text))
+        for c in columns:
+            if c not in ('USI', 'SampleGroupFreeText', 'DataSource') and _is_missing(row.get(c)) and not _is_missing(carrier.get(c)):
+                row[c] = carrier[c]
+        return row
+
+    promoted = []
+    if supplement is not None and len(supplement):
+        hit = supplement['USI'].isin(by_usi)
+        for row in supplement[hit].drop_duplicates('USI').to_dict('records'):
+            carrier = by_usi[row['USI']]
+            used.add(row['USI'])
+            row = apply(row, carrier)
+            # the MASST row's own file (MASST_to_REDU.py gives a supplement row the USI of the GNPS-described copy;
+            # its filename is still MASST's path): the USI and filename the MASST row has without the carrier
+            # (MSV000094202: peak/3DMM_pos_mzML/..., whose MS2 counts the files table has, not ccms_peak/...)
+            path = re.sub(r'^f\.', '', str(row.get('filename') or '').strip())
+            dataset = str(row.get('ATTRIBUTE_DatasetAccession') or '').strip()
+            if '/' in path and dataset and not _is_missing(dataset):
+                row['USI'], row['filename'] = f'mzspec:{dataset}:{path}', f'f.{path}'
+                stats['masst_supplement_rows_with_masst_path'] += 1
+            else:
+                row['USI'], row['filename'] = carrier['USI'], carrier.get('filename')
+            promoted.append(row)
+        supplement = supplement[~hit]
+    stats['masst_supplement_rows_given_the_text'] = len(promoted)
+    if len(masst_df):
+        rest = carriers[~carriers['USI'].isin(used)]
+        links = link_same_files(masst_df['USI'], rest['USI'])
+        rows = masst_df.to_dict('records')
+        for i, t in enumerate(links):
+            if len(t) == 1:
+                rows[i] = apply(rows[i], by_usi[t[0]])
+                used.add(t[0])
+                stats['masst_rows_given_the_text'] += 1
+        masst_df = pd.DataFrame(rows, columns=masst_df.columns)
+    if promoted:
+        masst_df = pd.concat([masst_df, pd.DataFrame(promoted).reindex(columns=masst_df.columns if len(masst_df.columns) else columns)],
+                             ignore_index=True)
+    stats['gnps_rows_dropped_no_masst_row'] = len(carriers) - len(used)
+    return masst_df, supplement, stats
+
+
 def main():
     # parsing arguments
     parser = argparse.ArgumentParser(description='Merge GNPS and ReDU metadata')
@@ -627,6 +723,17 @@ def main():
     metabo_df = read_source(args.metabolights_metadata, "MetaboLights")
     norman_df = read_source(args.norman_metadata, "NORMAN")
     masst_df = read_source(args.masst_metadata, "GNPS", name="MASST")
+    supplement_df = (read_source(args.masst_supplement, "GNPS", name="MASST supplement")
+                     if args.masst_supplement else None)
+
+    # GNPS rows kept only for their group text (no field describing the sample, e.g. the files a dataset without
+    # a sheet describes in its other metadata files, gnps_downloader.factor_sheet): the text goes onto the MASST
+    # row of the same file; the rest are dropped
+    carriers = group_text_rows(gnps_df, allowed_terms)
+    masst_df, supplement_df, carrier_stats = texts_onto_masst_rows(
+        gnps_df[carriers], masst_df, supplement_df, columns_to_use)
+    gnps_df = gnps_df[~carriers]
+    print(f"GNPS rows with only a group text: {dict(carrier_stats)}")
 
     # merge GNPS and ReDU metadata. A MASST row never wins a USI tie: MASST rows of a USI (or
     # file) another source has are taken out below, before the duplicates are dropped
@@ -646,9 +753,8 @@ def main():
     # same path with another extension or a copy in another top folder, see same_file_keys) only
     # fill missing fields of that row, and only of a row that is the one such file
     supplement_parts = []
-    if args.masst_supplement:
-        supplement_parts.append(read_source(args.masst_supplement, "GNPS", name="MASST supplement")
-                                .reindex(columns=columns_to_use))
+    if supplement_df is not None:
+        supplement_parts.append(supplement_df.reindex(columns=columns_to_use))
     masst_rows = merged_df[from_masst]
     links = link_same_files(masst_rows['USI'], merged_df.loc[~from_masst, 'USI'])
     # (bool also without MASST rows: a failed MASST step leaves an empty table)
@@ -668,7 +774,11 @@ def main():
     merged_df = merged_df[~merged_df.index.isin(masst_rows.index[copy_of_described.values])]
     masst_only = set(merged_df.loc[from_masst[merged_df.index], 'USI'].dropna())
 
-    # drop eventual duplicates (could happen with MASST/GNPS and also for a different reason with MWB) MWB has duplicates across all rows GNPS/MASST we should keep the first entry (from GNPS)
+    # drop eventual duplicates (could happen with MASST/GNPS and also for a different reason with MWB) MWB has duplicates across all rows GNPS/MASST we should keep the first entry (from GNPS);
+    # the kept row takes the fields it lacks from the other rows of its USI (a ReDU sheet of a Workbench /
+    # MetaboLights study keeps its values and gains e.g. the converter's SampleGroupFreeText)
+    merged_df, n_filled = fill_from_duplicate_usis(merged_df)
+    print(f"Rows of a USI another source also describes: {n_filled} fields filled from the other rows")
     merged_df = merged_df.drop_duplicates(subset='USI')
 
     supplement = pd.concat(supplement_parts, ignore_index=True)

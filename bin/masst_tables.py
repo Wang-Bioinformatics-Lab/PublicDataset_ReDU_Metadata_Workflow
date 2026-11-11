@@ -434,7 +434,7 @@ def microbiome_rows(df, vocab, division_by_taxid, microbe_sample_type=None, stat
         rec['SampleType'] = sample_type
         rec['SampleTypeSub1'] = sample_type if sample_type in ('blank_analysis', 'blank_extraction', 'blank_QC', 'pool_QC',
                                                                 'blank_culturemedia', 'culture_bacterial', 'culture_fungal',
-                                                                'culture_mammalian', 'culture_multiplespecies') else ''
+                                                                'culture_mammalian', 'culture_multiplespecies', 'culture_protist') else ''
 
         rec['UBERONBodyPartName'] = one([vocab.body_part(v) for v in g['UBERONBodyPartName']], 'UBERONBodyPartName')
         doid, health = [], []

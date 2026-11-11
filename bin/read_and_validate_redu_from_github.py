@@ -17,6 +17,8 @@ from REDU_conversion_functions import pinned_genus_term, sp_generic_label, sp_ot
 from REDU_conversion_functions import bare_sp_id_term, _GENUS_LEVEL_SP, NCBI_COLLECTING_TAXON
 from blank_qc_names import apply_filename_blank_qc, blank_qc_type_from_filename
 import reference_materials
+# the fields a row needs one value of (complete_and_fill_REDU_table)
+from sample_groups import sample_metadata_columns
 # several organisms in one NCBITaxonomy value ('ID|Name||ID|Name')
 from ncbi_database import MULTI_SEP, aligned, is_multi, join_parts, submitted_taxonomy_parts, taxon_ids
 # the organism an isolate was isolated from (a value like NCBITaxonomy's), without the isolate's own organisms
@@ -293,6 +295,10 @@ def _reference_materials_and_pools(df, kwargs):
         print(f"WARNING: reference materials not checked: {type(e).__name__}: {e}")
         traceback.print_exc()
     return df
+
+
+# the two life stages next to an age of exactly 2 (complete_and_fill_REDU_table, LifeStage)
+AGE_TWO_STAGES = ('Infancy (<2 yrs)', 'Early Childhood (2 yrs < x <=8 yrs)')
 
 
 def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi = False, other_allowed_file_extensions = [], attempt_adding_file_extensions = False, case_insensitive_terms = False, **kwargs):
@@ -1008,6 +1014,12 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
                             & (recorded == ages_as_given.map(brackets))
                         recorded = recorded.mask(derived)
                     computed = computed.where(computed != value['missing'], recorded).fillna(value['missing'])
+                    # an age of exactly 2 years is in neither bracket by their labels ('Infancy (<2 yrs)', 'Early
+                    # Childhood (2 yrs < x <=8 yrs)'; age_category gives the second): the submitter's of the two is kept
+                    # (MSV000084610, MSV000082490: 27 rows recorded as Infancy)
+                    if 'AgeInYears' in df.columns:
+                        at_open_bound = pd.to_numeric(df['AgeInYears'], errors='coerce') == 2
+                        computed = computed.where(~(at_open_bound & recorded.isin(AGE_TWO_STAGES)), recorded)
                 df[key] = computed
             if key == 'UniqueSubjectID' and df.columns.is_unique:
                 # the row-wise rule below on the two columns it reads
@@ -1190,25 +1202,27 @@ def complete_and_fill_REDU_table(df, allowedTerm_dict, add_usi = False, keep_usi
     for column in ignored_columns:
         print(f"IGNORED:  {column}")
 
-    #remove rows if not enough metadata are present
-    def count_non_missing_specific(row, cols):
-        return (row[cols] != "missing value").sum()
-    
-    columns_to_consider = ["SampleType", "SampleTypeSub1", "NCBITaxonomy", "UBERONBodyPartName", "BiologicalSex", 
-                           "AgeInYears", "LifeStage", "Country", "HealthStatus", "SampleExtractionMethod", 
-                           "SampleCollectionMethod", "ComorbidityListDOIDIndex", "DOIDCommonName", "HPOCommonName", "Exposure", 
-                           "DepthorAltitudeMeters", "HumanPopulationDensity", "LatitudeandLongitude",
-                           "ENVOEnvironmentBiome", "ENVOEnvironmentMaterial"] + STRIP_ISOLATION_SOURCE
-    
+    # remove rows without sample metadata: a row is kept if it has at least one value of a ReDU field that
+    # describes the sample (sample_metadata_columns: not the file, the dataset, the group text, subject
+    # identifiers or the instrument / chromatography / internal standards). keep_group_text_rows (GNPS
+    # sheets): a row without one is kept if it has a group text (SampleGroupFreeText); merge_metadata.py
+    # puts that text on the MASST row of the same file, or drops the row
     original_row_count = df.shape[0]
-    columns_to_check = [col for col in columns_to_consider if col in df.columns]
+    columns_to_check = [col for col in sample_metadata_columns(allowedTerm_dict) if col in df.columns]
     if len(df) == 0 or isinstance(df.iloc[0].dtype, pd.api.extensions.ExtensionDtype):
-        df = df[(df.apply(count_non_missing_specific, cols=columns_to_check, axis=1) >= 1)]
+        has_metadata = df.apply(lambda row: (row[columns_to_check] != "missing value").sum(), axis=1) >= 1
     else:
         # the same count for all rows at once. The rows df.apply passes hold the cells as
         # objects (the frame's columns are not all of one extension dtype), so the cells are
         # compared as objects here too: NaN, None and pd.NA count as not missing
-        df = df[(df[columns_to_check].astype(object) != "missing value").sum(axis=1) >= 1]
+        has_metadata = (df[columns_to_check].astype(object) != "missing value").sum(axis=1) >= 1
+    if kwargs.get('keep_group_text_rows', False) and 'SampleGroupFreeText' in df.columns and len(df):
+        text_only = ~has_metadata & ~df['SampleGroupFreeText'].fillna('').astype(str).str.strip().str.lower().isin(
+            ['', 'missing value', 'nan'])
+        if text_only.any():
+            print(f"Rows kept only for their group text (for the MASST row of the same file): {int(text_only.sum())}")
+        has_metadata = has_metadata | text_only
+    df = df[has_metadata]
 
     print(f"Number of rows removed due to not enough metadata: {original_row_count - df.shape[0]}")
     print(f"Returning {len(df)} rows!")
@@ -1908,7 +1922,8 @@ if __name__ == '__main__':
                                               ncbi_name_over_id=True,
                                               ncbi_name_fallback=True,
                                               CellLineIndex_table=cellosaurus_table,
-                                              life_stage_as_submitted=True)
+                                              life_stage_as_submitted=True,
+                                              keep_group_text_rows=True)
             
             if len(df) > 0:
                 # written under a name the next steps do not read (*.tsv), then renamed, so
